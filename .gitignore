@@ -1,0 +1,10 @@
+# build artifacts
+/dist/
+/build/
+# decrypted secrets (never commit)
+*.key
+*.minisign.key
+*.age.dec
+.tmp-*
+# TEST signing key (the .pub is committed; the secret key never is)
+tools/testkeys/test.key
