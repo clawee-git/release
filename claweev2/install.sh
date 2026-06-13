@@ -31,7 +31,7 @@ set -eu
 
 # ---- knobs --------------------------------------------------------------
 COMP="claweev2"
-PUBKEY="RWTv6m5++gj5Z3fF2kGhaBEMEzaBsXxh4DNWm/cq9JFc07ReLrNDPq8U"
+PUBKEY="RWTuO+iTqEyo52tDnuRxx1IsrARInzZbBSfgbj4r5jZusvksN2VHuY3E"
 REPO="${CLAWEE_RELEASE_REPO:-clawee-git/release}"
 PREFIX="${PREFIX:-$HOME/.local}"
 DL_BASE="${CLAWEE_DL_BASE:-}"           # test hook (undocumented to users)
