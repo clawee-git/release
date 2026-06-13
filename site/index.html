@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>clawee — install channel</title>
+<meta name="description" content="Public, signed, self-service install channel for the Clawee terminal client and PTY daemon. Every download is verified end-to-end.">
+<style>
+  :root {
+    --bg:     #14161A; /* page canvas — slate near-black */
+    --well:   #0E1013; /* recessed: code blocks, wells */
+    --text:   #E4E7EB; /* primary text — soft white, never #fff */
+    --mark:   #F6A93B; /* MARK ONLY — wordmark accent (warm amber) */
+    --accent: #D98E2B; /* UI accent — links, buttons, focus */
+
+    --text-muted:  rgba(228, 231, 235, 0.55);
+    --text-faint:  rgba(228, 231, 235, 0.30);
+    --line:        rgba(228, 231, 235, 0.10);
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .wrap { max-width: 760px; margin: 0 auto; padding: 64px 24px 96px; }
+
+  /* wordmark */
+  .brand {
+    font: 600 44px/1 "Bricolage Grotesque", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    letter-spacing: -0.025em;
+    color: var(--text);
+    margin: 0;
+  }
+  .brand .ee { color: var(--mark); text-shadow: 0 0 24px rgba(246, 169, 59, 0.35); }
+
+  .tagline { color: var(--text-muted); margin: 12px 0 0; font-size: 17px; }
+
+  h2 {
+    font-size: 13px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--text-muted); margin: 56px 0 16px;
+  }
+
+  p { margin: 0 0 14px; }
+  .muted { color: var(--text-muted); }
+  .faint { color: var(--text-faint); }
+
+  /* install lines */
+  .install {
+    display: block; background: var(--well); border: 1px solid var(--line);
+    border-radius: 8px; padding: 14px 16px; margin: 0 0 12px; overflow-x: auto;
+  }
+  .install .label {
+    display: block; color: var(--accent);
+    font: 600 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 8px;
+  }
+  code, pre, kbd {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    font-size: 14px;
+  }
+  .install code { color: var(--text); white-space: pre; }
+
+  pre.block {
+    background: var(--well); border: 1px solid var(--line); border-radius: 8px;
+    padding: 16px; margin: 0 0 14px; overflow-x: auto; color: var(--text);
+  }
+
+  table { border-collapse: collapse; width: 100%; margin: 4px 0 8px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: 15px; }
+  th { color: var(--text-muted); font-weight: 600; }
+  td.yes { color: var(--accent); }
+
+  .pill {
+    display: inline-block; border: 1px solid var(--line); border-radius: 999px;
+    padding: 2px 10px; font-size: 12px; color: var(--text-muted);
+    margin-left: 8px; vertical-align: middle;
+  }
+
+  footer {
+    margin-top: 72px; padding-top: 24px; border-top: 1px solid var(--line);
+    color: var(--text-faint); font-size: 13px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1 class="brand">claw<span class="ee">ee</span></h1>
+    <p class="tagline">The signed, self-service install channel for the Clawee terminal client.</p>
+  </header>
+
+  <section>
+    <h2>Install</h2>
+    <p class="muted">Each installer detects your OS and architecture, verifies the download
+      end-to-end (minisign signature → SHA-256 → unzip), then runs the inner installer.
+      There is no dispatcher — the binaries are invoked directly.</p>
+
+    <span class="install">
+      <span class="label">claweev2 — the terminal client</span>
+      <code>curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/claweev2/install.sh | sh</code>
+    </span>
+
+    <span class="install">
+      <span class="label">claweed — the PTY daemon (run AS YOUR USER, not sudo)</span>
+      <code>curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/claweed/install.sh | sh</code>
+    </span>
+
+    <p class="faint">claweev2 lands in <code>$HOME/.local/bin</code> and ensures
+      <code>burrowee-cli</code> is present. claweed installs the daemon + boot unit with no
+      privilege and escalates with <code>sudo</code> only for the setuid <code>clawee-spawn</code>
+      helper, cross-installing <code>burrowee-gateway</code>.</p>
+  </section>
+
+  <section>
+    <h2>Verify by hand</h2>
+    <p class="muted">Every release ships <code>SHA256SUMS.txt</code> and a minisign signature.
+      The signing public key lives at
+      <a href="/clawee-release.pub">/clawee-release.pub</a> — it is also baked into the
+      installer, which is the trust anchor that verifies each download automatically. To check
+      a download yourself:</p>
+    <pre class="block">minisign -V -P "$(cat clawee-release.pub | tail -n1)" -m SHA256SUMS.txt -x SHA256SUMS.txt.minisig
+shasum -a 256 -c SHA256SUMS.txt   # or sha256sum on Linux</pre>
+    <p class="faint">A failed signature check means the bytes are untrusted — do not install them.</p>
+  </section>
+
+  <section>
+    <h2>Supported platforms</h2>
+    <table>
+      <thead>
+        <tr><th>OS</th><th>arm64</th><th>amd64</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>macOS (darwin)</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td>Linux</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+      </tbody>
+    </table>
+    <p class="faint">Windows is not supported.</p>
+  </section>
+
+  <footer>
+    Preview release. Public signing key:
+    <a href="/clawee-release.pub">clawee-release.pub</a>.
+    <span class="pill">macOS + Linux · arm64 + amd64</span>
+  </footer>
+
+</div>
+</body>
+</html>
