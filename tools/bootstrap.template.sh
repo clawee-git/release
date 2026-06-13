@@ -1,0 +1,203 @@
+#!/bin/sh
+# Clawee outer bootstrap — THE TRUST ANCHOR (POSIX sh, macOS + Linux).
+#
+#   curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/@COMP@/install.sh | sh
+#
+# This is the stable, curl'd-alone entry point for the `@COMP@` component. It
+# NEVER runs an unverified byte: it downloads the release zip + SHA256SUMS.txt +
+# its minisig, verifies the minisign signature with a baked-in PUBLIC key,
+# verifies the zip's sha256 against the now-trusted sums file, and ONLY THEN
+# unzips and execs the verified inner per-release install.sh. Any failure aborts
+# before anything is installed.
+#
+# DO NOT EDIT generated copies (@COMP@/install.sh) by hand — they are produced
+# from tools/bootstrap.template.sh by tools/gen-bootstraps.sh.
+#
+# Env vars:
+#   CLAWEE_<COMP>_VERSION   pin a release tag (e.g. @COMP@/v0.1.1.…); default: latest
+#                           (<COMP> = the component name upper-cased, e.g. CLAWEE_CLAWEEV2_VERSION)
+#   PREFIX                  install root (default $HOME/.local; bins at PREFIX/bin)
+#   CLAWEE_UNINSTALL=1      claweev2 only — remove the installed bin
+#   CLAWEE_RELEASE_REPO     GitHub repo serving releases (default clawee-git/release)
+#   CLAWEE_DL_BASE          (test hook) download assets from this base instead of GitHub
+#
+# claweed note: the claweed inner installer is the canonical sudo-minimal daemon
+# installer. It reads CLAWEE_PREFIX (set here from PREFIX), CLAWEE_DATA_DIR, and
+# CLAWEE_REGISTER_SOCKET, escalates with sudo only for the setuid spawn helper,
+# and cross-installs burrowee-gateway. To uninstall claweed, run its inner
+# installer directly with the `uninstall` subcommand (not via this bootstrap).
+
+set -eu
+
+# ---- knobs --------------------------------------------------------------
+COMP="@COMP@"
+PUBKEY="@PUBKEY@"
+REPO="${CLAWEE_RELEASE_REPO:-clawee-git/release}"
+PREFIX="${PREFIX:-$HOME/.local}"
+DL_BASE="${CLAWEE_DL_BASE:-}"           # test hook (undocumented to users)
+
+# Production downloads are pinned to HTTPS/TLS1.2 (--proto =https). The
+# CLAWEE_DL_BASE test hook points at a local plain-HTTP server, so when it is
+# set we drop the TLS-only flags (they'd reject http://); the version-pin guard
+# below keeps even that path scheme-locked to the test base.
+if [ -n "$DL_BASE" ]; then
+    CURL="curl -fsSL --connect-timeout 15 --max-time 300"
+else
+    CURL="curl -fsSL --proto =https --tlsv1.2 --connect-timeout 15 --max-time 300"
+fi
+
+# ---- helpers ------------------------------------------------------------
+fail() { printf '\n  ✗ %s\n\n' "$*" >&2; exit 1; }
+info() { printf '  → %s\n' "$*"; }
+ok()   { printf '  ✓ %s\n' "$*"; }
+
+# ---- platform detection -------------------------------------------------
+case "$(uname -s)" in
+    Darwin) OS=darwin ;;
+    Linux)  OS=linux ;;
+    *)      fail "unsupported OS: $(uname -s) (clawee ships darwin + linux only)" ;;
+esac
+case "$(uname -m)" in
+    arm64|aarch64) ARCH=arm64 ;;
+    x86_64|amd64)  ARCH=amd64 ;;
+    *)             fail "unsupported arch: $(uname -m) (clawee ships arm64 + amd64 only)" ;;
+esac
+
+printf '\n  clawee %s installer  (%s/%s)\n\n' "$COMP" "$OS" "$ARCH"
+
+# ---- guard against a TEMP / unbaked pubkey ------------------------------
+case "$PUBKEY" in
+    ""|*REPLACE*|*PLACEHOLDER*|*TEMP*)
+        fail "this installer was built without a real signing key — refusing to verify against a placeholder (regenerate with tools/gen-bootstraps.sh)" ;;
+esac
+
+# ---- temp workspace -----------------------------------------------------
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/clawee-${COMP}-XXXXXX")" || fail "could not create temp dir"
+trap 'rm -rf "$TMP"' EXIT INT TERM
+
+# ---- version resolution -------------------------------------------------
+# Read the per-component pin env var by name (no eval). $COMP is a baked
+# literal, so a direct case over the known components is exhaustive.
+case "$COMP" in
+    claweev2) PIN="${CLAWEE_CLAWEEV2_VERSION:-}" ;;
+    claweed)  PIN="${CLAWEE_CLAWEED_VERSION:-}" ;;
+    *)        fail "unknown component '$COMP' — cannot resolve its version pin" ;;
+esac
+if [ -n "$PIN" ]; then
+    TAG="$PIN"
+    info "using pinned version: $TAG"
+else
+    info "resolving latest ${COMP} release"
+    api="https://api.github.com/repos/${REPO}/releases?per_page=100"
+    # The GitHub /releases order is by tag-commit date, NOT publish order, so it is
+    # unreliable for "latest" — pick the highest "<comp>/v<semver>" via version sort.
+    # Extract only the real "tag_name" FIELD — anchored to the start of its line —
+    # so release-notes/body text that merely contains the literal `"tag_name"`
+    # can't spoof the tag. Prefer jq (structural) and fall back to grep/sed.
+    # shellcheck disable=SC2086  # $CURL is an intentional space-split command string (flags + binary); POSIX sh has no arrays.
+    body="$($CURL "$api" 2>/dev/null)" || true
+    if command -v jq >/dev/null 2>&1; then
+        TAG="$(printf '%s' "$body" \
+            | jq -r '.[].tag_name // empty' \
+            | grep -E "^${COMP}/v" \
+            | sort -V \
+            | tail -n1)" || true
+    else
+        TAG="$(printf '%s' "$body" \
+            | grep -E '^[[:space:]]*"tag_name"[[:space:]]*:' \
+            | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' \
+            | grep -E "^${COMP}/v" \
+            | sort -V \
+            | tail -n1)" || true
+    fi
+    [ -n "$TAG" ] || fail "no published release found for ${COMP} on ${REPO}"
+    info "latest: $TAG"
+fi
+
+# ---- download -----------------------------------------------------------
+if [ -n "$DL_BASE" ]; then
+    BASE="$DL_BASE"
+else
+    BASE="https://github.com/${REPO}/releases/download/${TAG}"
+fi
+ZIP="clawee-${COMP}-${OS}-${ARCH}.zip"
+
+dl() {
+    # dl <remote-name> <local-name>  (local goes under $TMP)
+    # shellcheck disable=SC2086  # $CURL is an intentional space-split command string (flags + binary); POSIX sh has no arrays.
+    $CURL -o "$TMP/$2" "$BASE/$1" \
+        || fail "download failed: $1 (from $BASE) — refusing to install unverified bytes"
+}
+info "downloading $ZIP"
+dl "$ZIP" "$ZIP"
+info "downloading SHA256SUMS.txt + signature"
+dl "SHA256SUMS.txt"         "SHA256SUMS.txt"
+dl "SHA256SUMS.txt.minisig" "SHA256SUMS.txt.minisig"
+
+# ---- require minisign ---------------------------------------------------
+# minisign is the trust root: it must already be on PATH from a trusted source
+# (your package manager). We never auto-fetch the verifier — a binary pulled
+# over the network and run unverified would itself become an unverified trust
+# root, defeating the whole signature chain. Verification is mandatory and is
+# only ever performed by a minisign the operator already trusts.
+if command -v minisign >/dev/null 2>&1; then
+    MINISIGN=minisign
+else
+    case "$OS" in
+        darwin) hint="brew install minisign" ;;
+        *)      hint="apt-get install minisign  (or your distro's package manager)" ;;
+    esac
+    fail "minisign is required and is not installed — install it and re-run.
+    $hint
+    upstream: https://github.com/jedisct1/minisign
+    Verification is mandatory; this installer will NOT run an unverified verifier."
+fi
+
+# ---- VERIFY (the trust gate) --------------------------------------------
+info "verifying signature"
+# 1) signature over the sums file, using the baked pubkey (inline, no key fetch)
+"$MINISIGN" -V -P "$PUBKEY" -m "$TMP/SHA256SUMS.txt" -x "$TMP/SHA256SUMS.txt.minisig" >/dev/null \
+    || fail "signature verification failed — aborting (refusing to install unverified bytes)"
+ok "minisign signature valid"
+
+info "verifying checksum"
+# 2) the zip's checksum against the now-trusted sums file
+grep -qF "$ZIP" "$TMP/SHA256SUMS.txt" \
+    || fail "no checksum entry for $ZIP — release incomplete or tampered; aborting"
+if command -v shasum >/dev/null 2>&1; then
+    ( cd "$TMP" && shasum -a 256 -c --ignore-missing SHA256SUMS.txt >/dev/null ) \
+        || fail "checksum mismatch — aborting (zip tampered or download corrupted)"
+elif command -v sha256sum >/dev/null 2>&1; then
+    ( cd "$TMP" && sha256sum -c --ignore-missing SHA256SUMS.txt >/dev/null ) \
+        || fail "checksum mismatch — aborting (zip tampered or download corrupted)"
+else
+    fail "neither shasum nor sha256sum found — cannot verify; aborting"
+fi
+ok "checksum verified"
+
+# ---- unzip + exec the verified inner installer --------------------------
+command -v unzip >/dev/null 2>&1 \
+    || fail "unzip not found — install it (\`brew install unzip\` / \`apt-get install unzip\`) and retry"
+unzip -q -o "$TMP/$ZIP" -d "$TMP/x" || fail "zip extraction failed — corrupt download?"
+[ -f "$TMP/x/install.sh" ] || fail "release zip missing inner install.sh — aborting"
+
+ok "verified — running inner installer"
+# Run with cwd = the unzipped dir: the inner installer resolves the binaries
+# relative to its own location (./claweev2, ./claweed, ./clawee-spawn).
+#
+# The two components have DIFFERENT inner-installer contracts:
+#   claweev2 — simple bin-placer: reads PREFIX + CLAWEE_UNINSTALL.
+#   claweed  — canonical sudo-minimal daemon installer: reads CLAWEE_PREFIX
+#              (mapped from PREFIX here), runs interactively, escalates with sudo
+#              only for the setuid spawn helper, cross-installs burrowee-gateway.
+case "$COMP" in
+    claweev2)
+        ( cd "$TMP/x" && PREFIX="$PREFIX" CLAWEE_UNINSTALL="${CLAWEE_UNINSTALL:-}" sh ./install.sh )
+        ;;
+    claweed)
+        ( cd "$TMP/x" && CLAWEE_PREFIX="${CLAWEE_PREFIX:-$PREFIX/bin}" sh ./install.sh )
+        ;;
+    *)
+        fail "unknown component '$COMP' — no inner-exec contract"
+        ;;
+esac
