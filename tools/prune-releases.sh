@@ -8,7 +8,7 @@
 #
 # Env (optional):
 #   KEEP                  newest versions to retain per component (default 3)
-#   COMPONENTS            space-separated set (default "claweev2 claweed")
+#   COMPONENTS            space-separated set (default "clawee claweed")
 #   CLAWEE_RELEASE_REPO   GitHub repo (default clawee-git/release)
 #
 # Per component it lists "<comp>/v*" release tags, version-sorts them with
@@ -22,7 +22,7 @@ export PATH="/usr/bin:/bin:/opt/homebrew/bin:${HOME}/.claude/bin:${PATH}"
 
 REPO="${CLAWEE_RELEASE_REPO:-clawee-git/release}"
 KEEP="${KEEP:-3}"
-COMPONENTS="${COMPONENTS:-claweev2 claweed}"
+COMPONENTS="${COMPONENTS:-clawee claweed}"
 
 EXECUTE=0
 for a in "$@"; do

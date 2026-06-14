@@ -12,7 +12,7 @@
 #   CLAWEE_SPAWN_HELPER   the spawn-helper path must come from --spawn-helper
 #   mustEnv               the helper pattern that fatals on a missing required env
 #
-# NOTE: legitimate read-only env knobs are NOT forbidden — e.g. claweev2 reads
+# NOTE: legitimate read-only env knobs are NOT forbidden — e.g. clawee reads
 # $BURROWEE_TRANSPORT_SOCK as a socket OVERRIDE (flag > env > config > default),
 # which is allowed; only the CLAWEE_* config-as-env anti-pattern is rejected.
 #

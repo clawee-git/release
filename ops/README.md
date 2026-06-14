@@ -68,7 +68,7 @@ GitHub releases, and `scp`s the static surface (`index.html`,
 
 ```sh
 curl -fsSI https://release.clawee.org/                              # 200, text/html
-curl -fsSI https://release.clawee.org/claweev2/install.sh           # 200, text/x-shellscript
+curl -fsSI https://release.clawee.org/clawee/install.sh             # 200, text/x-shellscript
 curl -fsSI https://release.clawee.org/claweed/install.sh            # 200, text/x-shellscript
 curl -fsSI https://release.clawee.org/clawee-release.pub            # 200, text/plain
 ```
@@ -76,5 +76,5 @@ curl -fsSI https://release.clawee.org/clawee-release.pub            # 200, text/
 A green install path end-to-end:
 
 ```sh
-curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/claweev2/install.sh | sh
+curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/clawee/install.sh | sh
 ```

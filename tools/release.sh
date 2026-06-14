@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# release.sh — cut a signed Clawee component release (claweev2 | claweed).
+# release.sh — cut a signed Clawee component release (clawee | claweed).
 #
 # Usage:
-#   bash tools/release.sh <claweev2|claweed|all> [--dry-run] [--bump-minor|--bump-major]
+#   bash tools/release.sh <clawee|claweed|all> [--dry-run] [--bump-minor|--bump-major]
 #
 # For each requested component this:
 #   1. Stamps the version (bump unless --dry-run) via tools/version.sh.
@@ -33,7 +33,7 @@
 #   SIGN_KEY               minisign secret key file (overrides the default resolution)
 #   AGE_IDENTITY           age identity file used to decrypt the real signing key
 #                          (default ~/.age/clawee-release.txt — created at activation)
-#   CLAWEE_SRC_CLAWEEV2    claweev2 component source worktree (default: cli main worktree)
+#   CLAWEE_SRC_CLAWEE      clawee component source worktree (default: cli main worktree)
 #   CLAWEE_SRC_CLAWEED     claweed component source worktree (default: daemon main worktree)
 #   CLAWEE_RELEASE_REPO    GitHub repo for releases (default clawee-git/release)
 #   CLAWEE_RELEASE_YES     skip the interactive minor/major bump confirm
@@ -53,7 +53,7 @@ DRY_RUN=0
 BUMP_KIND="patch"
 for arg in "$@"; do
     case "${arg}" in
-        claweev2|claweed|all) WHAT="${arg}" ;;
+        clawee|claweed|all)   WHAT="${arg}" ;;
         --dry-run)            DRY_RUN=1 ;;
         --bump-minor)         BUMP_KIND="minor" ;;
         --bump-major)         BUMP_KIND="major" ;;
@@ -61,7 +61,7 @@ for arg in "$@"; do
         *) echo "✗ unknown argument: ${arg}" >&2; exit 2 ;;
     esac
 done
-[ -n "${WHAT}" ] || { echo "✗ usage: release.sh <claweev2|claweed|all> [--dry-run] [--bump-minor|--bump-major]" >&2; exit 2; }
+[ -n "${WHAT}" ] || { echo "✗ usage: release.sh <clawee|claweed|all> [--dry-run] [--bump-minor|--bump-major]" >&2; exit 2; }
 
 # ---- config / defaults ------------------------------------------------------
 RELEASE_HOST="${RELEASE_HOST:-nsm.renative.com}"
@@ -72,9 +72,9 @@ AGE_KEY_AGE="${DP_DIR}/clawee-release.key.age"
 AGE_IDENTITY="${AGE_IDENTITY:-${HOME}/.age/clawee-release.txt}"
 
 # component source worktrees (default: each component's MAIN worktree).
-# claweev2 builds from the cli repo (cmd/clawee); claweed from the daemon repo.
+# clawee builds from the cli repo (cmd/clawee); claweed from the daemon repo.
 CC="/Volumes/MacintoshED/Workstation/Coding/Clawee"
-SRC_CLAWEEV2="${CLAWEE_SRC_CLAWEEV2:-${CC}/cli/code/cli}"
+SRC_CLAWEE="${CLAWEE_SRC_CLAWEE:-${CC}/cli/code/cli}"
 SRC_CLAWEED="${CLAWEE_SRC_CLAWEED:-${CC}/daemon/code/daemon}"
 
 # the canonical claweed inner-installer template (rendered per-build with the stamp)
@@ -89,7 +89,7 @@ TARGETS=(
 
 src_for() {
     case "$1" in
-        claweev2) printf '%s' "${SRC_CLAWEEV2}" ;;
+        clawee)   printf '%s' "${SRC_CLAWEE}" ;;
         claweed)  printf '%s' "${SRC_CLAWEED}" ;;
     esac
 }
@@ -97,7 +97,7 @@ src_for() {
 # binary list per component (used at assembly time to copy into the zip)
 bins_for() {
     case "$1" in
-        claweev2) printf '%s' "claweev2" ;;
+        clawee)   printf '%s' "clawee" ;;
         claweed)  printf '%s' "claweed clawee-spawn" ;;
     esac
 }
@@ -133,7 +133,7 @@ if [ "${DRY_RUN}" != 1 ]; then
 fi
 
 # components to cut
-if [ "${WHAT}" = all ]; then COMPONENTS=(claweev2 claweed); else COMPONENTS=("${WHAT}"); fi
+if [ "${WHAT}" = all ]; then COMPONENTS=(clawee claweed); else COMPONENTS=("${WHAT}"); fi
 
 # per-component source-worktree cleanliness + branch (real releases must come
 # from a clean `main`; dry-runs are lenient so they can run off a prep worktree).
@@ -200,15 +200,15 @@ resolve_sign_key() {
 resolve_sign_key
 
 # ---- inner installer resolution ---------------------------------------------
-# claweev2 ships the repo-committed inner/claweev2/install.sh. claweed ships the
+# clawee ships the repo-committed inner/clawee/install.sh. claweed ships the
 # daemon repo's canonical install/install.sh.in, rendered per-build with the
 # stamp — never the repo-committed inner/claweed copy (which is only kept current
 # for shellcheck + reference). render_inner <comp> <stamp> <dest> writes install.sh.
 render_inner() {
     local comp="$1" stamp="$2" dest="$3"
     case "${comp}" in
-        claweev2)
-            cp "${REPO_ROOT}/inner/claweev2/install.sh" "${dest}"
+        clawee)
+            cp "${REPO_ROOT}/inner/clawee/install.sh" "${dest}"
             ;;
         claweed)
             [ -f "${CLAWEED_INSTALLER_IN}" ] \

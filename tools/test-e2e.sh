@@ -2,13 +2,13 @@
 # test-e2e.sh — prove the whole release chain OFFLINE with the TEST key.
 #
 # No GitHub, no nsm, no real signing key. For each requested component
-# (claweev2 | claweed | all) this:
+# (clawee | claweed | all) this:
 #   1. dry-run-builds the release (signed by the TEST key) into dist/<stamp>/.
 #   2. regenerates the outer bootstraps (baking the TEST pubkey).
 #   3. runs verify-no-env on the freshly built binaries.
 #   4. HAPPY PATH:
-#        claweev2 — serves dist/<stamp>/ over http and runs the REAL outer
-#                   bootstrap against it; asserts the installed claweev2 reports
+#        clawee   — serves dist/<stamp>/ over http and runs the REAL outer
+#                   bootstrap against it; asserts the installed clawee reports
 #                   the expected stamp (the burrowee-cli dependency step is
 #                   exercised but tolerant — it's already installed on this box,
 #                   or skipped if release.burrowee.com is unreachable).
@@ -36,16 +36,16 @@ command -v "${GO_BIN}" >/dev/null 2>&1 || GO_BIN=/opt/homebrew/bin/go
 export GO_BIN
 
 # component source dirs — build from main checkout --------------------------------
-export CLAWEE_SRC_CLAWEEV2="${CLAWEE_SRC_CLAWEEV2:-/Volumes/MacintoshED/Workstation/Coding/Clawee/cli/code/cli}"
+export CLAWEE_SRC_CLAWEE="${CLAWEE_SRC_CLAWEE:-/Volumes/MacintoshED/Workstation/Coding/Clawee/cli/code/cli}"
 export CLAWEE_SRC_CLAWEED="${CLAWEE_SRC_CLAWEED:-/Volumes/MacintoshED/Workstation/Coding/Clawee/daemon/code/daemon}"
 
 WHAT="${1:-all}"
 case "${WHAT}" in
-    claweev2|claweed|all) ;;
+    clawee|claweed|all) ;;
     -h|--help) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "✗ usage: test-e2e.sh <claweev2|claweed|all>" >&2; exit 2 ;;
+    *) echo "✗ usage: test-e2e.sh <clawee|claweed|all>" >&2; exit 2 ;;
 esac
-if [ "${WHAT}" = all ]; then COMPONENTS=(claweev2 claweed); else COMPONENTS=("${WHAT}"); fi
+if [ "${WHAT}" = all ]; then COMPONENTS=(clawee claweed); else COMPONENTS=("${WHAT}"); fi
 
 PORT="${E2E_PORT:-8741}"
 
@@ -76,7 +76,7 @@ CLAWEE_PUBKEY_FILE="${TEST_PUB}" sh tools/gen-bootstraps.sh
 run_component() {
     local comp="$1" src zip stamp serve_dir pin
     case "${comp}" in
-        claweev2) src="${CLAWEE_SRC_CLAWEEV2}" ;;
+        clawee)   src="${CLAWEE_SRC_CLAWEE}" ;;
         claweed)  src="${CLAWEE_SRC_CLAWEED}" ;;
     esac
 
@@ -95,21 +95,21 @@ run_component() {
     local envchk; envchk="$(mktemp -d)"
     unzip -q -o "${serve_dir}/${zip}" -d "${envchk}"
     case "${comp}" in
-        claweev2) "${REPO_ROOT}/tools/verify-no-env.sh" "${envchk}/claweev2" ;;
+        clawee)   "${REPO_ROOT}/tools/verify-no-env.sh" "${envchk}/clawee" ;;
         claweed)  "${REPO_ROOT}/tools/verify-no-env.sh" "${envchk}/claweed" "${envchk}/clawee-spawn" ;;
     esac
     rm -rf "${envchk}"
     echo "ENV-GUARD OK (${comp})"
 
-    if [ "${comp}" = claweev2 ]; then
-        run_claweev2 "${comp}" "${serve_dir}" "${zip}" "${stamp}" "${pin}"
+    if [ "${comp}" = clawee ]; then
+        run_clawee "${comp}" "${serve_dir}" "${zip}" "${stamp}" "${pin}"
     else
         run_claweed "${comp}" "${serve_dir}" "${zip}" "${stamp}"
     fi
 }
 
-# ----- claweev2: real outer bootstrap against a local http server -----------
-run_claweev2() {
+# ----- clawee: real outer bootstrap against a local http server -------------
+run_clawee() {
     local comp="$1" serve_dir="$2" zip="$3" stamp="$4" pin="$5"
     local happy="${TMPDIR:-/tmp}/e2e-${comp}-prefix" tamper="${TMPDIR:-/tmp}/e2e-${comp}-prefix-tamper"
     rm -rf "${happy}" "${tamper}"
@@ -127,17 +127,17 @@ run_claweev2() {
     local dl_base="http://127.0.0.1:${PORT}"
     run_install() {
         CLAWEE_DL_BASE="${dl_base}" \
-        CLAWEE_CLAWEEV2_VERSION="${pin}" \
+        CLAWEE_VERSION="${pin}" \
         PREFIX="$1" \
             sh "${REPO_ROOT}/${comp}/install.sh"
     }
 
     say "HAPPY PATH — install into ${happy}"
     run_install "${happy}" || die "happy-path install exited non-zero (expected success)"
-    local bin="${happy}/bin/claweev2"
-    [ -x "${bin}" ] || die "claweev2 not installed at ${bin}"
+    local bin="${happy}/bin/clawee"
+    [ -x "${bin}" ] || die "clawee not installed at ${bin}"
     local got; got="$("${bin}" --version 2>&1 || true)"
-    say "installed claweev2 version → ${got}"
+    say "installed clawee version → ${got}"
     case "${got}" in
         *"${stamp}"*) printf '\nHAPPY-PATH OK (%s)\n' "${comp}" ;;
         *) die "version mismatch: expected stamp '${stamp}' in output, got: ${got}" ;;
@@ -162,7 +162,7 @@ PY
     set -e
     mv -f "${backup}" "${zip_path}"
     [ "${rc}" -ne 0 ] || die "tampered install returned 0 — verification gate FAILED to abort"
-    [ ! -e "${tamper}/bin/claweev2" ] || die "tampered install left a binary — must install nothing"
+    [ ! -e "${tamper}/bin/clawee" ] || die "tampered install left a binary — must install nothing"
     say "tampered install aborted with rc=${rc} and installed nothing"
     printf '\nTAMPER-ABORTED OK (%s)\n' "${comp}"
 
