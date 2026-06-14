@@ -7,7 +7,7 @@
 # always off (pure-Go, portable).
 #
 # Env in (all required unless noted):
-#   COMP          claweev2 | claweed
+#   COMP          clawee | claweed
 #   SRC_DIR       the component's source worktree (cd target)
 #   TARGETOS      GOOS  (darwin | linux)
 #   TARGETARCH    GOARCH (arm64 | amd64)
@@ -20,7 +20,7 @@
 # native binaries. Cross-compiled (linux) outputs are left untouched.
 set -euo pipefail
 
-: "${COMP:?COMP is required (claweev2|claweed)}"
+: "${COMP:?COMP is required (clawee|claweed)}"
 : "${SRC_DIR:?SRC_DIR is required (component source worktree)}"
 : "${TARGETOS:?TARGETOS is required (darwin|linux)}"
 : "${TARGETARCH:?TARGETARCH is required (arm64|amd64)}"
@@ -34,10 +34,9 @@ command -v "${GO_BIN}" >/dev/null 2>&1 || { echo "✗ go not found on PATH or /o
 [ -d "${SRC_DIR}" ] || { echo "✗ SRC_DIR '${SRC_DIR}' is not a directory" >&2; exit 1; }
 
 # binary -> package map (space-separated "bin:pkg" pairs per component).
-# claweev2's source package is cmd/clawee (the binary is renamed claweev2);
-# the legacy v5 `clawee` binary is unrelated and lives elsewhere.
+# clawee's source package is cmd/clawee — the binary keeps the clawee name.
 case "${COMP}" in
-    claweev2) MAP="claweev2:./cmd/clawee" ;;
+    clawee)   MAP="clawee:./cmd/clawee" ;;
     claweed)  MAP="claweed:./cmd/claweed clawee-spawn:./cmd/clawee-spawn" ;;
     *)        echo "✗ unknown COMP: ${COMP}" >&2; exit 2 ;;
 esac

@@ -1,6 +1,6 @@
 #!/bin/sh
 # gen-bootstraps.sh — generate the two self-contained outer bootstraps
-# (claweev2/install.sh, claweed/install.sh) from one template.
+# (clawee/install.sh, claweed/install.sh) from one template.
 #
 # Each generated file is byte-identical to the other except for the @COMP@
 # and @PUBKEY@ substitutions. The outer bootstrap is THE TRUST ANCHOR, so the
@@ -44,7 +44,7 @@ else
 fi
 
 # ---- generate -----------------------------------------------------------
-for comp in claweev2 claweed; do
+for comp in clawee claweed; do
     out="$ROOT/$comp/install.sh"
     mkdir -p "$ROOT/$comp"
     # @PUBKEY@ first would be fine, but do @COMP@ first; neither value contains

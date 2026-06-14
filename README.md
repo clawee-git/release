@@ -8,7 +8,7 @@ Two components are published here:
 
 | Component | Binaries | What it is | Cross-channel dependency |
 |---|---|---|---|
-| `claweev2` | `claweev2` | the Clawee terminal client | `burrowee-cli` (from `release.burrowee.com/cli`) when missing |
+| `clawee` | `clawee` | the Clawee terminal client | `burrowee-cli` (from `release.burrowee.com/cli`) when missing |
 | `claweed` | `claweed`, `clawee-spawn` | the PTY daemon + setuid spawn helper | `burrowee-gateway` (from `release.burrowee.com/gateway`) when missing/older |
 
 There is **no universal dispatcher** — clawee's binaries are invoked directly.
@@ -17,7 +17,7 @@ There is **no universal dispatcher** — clawee's binaries are invoked directly.
 
 ```sh
 # Client
-curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/claweev2/install.sh | sh
+curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/clawee/install.sh | sh
 # Daemon (run AS YOUR USER — it escalates with sudo only for the setuid spawn helper)
 curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/claweed/install.sh | sh
 ```
@@ -27,7 +27,7 @@ that component, downloads the zip + `SHA256SUMS.txt` + `SHA256SUMS.txt.minisig`,
 **verifies the minisign signature against the baked public key**, checks the
 SHA-256, then unzips and runs the inner installer.
 
-- **claweev2** lands in `$HOME/.local/bin` (override with `PREFIX`), then ensures
+- **clawee** lands in `$HOME/.local/bin` (override with `PREFIX`), then ensures
   `burrowee-cli` is present (installed from burrowee's public channel if missing).
 - **claweed** is the canonical sudo-minimal daemon installer: it installs
   `claweed` to a user-writable prefix + boot unit in your own user domain with
@@ -58,12 +58,12 @@ Each component reads a version-pin env var. The value is the release tag
 
 | Component | Env var |
 |---|---|
-| `claweev2` | `CLAWEE_CLAWEEV2_VERSION` |
+| `clawee` | `CLAWEE_VERSION` |
 | `claweed` | `CLAWEE_CLAWEED_VERSION` |
 
 ```sh
-CLAWEE_CLAWEEV2_VERSION=claweev2/v0.1.1.2026.06.13.86f2a984 \
-  curl -fsSL https://release.clawee.org/claweev2/install.sh | sh
+CLAWEE_VERSION=clawee/v0.1.15.2026.06.14.86f2a984 \
+  curl -fsSL https://release.clawee.org/clawee/install.sh | sh
 ```
 
 Unset → the installer resolves the newest release for that component.
@@ -86,9 +86,9 @@ can't be `curl`'d anonymously). The static bootstrap scripts are mirrored to
 `release.clawee.org` (nginx + Cloudflare).
 
 ```
-claweev2/  claweed/        ← per-component outer bootstrap (install.sh, generated)
+clawee/    claweed/        ← per-component outer bootstrap (install.sh, generated)
 inner/<comp>/install.sh     ← inner installer (ships inside each verified zip)
-                              claweev2: repo-committed; claweed: rendered at build
+                              clawee: repo-committed; claweed: rendered at build
                               time from the daemon repo's install/install.sh.in
 versions/<comp>             ← per-component SemVer source of truth
 site/index.html             ← release.clawee.org landing page

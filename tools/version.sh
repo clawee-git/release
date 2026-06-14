@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # version.sh — per-component version + deploy stamp for the Clawee release repo.
 #
-# Each component (claweev2|claweed) has its own one-line MAJOR.MINOR.PATCH file
+# Each component (clawee|claweed) has its own one-line MAJOR.MINOR.PATCH file
 # under versions/<comp> — the single source of truth for that component's semver
 # segment. This composes the full stamp used in ldflags, git tags, and marker
 # commits:
@@ -25,8 +25,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 COMP="${1:-}"
 case "${COMP}" in
-    claweev2|claweed) ;;
-    "")  echo "✗ usage: version.sh <claweev2|claweed> <action>" >&2; exit 2 ;;
+    clawee|claweed) ;;
+    "")  echo "✗ usage: version.sh <clawee|claweed> <action>" >&2; exit 2 ;;
     *)   echo "✗ unknown component: ${COMP}" >&2; exit 2 ;;
 esac
 VERSION_FILE="${REPO_ROOT}/versions/${COMP}"

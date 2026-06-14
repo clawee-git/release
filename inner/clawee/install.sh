@@ -1,17 +1,17 @@
 #!/bin/sh
-# Clawee inner installer — claweev2 (POSIX sh).
+# Clawee inner installer — clawee (POSIX sh).
 #
 # Ships at the ROOT of the verified release zip as `install.sh`. The outer
 # bootstrap verifies the zip (minisign + sha256) and ONLY THEN execs this with
-# cwd = the unzipped dir, so the `claweev2` binary sits alongside this script.
-# It installs claweev2 into PREFIX/bin (default $HOME/.local/bin), then ensures
+# cwd = the unzipped dir, so the `clawee` binary sits alongside this script.
+# It installs clawee into PREFIX/bin (default $HOME/.local/bin), then ensures
 # the burrowee-cli transport dependency is present. Set CLAWEE_UNINSTALL to
-# remove claweev2 instead (the burrowee-cli dependency is left in place — it is
+# remove clawee instead (the burrowee-cli dependency is left in place — it is
 # managed by burrowee's own channel).
 set -eu
 
 BIN_DIR="${PREFIX:-$HOME/.local}/bin"
-BINS="claweev2"
+BINS="clawee"
 
 if [ -n "${CLAWEE_UNINSTALL:-}" ]; then
     for b in $BINS; do rm -f "$BIN_DIR/$b"; done
@@ -54,10 +54,10 @@ case ":$PATH:" in
     *) echo "note: $BIN_DIR is not on PATH — add: export PATH=\"$BIN_DIR:\$PATH\"" ;;
 esac
 
-"$BIN_DIR/claweev2" --version 2>/dev/null || true
+"$BIN_DIR/clawee" --version 2>/dev/null || true
 
 # =========================================================================
-# DEPENDENCY: burrowee-cli (the client transport claweev2 dials through)
+# DEPENDENCY: burrowee-cli (the client transport clawee dials through)
 #   No sudo here — burrowee's own installer escalates as it needs to. Install
 #   when missing or older than the latest published; never downgrades. This is
 #   the ONE public cross-channel step.
@@ -97,4 +97,4 @@ dep_burrowee_cli() {
 dep_burrowee_cli
 
 echo
-echo "next: claweev2 status   (then: claweev2)"
+echo "next: clawee status   (then: clawee)"

@@ -14,10 +14,10 @@
 # from tools/bootstrap.template.sh by tools/gen-bootstraps.sh.
 #
 # Env vars:
-#   CLAWEE_<COMP>_VERSION   pin a release tag (e.g. claweed/v0.1.1.…); default: latest
-#                           (<COMP> = the component name upper-cased, e.g. CLAWEE_CLAWEEV2_VERSION)
+#   <pin var>               pin a release tag (e.g. claweed/v0.1.1.…); default: latest
+#                           (clawee → CLAWEE_VERSION; claweed → CLAWEE_CLAWEED_VERSION)
 #   PREFIX                  install root (default $HOME/.local; bins at PREFIX/bin)
-#   CLAWEE_UNINSTALL=1      claweev2 only — remove the installed bin
+#   CLAWEE_UNINSTALL=1      clawee only — remove the installed bin
 #   CLAWEE_RELEASE_REPO     GitHub repo serving releases (default clawee-git/release)
 #   CLAWEE_DL_BASE          (test hook) download assets from this base instead of GitHub
 #
@@ -79,7 +79,7 @@ trap 'rm -rf "$TMP"' EXIT INT TERM
 # Read the per-component pin env var by name (no eval). $COMP is a baked
 # literal, so a direct case over the known components is exhaustive.
 case "$COMP" in
-    claweev2) PIN="${CLAWEE_CLAWEEV2_VERSION:-}" ;;
+    clawee)   PIN="${CLAWEE_VERSION:-}" ;;
     claweed)  PIN="${CLAWEE_CLAWEED_VERSION:-}" ;;
     *)        fail "unknown component '$COMP' — cannot resolve its version pin" ;;
 esac
@@ -183,15 +183,15 @@ unzip -q -o "$TMP/$ZIP" -d "$TMP/x" || fail "zip extraction failed — corrupt d
 
 ok "verified — running inner installer"
 # Run with cwd = the unzipped dir: the inner installer resolves the binaries
-# relative to its own location (./claweev2, ./claweed, ./clawee-spawn).
+# relative to its own location (./clawee, ./claweed, ./clawee-spawn).
 #
 # The two components have DIFFERENT inner-installer contracts:
-#   claweev2 — simple bin-placer: reads PREFIX + CLAWEE_UNINSTALL.
+#   clawee   — simple bin-placer: reads PREFIX + CLAWEE_UNINSTALL.
 #   claweed  — canonical sudo-minimal daemon installer: reads CLAWEE_PREFIX
 #              (mapped from PREFIX here), runs interactively, escalates with sudo
 #              only for the setuid spawn helper, cross-installs burrowee-gateway.
 case "$COMP" in
-    claweev2)
+    clawee)
         ( cd "$TMP/x" && PREFIX="$PREFIX" CLAWEE_UNINSTALL="${CLAWEE_UNINSTALL:-}" sh ./install.sh )
         ;;
     claweed)
