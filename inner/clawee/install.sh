@@ -27,7 +27,8 @@ if [ -n "${CLAWEE_UNINSTALL:-}" ]; then
     exit 0
 fi
 
-# PLAN — what would change. Printed for any update mode; plan mode STOPS here.
+# PLAN — what would change. Printed for any update mode. dry STOPS here; apply
+# PROMPTS before installing; auto/force proceed unattended.
 if [ -n "$UPDATE_MODE" ]; then
     staged_ver="$(./clawee --version 2>/dev/null | awk '{print $NF}')"
     installed_ver="$("$BIN_DIR/clawee" --version 2>/dev/null | awk '{print $NF}')"
@@ -40,9 +41,19 @@ if [ -n "$UPDATE_MODE" ]; then
     printf '\n  update plan (%s):\n' "$staged_ver"
     printf '    clawee binary    %s\n' "$bin_line"
     printf '    restart          not required (cli)\n\n'
-    if [ "$UPDATE_MODE" = plan ]; then
-        echo "  → plan only — nothing changed. apply with --auto (or --force)."
+    if [ "$UPDATE_MODE" = dry ]; then
+        echo "  → plan only (--dry) — nothing changed. apply with --auto."
         exit 0
+    fi
+    if [ "$UPDATE_MODE" = apply ]; then
+        if [ -r /dev/tty ]; then
+            printf '  apply this update? [y/N] ' >/dev/tty
+            ans=''; IFS= read -r ans </dev/tty || ans=''
+            case "$ans" in y|Y|yes|YES) ;; *) echo "  → update skipped."; exit 0 ;; esac
+        else
+            echo "  → no tty for the prompt; re-run with --auto to install unattended." >&2
+            exit 0
+        fi
     fi
 fi
 
