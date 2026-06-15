@@ -13,10 +13,48 @@ set -eu
 BIN_DIR="${PREFIX:-$HOME/.local}/bin"
 BINS="clawee"
 
+# Update mode (set by `clawee update` via CLAWEE_UPDATE_MODE):
+#   plan  — print what would change (the clawee binary version), then STOP.
+#   auto  — install, unattended (the normal apply).
+#   force — reinstall even when the version already matches.
+# Empty = a fresh / direct install (apply). clawee is a client — no service to
+# restart, so the plan is just the binary.
+UPDATE_MODE="${CLAWEE_UPDATE_MODE:-}"
+
 if [ -n "${CLAWEE_UNINSTALL:-}" ]; then
     for b in $BINS; do rm -f "$BIN_DIR/$b"; done
     echo "removed from $BIN_DIR: $BINS"
     exit 0
+fi
+
+# PLAN — what would change. Printed for any update mode. dry STOPS here; apply
+# PROMPTS before installing; auto/force proceed unattended.
+if [ -n "$UPDATE_MODE" ]; then
+    staged_ver="$(./clawee --version 2>/dev/null | awk '{print $NF}')"
+    installed_ver="$("$BIN_DIR/clawee" --version 2>/dev/null | awk '{print $NF}')"
+    [ -n "$installed_ver" ] || installed_ver="(none)"
+    if [ "$UPDATE_MODE" = force ] || [ "$installed_ver" != "$staged_ver" ]; then
+        bin_line="$installed_ver -> $staged_ver   REPLACE"
+    else
+        bin_line="$staged_ver   unchanged"
+    fi
+    printf '\n  update plan (%s):\n' "$staged_ver"
+    printf '    clawee binary    %s\n' "$bin_line"
+    printf '    restart          not required (cli)\n\n'
+    if [ "$UPDATE_MODE" = dry ]; then
+        echo "  → plan only (--dry) — nothing changed. apply with --auto."
+        exit 0
+    fi
+    if [ "$UPDATE_MODE" = apply ]; then
+        if [ -r /dev/tty ]; then
+            printf '  apply this update? [y/N] ' >/dev/tty
+            ans=''; IFS= read -r ans </dev/tty || ans=''
+            case "$ans" in y|Y|yes|YES) ;; *) echo "  → update skipped."; exit 0 ;; esac
+        else
+            echo "  → no tty for the prompt; re-run with --auto to install unattended." >&2
+            exit 0
+        fi
+    fi
 fi
 
 # semver_lt A B — exit 0 iff version A is strictly older than B. Portable
