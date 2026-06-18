@@ -146,7 +146,10 @@ fi
 
 if [ "${DRY_RUN}" != 1 ]; then
     need age
-    need ghp
+    # ghp is intentionally NOT `need`-checked: the per-dir hook can strip it from
+    # PATH, and GHP is resolved with a ~/.claude/bin fallback above — so validate
+    # that RESOLVED path here instead of requiring ghp on PATH (a bare `need ghp`
+    # checks PATH and spuriously fails the cut even though GHP is usable).
     [ -x "${GHP}" ] || { echo "✗ ghp wrapper not found at ${GHP}" >&2; exit 1; }
     "${GHP}" repo view "${RELEASE_REPO}" --json name >/dev/null 2>&1 \
         || { echo "✗ ghp cannot access ${RELEASE_REPO} — check gh.account + auth" >&2; exit 1; }
