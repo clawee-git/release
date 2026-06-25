@@ -20,6 +20,9 @@
 #   CLAWEE_UNINSTALL=1      clawee only — remove the installed bin
 #   CLAWEE_RELEASE_REPO     GitHub repo serving releases (default clawee-git/release)
 #   CLAWEE_DL_BASE          (test hook) download assets from this base instead of GitHub
+#   CLAWEE_GH_PROXY         GitHub HTTP mirror, tried ONLY when github.com / api.github.com
+#                           are unreachable (default https://gh-proxy.com; set empty to
+#                           disable). Downloads stay minisign + sha256 verified.
 #
 # claweed note: the claweed inner installer is the canonical sudo-minimal daemon
 # installer. It reads CLAWEE_PREFIX (set here from PREFIX), CLAWEE_DATA_DIR, and
@@ -35,6 +38,14 @@ PUBKEY="@PUBKEY@"
 REPO="${CLAWEE_RELEASE_REPO:-clawee-git/release}"
 PREFIX="${PREFIX:-$HOME/.local}"
 DL_BASE="${CLAWEE_DL_BASE:-}"           # test hook (undocumented to users)
+# GitHub HTTP mirror, tried ONLY as a fallback when github.com / api.github.com
+# are unreachable (e.g. networks that block or throttle GitHub). Assets are
+# fetched as <GH_PROXY>/<original-https-github-url>; the downloaded bytes are
+# still minisign- + sha256-verified below, so an untrusted mirror cannot inject
+# tampered bytes undetected. ${VAR-default} (not :-) lets `CLAWEE_GH_PROXY=`
+# explicitly disable the mirror while an unset value gets the default. Never
+# used when the DL_BASE test hook is set.
+GH_PROXY="${CLAWEE_GH_PROXY-https://gh-proxy.com}"
 
 # Production downloads are pinned to HTTPS/TLS1.2 (--proto =https). The
 # CLAWEE_DL_BASE test hook points at a local plain-HTTP server, so when it is
@@ -50,6 +61,22 @@ fi
 fail() { printf '\n  ✗ %s\n\n' "$*" >&2; exit 1; }
 info() { printf '  → %s\n' "$*"; }
 ok()   { printf '  ✓ %s\n' "$*"; }
+
+# Extract the highest "<comp>/v<semver>" tag from a GitHub /releases JSON body
+# read on stdin. The /releases order is by tag-commit date, NOT publish order,
+# so it is unreliable for "latest" — pick the highest tag via version sort.
+# Match only the real "tag_name" FIELD (line-anchored) so release-notes/body
+# text that merely contains the literal `"tag_name"` can't spoof the tag.
+# Prefer jq (structural); fall back to grep/sed. Used for both the direct
+# api.github.com fetch and the GH_PROXY mirror retry.
+latest_tag() {
+    if command -v jq >/dev/null 2>&1; then
+        jq -r '.[].tag_name // empty' 2>/dev/null
+    else
+        grep -E '^[[:space:]]*"tag_name"[[:space:]]*:' \
+            | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/'
+    fi | grep -E "^${COMP}/v" | sort -V | tail -n1
+}
 
 # ---- platform detection -------------------------------------------------
 case "$(uname -s)" in
@@ -89,28 +116,19 @@ if [ -n "$PIN" ]; then
 else
     info "resolving latest ${COMP} release"
     api="https://api.github.com/repos/${REPO}/releases?per_page=100"
-    # The GitHub /releases order is by tag-commit date, NOT publish order, so it is
-    # unreliable for "latest" — pick the highest "<comp>/v<semver>" via version sort.
-    # Extract only the real "tag_name" FIELD — anchored to the start of its line —
-    # so release-notes/body text that merely contains the literal `"tag_name"`
-    # can't spoof the tag. Prefer jq (structural) and fall back to grep/sed.
     # shellcheck disable=SC2086  # $CURL is an intentional space-split command string (flags + binary); POSIX sh has no arrays.
     body="$($CURL "$api" 2>/dev/null)" || true
-    if command -v jq >/dev/null 2>&1; then
-        TAG="$(printf '%s' "$body" \
-            | jq -r '.[].tag_name // empty' \
-            | grep -E "^${COMP}/v" \
-            | sort -V \
-            | tail -n1)" || true
-    else
-        TAG="$(printf '%s' "$body" \
-            | grep -E '^[[:space:]]*"tag_name"[[:space:]]*:' \
-            | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' \
-            | grep -E "^${COMP}/v" \
-            | sort -V \
-            | tail -n1)" || true
+    TAG="$(printf '%s' "$body" | latest_tag)" || true
+    # GitHub API unreachable/empty — retry through the mirror (no auth needed).
+    # Skipped under the DL_BASE test hook and when the mirror is disabled (empty).
+    if [ -z "$TAG" ] && [ -z "$DL_BASE" ] && [ -n "$GH_PROXY" ]; then
+        info "GitHub API unreachable — retrying via mirror $GH_PROXY"
+        # shellcheck disable=SC2086  # intentional word-split of $CURL flags
+        body="$($CURL "$GH_PROXY/$api" 2>/dev/null)" || true
+        TAG="$(printf '%s' "$body" | latest_tag)" || true
+        [ -n "$TAG" ] && info "mirror resolved: $TAG"
     fi
-    [ -n "$TAG" ] || fail "no published release found for ${COMP} on ${REPO}"
+    [ -n "$TAG" ] || fail "no published release found for ${COMP} on ${REPO} (GitHub and the mirror $GH_PROXY were both unreachable)"
     info "latest: $TAG"
 fi
 
@@ -124,9 +142,25 @@ ZIP="clawee-${COMP}-${OS}-${ARCH}.zip"
 
 dl() {
     # dl <remote-name> <local-name>  (local goes under $TMP)
+    #
+    # Primary: $BASE (GitHub release or $CLAWEE_DL_BASE test hook). Mirror fallback:
+    # if the primary fails, retry the SAME GitHub URL through the GH_PROXY HTTP
+    # mirror (no auth, helps GitHub-blocked networks). minisign + sha256
+    # verification below is unchanged regardless of source, so an untrusted mirror
+    # cannot inject tampered bytes undetected.
     # shellcheck disable=SC2086  # $CURL is an intentional space-split command string (flags + binary); POSIX sh has no arrays.
-    $CURL -o "$TMP/$2" "$BASE/$1" \
-        || fail "download failed: $1 (from $BASE) — refusing to install unverified bytes"
+    if $CURL -o "$TMP/$2" "$BASE/$1" 2>/dev/null; then
+        return 0
+    fi
+    if [ -z "$DL_BASE" ] && [ -n "$GH_PROXY" ]; then
+        info "primary download failed for $1; retrying via mirror $GH_PROXY"
+        # shellcheck disable=SC2086  # intentional word-split of $CURL flags
+        if $CURL -o "$TMP/$2" "$GH_PROXY/$BASE/$1" 2>/dev/null; then
+            ok "downloaded $1 via mirror"
+            return 0
+        fi
+    fi
+    fail "download failed: $1 (from $BASE, mirror $GH_PROXY) — refusing to install unverified bytes"
 }
 info "downloading $ZIP"
 dl "$ZIP" "$ZIP"
