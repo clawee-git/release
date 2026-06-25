@@ -22,7 +22,7 @@
 #   CLAWEE_DL_BASE          (test hook) download assets from this base instead of GitHub
 #   CLAWEE_GH_PROXY         Space-separated list of GitHub HTTP mirrors, tried in order
 #                           ONLY when github.com / api.github.com are unreachable
-#                           (default: gh-proxy.com gh-proxy.org cdn.gh-proxy.org
+#                           (default: cdn.gh-proxy.org gh-proxy.org gh-proxy.com
 #                           v6.gh-proxy.org; set empty to disable). minisign + sha256
 #                           verified, so an untrusted mirror cannot tamper undetected.
 #
@@ -47,16 +47,21 @@ DL_BASE="${CLAWEE_DL_BASE:-}"           # test hook (undocumented to users)
 # mirror cannot inject tampered bytes undetected. Space-separated list.
 # ${VAR-default} (not :-) lets `CLAWEE_GH_PROXY=` explicitly disable the mirrors
 # while an unset value gets the default. Never used when DL_BASE is set.
-GH_PROXIES="${CLAWEE_GH_PROXY-https://gh-proxy.com https://gh-proxy.org https://cdn.gh-proxy.org https://v6.gh-proxy.org}"
+GH_PROXIES="${CLAWEE_GH_PROXY-https://cdn.gh-proxy.org https://gh-proxy.org https://gh-proxy.com https://v6.gh-proxy.org}"
 
 # Production downloads are pinned to HTTPS/TLS1.2 (--proto =https). The
 # CLAWEE_DL_BASE test hook points at a local plain-HTTP server, so when it is
 # set we drop the TLS-only flags (they'd reject http://); the version-pin guard
 # below keeps even that path scheme-locked to the test base.
+#
+# --speed-limit/--speed-time abort a STALLED transfer (< ~4 KB/s for 20s) instead
+# of hanging until --max-time. This matters for the gh-proxy mirror loop: a mirror
+# that streams a few MB then stalls is abandoned in ~20s so the NEXT mirror is
+# tried, rather than the install appearing stuck for the full 5-minute max-time.
 if [ -n "$DL_BASE" ]; then
-    CURL="curl -fsSL --connect-timeout 15 --max-time 300"
+    CURL="curl -fsSL --connect-timeout 15 --max-time 300 --speed-limit 4096 --speed-time 20"
 else
-    CURL="curl -fsSL --proto =https --tlsv1.2 --connect-timeout 15 --max-time 300"
+    CURL="curl -fsSL --proto =https --tlsv1.2 --connect-timeout 15 --max-time 300 --speed-limit 4096 --speed-time 20"
 fi
 
 # ---- helpers ------------------------------------------------------------
