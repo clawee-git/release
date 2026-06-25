@@ -22,8 +22,8 @@
 #   CLAWEE_DL_BASE          (test hook) download assets from this base instead of GitHub
 #   CLAWEE_GH_PROXY         Space-separated list of GitHub HTTP mirrors, tried in order
 #                           ONLY when github.com / api.github.com are unreachable
-#                           (default: cdn.gh-proxy.org gh-proxy.org gh-proxy.com
-#                           v6.gh-proxy.org; set empty to disable). minisign + sha256
+#                           (default: gh-proxy.org cdn.gh-proxy.org v6.gh-proxy.org
+#                           gh-proxy.com; set empty to disable). minisign + sha256
 #                           verified, so an untrusted mirror cannot tamper undetected.
 #
 # claweed note: the claweed inner installer is the canonical sudo-minimal daemon
@@ -47,7 +47,7 @@ DL_BASE="${CLAWEE_DL_BASE:-}"           # test hook (undocumented to users)
 # mirror cannot inject tampered bytes undetected. Space-separated list.
 # ${VAR-default} (not :-) lets `CLAWEE_GH_PROXY=` explicitly disable the mirrors
 # while an unset value gets the default. Never used when DL_BASE is set.
-GH_PROXIES="${CLAWEE_GH_PROXY-https://cdn.gh-proxy.org https://gh-proxy.org https://gh-proxy.com https://v6.gh-proxy.org}"
+GH_PROXIES="${CLAWEE_GH_PROXY-https://gh-proxy.org https://cdn.gh-proxy.org https://v6.gh-proxy.org https://gh-proxy.com}"
 
 # Production downloads are pinned to HTTPS/TLS1.2 (--proto =https). The
 # CLAWEE_DL_BASE test hook points at a local plain-HTTP server, so when it is
@@ -164,13 +164,15 @@ dl() {
     # each GH_PROXIES HTTP mirror in turn (no auth, helps GitHub-blocked networks).
     # minisign + sha256 verification below is unchanged regardless of source, so an
     # untrusted mirror cannot inject tampered bytes undetected.
+    info "GET $BASE/$1"
     # shellcheck disable=SC2086  # $CURL is an intentional space-split command string (flags + binary); POSIX sh has no arrays.
     if $CURL -o "$TMP/$2" "$BASE/$1" 2>/dev/null; then
         return 0
     fi
+    # Each full mirror URL is printed so a stalled download is diagnosable from output.
     if [ -z "$DL_BASE" ] && [ -n "$GH_PROXIES" ]; then
         for _proxy in $GH_PROXIES; do
-            info "primary download failed for $1; retrying via mirror $_proxy"
+            info "primary failed; trying mirror: $_proxy/$MIRROR_BASE/$1"
             # shellcheck disable=SC2086  # intentional word-split of $CURL flags
             if $CURL -o "$TMP/$2" "$_proxy/$MIRROR_BASE/$1" 2>/dev/null; then
                 ok "downloaded $1 via mirror $_proxy"
