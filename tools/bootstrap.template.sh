@@ -20,9 +20,11 @@
 #   CLAWEE_UNINSTALL=1      clawee only — remove the installed bin
 #   CLAWEE_RELEASE_REPO     GitHub repo serving releases (default clawee-git/release)
 #   CLAWEE_DL_BASE          (test hook) download assets from this base instead of GitHub
-#   CLAWEE_GH_PROXY         GitHub HTTP mirror, tried ONLY when github.com / api.github.com
-#                           are unreachable (default https://gh-proxy.com; set empty to
-#                           disable). Downloads stay minisign + sha256 verified.
+#   CLAWEE_GH_PROXY         Space-separated list of GitHub HTTP mirrors, tried in order
+#                           ONLY when github.com / api.github.com are unreachable
+#                           (default: gh-proxy.com gh-proxy.org cdn.gh-proxy.org
+#                           v6.gh-proxy.org; set empty to disable). minisign + sha256
+#                           verified, so an untrusted mirror cannot tamper undetected.
 #
 # claweed note: the claweed inner installer is the canonical sudo-minimal daemon
 # installer. It reads CLAWEE_PREFIX (set here from PREFIX), CLAWEE_DATA_DIR, and
@@ -38,14 +40,14 @@ PUBKEY="@PUBKEY@"
 REPO="${CLAWEE_RELEASE_REPO:-clawee-git/release}"
 PREFIX="${PREFIX:-$HOME/.local}"
 DL_BASE="${CLAWEE_DL_BASE:-}"           # test hook (undocumented to users)
-# GitHub HTTP mirror, tried ONLY as a fallback when github.com / api.github.com
-# are unreachable (e.g. networks that block or throttle GitHub). Assets are
-# fetched as <GH_PROXY>/<original-https-github-url>; the downloaded bytes are
-# still minisign- + sha256-verified below, so an untrusted mirror cannot inject
-# tampered bytes undetected. ${VAR-default} (not :-) lets `CLAWEE_GH_PROXY=`
-# explicitly disable the mirror while an unset value gets the default. Never
-# used when the DL_BASE test hook is set.
-GH_PROXY="${CLAWEE_GH_PROXY-https://gh-proxy.com}"
+# GitHub HTTP mirrors, tried in order ONLY as a fallback when github.com /
+# api.github.com are unreachable (e.g. networks that block or throttle GitHub).
+# Each is tried as <mirror>/<original-https-github-url> until one succeeds; the
+# downloaded bytes are still minisign- + sha256-verified below, so an untrusted
+# mirror cannot inject tampered bytes undetected. Space-separated list.
+# ${VAR-default} (not :-) lets `CLAWEE_GH_PROXY=` explicitly disable the mirrors
+# while an unset value gets the default. Never used when DL_BASE is set.
+GH_PROXIES="${CLAWEE_GH_PROXY-https://gh-proxy.com https://gh-proxy.org https://cdn.gh-proxy.org https://v6.gh-proxy.org}"
 
 # Production downloads are pinned to HTTPS/TLS1.2 (--proto =https). The
 # CLAWEE_DL_BASE test hook points at a local plain-HTTP server, so when it is
@@ -119,16 +121,18 @@ else
     # shellcheck disable=SC2086  # $CURL is an intentional space-split command string (flags + binary); POSIX sh has no arrays.
     body="$($CURL "$api" 2>/dev/null)" || true
     TAG="$(printf '%s' "$body" | latest_tag)" || true
-    # GitHub API unreachable/empty — retry through the mirror (no auth needed).
-    # Skipped under the DL_BASE test hook and when the mirror is disabled (empty).
-    if [ -z "$TAG" ] && [ -z "$DL_BASE" ] && [ -n "$GH_PROXY" ]; then
-        info "GitHub API unreachable — retrying via mirror $GH_PROXY"
-        # shellcheck disable=SC2086  # intentional word-split of $CURL flags
-        body="$($CURL "$GH_PROXY/$api" 2>/dev/null)" || true
-        TAG="$(printf '%s' "$body" | latest_tag)" || true
-        [ -n "$TAG" ] && info "mirror resolved: $TAG"
+    # GitHub API unreachable/empty — retry through each mirror in turn (no auth).
+    # Skipped under the DL_BASE test hook and when mirrors are disabled (empty).
+    if [ -z "$TAG" ] && [ -z "$DL_BASE" ] && [ -n "$GH_PROXIES" ]; then
+        for _proxy in $GH_PROXIES; do
+            info "GitHub API unreachable — retrying via mirror $_proxy"
+            # shellcheck disable=SC2086  # intentional word-split of $CURL flags
+            body="$($CURL "$_proxy/$api" 2>/dev/null)" || true
+            TAG="$(printf '%s' "$body" | latest_tag)" || true
+            if [ -n "$TAG" ]; then info "mirror resolved: $TAG"; break; fi
+        done
     fi
-    [ -n "$TAG" ] || fail "no published release found for ${COMP} on ${REPO} (GitHub and the mirror $GH_PROXY were both unreachable)"
+    [ -n "$TAG" ] || fail "no published release found for ${COMP} on ${REPO} (GitHub and all mirrors [$GH_PROXIES] were unreachable)"
     info "latest: $TAG"
 fi
 
@@ -144,23 +148,25 @@ dl() {
     # dl <remote-name> <local-name>  (local goes under $TMP)
     #
     # Primary: $BASE (GitHub release or $CLAWEE_DL_BASE test hook). Mirror fallback:
-    # if the primary fails, retry the SAME GitHub URL through the GH_PROXY HTTP
-    # mirror (no auth, helps GitHub-blocked networks). minisign + sha256
+    # if the primary fails, retry the SAME GitHub URL through each GH_PROXIES HTTP
+    # mirror in turn (no auth, helps GitHub-blocked networks). minisign + sha256
     # verification below is unchanged regardless of source, so an untrusted mirror
     # cannot inject tampered bytes undetected.
     # shellcheck disable=SC2086  # $CURL is an intentional space-split command string (flags + binary); POSIX sh has no arrays.
     if $CURL -o "$TMP/$2" "$BASE/$1" 2>/dev/null; then
         return 0
     fi
-    if [ -z "$DL_BASE" ] && [ -n "$GH_PROXY" ]; then
-        info "primary download failed for $1; retrying via mirror $GH_PROXY"
-        # shellcheck disable=SC2086  # intentional word-split of $CURL flags
-        if $CURL -o "$TMP/$2" "$GH_PROXY/$BASE/$1" 2>/dev/null; then
-            ok "downloaded $1 via mirror"
-            return 0
-        fi
+    if [ -z "$DL_BASE" ] && [ -n "$GH_PROXIES" ]; then
+        for _proxy in $GH_PROXIES; do
+            info "primary download failed for $1; retrying via mirror $_proxy"
+            # shellcheck disable=SC2086  # intentional word-split of $CURL flags
+            if $CURL -o "$TMP/$2" "$_proxy/$BASE/$1" 2>/dev/null; then
+                ok "downloaded $1 via mirror $_proxy"
+                return 0
+            fi
+        done
     fi
-    fail "download failed: $1 (from $BASE, mirror $GH_PROXY) — refusing to install unverified bytes"
+    fail "download failed: $1 (from $BASE; mirrors: $GH_PROXIES) — refusing to install unverified bytes"
 }
 info "downloading $ZIP"
 dl "$ZIP" "$ZIP"
