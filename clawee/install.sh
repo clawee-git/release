@@ -143,15 +143,22 @@ else
     BASE="https://github.com/${REPO}/releases/download/${TAG}"
 fi
 ZIP="clawee-${COMP}-${OS}-${ARCH}.zip"
+# gh-proxy mirrors route a release download by treating the release TAG as a
+# SINGLE path segment. Our tags contain a slash (<comp>/v…), so a LITERAL slash
+# splits the tag across two path segments and some mirror edges then fail to
+# serve the asset (or return wrong bytes that later fail verification). Build a
+# mirror-only base with the tag's slash percent-encoded (%2F) so the tag stays
+# one segment. Direct GitHub ($BASE) keeps the literal slash (it 404s on %2F).
+MIRROR_BASE="https://github.com/${REPO}/releases/download/$(printf '%s' "${TAG}" | sed 's#/#%2F#g')"
 
 dl() {
     # dl <remote-name> <local-name>  (local goes under $TMP)
     #
     # Primary: $BASE (GitHub release or $CLAWEE_DL_BASE test hook). Mirror fallback:
-    # if the primary fails, retry the SAME GitHub URL through each GH_PROXIES HTTP
-    # mirror in turn (no auth, helps GitHub-blocked networks). minisign + sha256
-    # verification below is unchanged regardless of source, so an untrusted mirror
-    # cannot inject tampered bytes undetected.
+    # if the primary fails, retry the %2F-encoded GitHub URL ($MIRROR_BASE) through
+    # each GH_PROXIES HTTP mirror in turn (no auth, helps GitHub-blocked networks).
+    # minisign + sha256 verification below is unchanged regardless of source, so an
+    # untrusted mirror cannot inject tampered bytes undetected.
     # shellcheck disable=SC2086  # $CURL is an intentional space-split command string (flags + binary); POSIX sh has no arrays.
     if $CURL -o "$TMP/$2" "$BASE/$1" 2>/dev/null; then
         return 0
@@ -160,7 +167,7 @@ dl() {
         for _proxy in $GH_PROXIES; do
             info "primary download failed for $1; retrying via mirror $_proxy"
             # shellcheck disable=SC2086  # intentional word-split of $CURL flags
-            if $CURL -o "$TMP/$2" "$_proxy/$BASE/$1" 2>/dev/null; then
+            if $CURL -o "$TMP/$2" "$_proxy/$MIRROR_BASE/$1" 2>/dev/null; then
                 ok "downloaded $1 via mirror $_proxy"
                 return 0
             fi
