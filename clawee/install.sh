@@ -25,6 +25,11 @@
 #                           (default: gh-proxy.org cdn.gh-proxy.org v6.gh-proxy.org
 #                           gh-proxy.com; set empty to disable). minisign + sha256
 #                           verified, so an untrusted mirror cannot tamper undetected.
+#   CLAWEE_DOWNLOADS_BASE   Public R2 mirror base, the LAST-resort fallback after
+#                           GitHub + the gh-proxy mirrors (default
+#                           https://downloads.clawee.org; set empty to disable).
+#                           Serves <comp>/<stamp>/<file> + <comp>/latest.json;
+#                           still minisign + sha256 verified, so it is untrusted.
 #
 # claweed note: the claweed inner installer is the canonical sudo-minimal daemon
 # installer. It reads CLAWEE_PREFIX (set here from PREFIX), CLAWEE_DATA_DIR, and
@@ -48,6 +53,14 @@ DL_BASE="${CLAWEE_DL_BASE:-}"           # test hook (undocumented to users)
 # ${VAR-default} (not :-) lets `CLAWEE_GH_PROXY=` explicitly disable the mirrors
 # while an unset value gets the default. Never used when DL_BASE is set.
 GH_PROXIES="${CLAWEE_GH_PROXY-https://gh-proxy.org https://cdn.gh-proxy.org https://v6.gh-proxy.org https://gh-proxy.com}"
+# Public R2 mirror (downloads.clawee.org) — the install-time fallback tried ONLY
+# after GitHub AND every gh-proxy mirror is unreachable. A plain public bucket:
+# <comp>/<stamp>/<file> mirrors the GitHub release assets 1:1, and
+# <comp>/latest.json carries the newest stamp for version resolution. Bytes are
+# still minisign + sha256 verified below, so this untrusted mirror cannot inject
+# tampered bytes undetected. ${VAR-default} (not :-) lets `CLAWEE_DOWNLOADS_BASE=`
+# explicitly disable it. Never used when DL_BASE (the test hook) is set.
+DOWNLOADS_BASE="${CLAWEE_DOWNLOADS_BASE-https://downloads.clawee.org}"
 
 # Production downloads are pinned to HTTPS/TLS1.2 (--proto =https). The
 # CLAWEE_DL_BASE test hook points at a local plain-HTTP server, so when it is
@@ -83,6 +96,20 @@ latest_tag() {
         grep -E '^[[:space:]]*"tag_name"[[:space:]]*:' \
             | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/'
     fi | grep -E "^${COMP}/v" | sort -V | tail -n1
+}
+
+# Extract the "stamp" field from a downloads.clawee.org <comp>/latest.json body
+# read on stdin. Prefer jq (structural — reads only the top-level "stamp"); fall
+# back to a line-anchored grep/sed so a "stamp":"…" buried in other text can't
+# spoof it. The caller re-checks the value looks like a v… stamp.
+latest_stamp() {
+    if command -v jq >/dev/null 2>&1; then
+        jq -r '.stamp // empty' 2>/dev/null
+    else
+        grep -E '^[[:space:]]*"stamp"[[:space:]]*:' \
+            | sed -E 's/.*"stamp"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' \
+            | head -n1
+    fi
 }
 
 # ---- platform detection -------------------------------------------------
@@ -137,7 +164,19 @@ else
             if [ -n "$TAG" ]; then info "mirror resolved: $TAG"; break; fi
         done
     fi
-    [ -n "$TAG" ] || fail "no published release found for ${COMP} on ${REPO} (GitHub and all mirrors [$GH_PROXIES] were unreachable)"
+    # Still unresolved — fall back to the public R2 mirror's latest.json (no auth).
+    # Skipped under the DL_BASE test hook and when the mirror is disabled (empty).
+    if [ -z "$TAG" ] && [ -z "$DL_BASE" ] && [ -n "$DOWNLOADS_BASE" ]; then
+        info "GitHub + mirrors unreachable — trying $DOWNLOADS_BASE/$COMP/latest.json"
+        # shellcheck disable=SC2086  # intentional word-split of $CURL flags
+        lj="$($CURL "$DOWNLOADS_BASE/$COMP/latest.json" 2>/dev/null)" || true
+        st="$(printf '%s' "$lj" | latest_stamp)" || true
+        # Require a real v… stamp before trusting it (bytes are still verified below).
+        case "$st" in
+            v*) TAG="$COMP/$st"; info "downloads mirror: $TAG" ;;
+        esac
+    fi
+    [ -n "$TAG" ] || fail "no published release found for ${COMP} on ${REPO} (GitHub, the gh-proxy mirrors [$GH_PROXIES], and ${DOWNLOADS_BASE:-the R2 mirror} were all unreachable)"
     info "latest: $TAG"
 fi
 
@@ -155,6 +194,10 @@ ZIP="clawee-${COMP}-${OS}-${ARCH}.zip"
 # mirror-only base with the tag's slash percent-encoded (%2F) so the tag stays
 # one segment. Direct GitHub ($BASE) keeps the literal slash (it 404s on %2F).
 MIRROR_BASE="https://github.com/${REPO}/releases/download/$(printf '%s' "${TAG}" | sed 's#/#%2F#g')"
+# Public R2 mirror per-stamp base: downloads.clawee.org/<comp>/<stamp>. The tag
+# is <comp>/<stamp>; strip the comp/ prefix to recover the stamp path segment.
+STAMP="${TAG#"$COMP/"}"
+DOWNLOADS_FILE_BASE="$DOWNLOADS_BASE/$COMP/$STAMP"
 
 dl() {
     # dl <remote-name> <local-name>  (local goes under $TMP)
@@ -180,7 +223,18 @@ dl() {
             fi
         done
     fi
-    fail "download failed: $1 (from $BASE; mirrors: $GH_PROXIES) — refusing to install unverified bytes"
+    # Last resort: the public R2 mirror (downloads.clawee.org/<comp>/<stamp>/).
+    # Untrusted — the minisign + sha256 verification below is unchanged, so it
+    # cannot inject tampered bytes. Skipped under the DL_BASE test hook / disabled.
+    if [ -z "$DL_BASE" ] && [ -n "$DOWNLOADS_BASE" ]; then
+        info "mirrors failed; trying downloads mirror: $DOWNLOADS_FILE_BASE/$1"
+        # shellcheck disable=SC2086  # intentional word-split of $CURL flags
+        if $CURL -o "$TMP/$2" "$DOWNLOADS_FILE_BASE/$1" 2>/dev/null; then
+            ok "downloaded $1 via downloads.clawee.org"
+            return 0
+        fi
+    fi
+    fail "download failed: $1 (from $BASE; mirrors: $GH_PROXIES; downloads: ${DOWNLOADS_BASE:-disabled}) — refusing to install unverified bytes"
 }
 info "downloading $ZIP"
 dl "$ZIP" "$ZIP"

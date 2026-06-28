@@ -43,6 +43,13 @@
 #   CLAWEE_SRC_CLAWEED     claweed component source worktree (default: daemon main worktree)
 #   CLAWEE_RELEASE_REPO    GitHub repo for releases (default clawee-git/release)
 #   CLAWEE_RELEASE_YES     skip the interactive minor/major bump confirm
+#   CLAWEE_R2_BUCKET       override the R2 mirror bucket (default: r2_bucket from
+#                          DP_DIR/config.toml, else clawee-downloads)
+#   CLAWEE_R2_CREDS        path to the shared R2 S3 creds TOML
+#                          (default ~/.burrowee/release/r2.key — shared with burrowee)
+#   CLAWEE_SKIP_R2=1 / --no-r2  skip the downloads.clawee.org R2 mirror entirely
+#                          (the R2 mirror is also auto-skipped when unconfigured —
+#                          GitHub Releases stay the primary, authoritative channel)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -58,6 +65,7 @@ WHAT=""
 DRY_RUN=0
 BUMP_KIND="patch"
 APPLE_SIGN=""
+SKIP_R2="${CLAWEE_SKIP_R2:-}"
 for arg in "$@"; do
     case "${arg}" in
         clawee|claweed|all)   WHAT="${arg}" ;;
@@ -65,11 +73,12 @@ for arg in "$@"; do
         --dry-run)            DRY_RUN=1 ;;
         --bump-minor)         BUMP_KIND="minor" ;;
         --bump-major)         BUMP_KIND="major" ;;
-        -h|--help)            sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --no-r2)              SKIP_R2=1 ;;
+        -h|--help)            sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "✗ unknown argument: ${arg}" >&2; exit 2 ;;
     esac
 done
-[ -n "${WHAT}" ] || { echo "✗ usage: release.sh <clawee|claweed|all> [--apple] [--dry-run] [--bump-minor|--bump-major]" >&2; exit 2; }
+[ -n "${WHAT}" ] || { echo "✗ usage: release.sh <clawee|claweed|all> [--apple] [--dry-run] [--no-r2] [--bump-minor|--bump-major]" >&2; exit 2; }
 export APPLE_SIGN
 
 # ---- config / defaults ------------------------------------------------------
@@ -79,6 +88,21 @@ RELEASE_REPO="${CLAWEE_RELEASE_REPO:-clawee-git/release}"
 DP_DIR="${DP_DIR:-${REPO_ROOT}/../../../release.dp/code/release.dp}"
 AGE_KEY_AGE="${DP_DIR}/clawee-release.key.age"
 AGE_IDENTITY="${AGE_IDENTITY:-${HOME}/.age/clawee-release.txt}"
+
+# ---- R2 mirror config (public downloads.clawee.org) -------------------------
+# R2 is a MIRROR of the GitHub release — GitHub is the primary channel. The
+# account id + bucket are non-secret identifiers kept in the release.dp
+# config.toml (same DP_DIR as the signing key); the S3 creds are SHARED with
+# burrowee and live OUTSIDE any repo at ~/.burrowee/release/r2.key (referenced,
+# never copied here). Any missing piece → the mirror is SKIPPED, never fatal.
+R2_CONFIG="${DP_DIR}/config.toml"
+R2_CREDS="${CLAWEE_R2_CREDS:-${HOME}/.burrowee/release/r2.key}"
+
+# toml_get <file> <key> — first `key = "value"` / `key = value`, quotes stripped.
+toml_get() {
+    [ -f "$1" ] || return 1
+    sed -n -E "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*\"?([^\"]*)\"?[[:space:]]*\$/\1/p" "$1" | head -n1
+}
 
 # component source worktrees (default: each component's MAIN worktree).
 # clawee builds from the cli repo (cmd/clawee); claweed from the daemon repo.
@@ -246,6 +270,46 @@ render_inner() {
     chmod 0755 "${dest}"
 }
 
+# ---- R2 mirror --------------------------------------------------------------
+# mirror_to_r2 <comp> <stamp> <semver> <stage_dir>
+#
+# Publishes a just-released component's staged artifacts to the PUBLIC R2 bucket
+# behind downloads.clawee.org (the install-time fallback). GRACEFUL: any missing
+# config (no account id / no creds file) → warn + skip; an upload failure → warn
+# loudly but still return 0. The GitHub release is already published by the time
+# this runs, so a broken mirror must NEVER abort the release. clawee's R2 is a
+# plain public bucket — no console, no presigning. Never called under --dry-run.
+mirror_to_r2() {
+    local comp="$1" stamp="$2" semver="$3" stage="$4"
+    if [ -n "${SKIP_R2}" ]; then
+        echo "→ R2 mirror skipped (--no-r2 / CLAWEE_SKIP_R2)"
+        return 0
+    fi
+    local account bucket
+    account="$(toml_get "${R2_CONFIG}" r2_account_id || true)"
+    bucket="${CLAWEE_R2_BUCKET:-$(toml_get "${R2_CONFIG}" r2_bucket || true)}"
+    [ -n "${bucket}" ] || bucket="clawee-downloads"
+    if [ -z "${account}" ]; then
+        echo "⚠ R2 mirror skipped: no r2_account_id in ${R2_CONFIG} (R2 is only a mirror; GitHub is primary)" >&2
+        return 0
+    fi
+    if [ ! -f "${R2_CREDS}" ]; then
+        echo "⚠ R2 mirror skipped: creds not found at ${R2_CREDS} (set CLAWEE_R2_CREDS; GitHub release is published)" >&2
+        return 0
+    fi
+    echo "→ mirroring ${comp} ${stamp} → R2 bucket ${bucket} (downloads.clawee.org)"
+    if ( cd "${REPO_ROOT}/tools/r2-mirror" && "${GO_BIN}" run . \
+            --account "${account}" --bucket "${bucket}" \
+            --stage-dir "${stage}" --comp "${comp}" \
+            --version "${semver}" --stamp "${stamp}" \
+            --creds "${R2_CREDS}" ); then
+        echo "✓ mirrored ${comp} to R2 (downloads.clawee.org/${comp}/latest.json)"
+    else
+        echo "⚠ R2 mirror FAILED for ${comp} ${stamp} — GitHub release is published; re-run the mirror by hand (tools/r2-mirror)" >&2
+    fi
+    return 0
+}
+
 # ---- per-component release --------------------------------------------------
 do_release() {
     local comp="$1"
@@ -388,6 +452,10 @@ NOTES
 
     # Past the tag/release — clear the version-revert trap.
     trap shred_key ERR
+
+    # (5b) mirror the published artifacts to the public R2 bucket
+    # (downloads.clawee.org) as the install-time fallback. Non-fatal by design.
+    mirror_to_r2 "${comp}" "${stamp}" "${new_semver}" "${stage}"
 
     # (6) regenerate bootstraps + scp the static surface.
     bash "${REPO_ROOT}/tools/gen-bootstraps.sh" >&2
