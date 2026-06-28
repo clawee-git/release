@@ -43,10 +43,13 @@
 #   CLAWEE_SRC_CLAWEED     claweed component source worktree (default: daemon main worktree)
 #   CLAWEE_RELEASE_REPO    GitHub repo for releases (default clawee-git/release)
 #   CLAWEE_RELEASE_YES     skip the interactive minor/major bump confirm
+#   CLAWEE_R2_CONFIG       path to the R2 config TOML (r2_account_id/r2_bucket)
+#                          (default ~/.clawee/release/config.toml)
 #   CLAWEE_R2_BUCKET       override the R2 mirror bucket (default: r2_bucket from
-#                          DP_DIR/config.toml, else clawee-downloads)
-#   CLAWEE_R2_CREDS        path to the shared R2 S3 creds TOML
-#                          (default ~/.burrowee/release/r2.key — shared with burrowee)
+#                          the R2 config, else clawee-downloads)
+#   CLAWEE_R2_CREDS        path to the R2 S3 creds TOML
+#                          (default ~/.clawee/release/r2.key — clawee's own copy of
+#                          the token whose content is shared with burrowee)
 #   CLAWEE_SKIP_R2=1 / --no-r2  skip the downloads.clawee.org R2 mirror entirely
 #                          (the R2 mirror is also auto-skipped when unconfigured —
 #                          GitHub Releases stay the primary, authoritative channel)
@@ -90,13 +93,14 @@ AGE_KEY_AGE="${DP_DIR}/clawee-release.key.age"
 AGE_IDENTITY="${AGE_IDENTITY:-${HOME}/.age/clawee-release.txt}"
 
 # ---- R2 mirror config (public downloads.clawee.org) -------------------------
-# R2 is a MIRROR of the GitHub release — GitHub is the primary channel. The
-# account id + bucket are non-secret identifiers kept in the release.dp
-# config.toml (same DP_DIR as the signing key); the S3 creds are SHARED with
-# burrowee and live OUTSIDE any repo at ~/.burrowee/release/r2.key (referenced,
-# never copied here). Any missing piece → the mirror is SKIPPED, never fatal.
-R2_CONFIG="${DP_DIR}/config.toml"
-R2_CREDS="${CLAWEE_R2_CREDS:-${HOME}/.burrowee/release/r2.key}"
+# R2 is a MIRROR of the GitHub release — GitHub is the primary channel. clawee's
+# R2 config lives OUTSIDE any repo at ~/.clawee/release/ (mirroring burrowee's
+# ~/.burrowee/release/): config.toml holds the non-secret r2_account_id/r2_bucket,
+# r2.key holds the S3 access_key_id/secret_access_key (clawee's own copy of the
+# token whose CONTENT is shared with burrowee — rotate both copies together). Any
+# missing piece → the mirror is SKIPPED, never fatal.
+R2_CONFIG="${CLAWEE_R2_CONFIG:-${HOME}/.clawee/release/config.toml}"
+R2_CREDS="${CLAWEE_R2_CREDS:-${HOME}/.clawee/release/r2.key}"
 
 # toml_get <file> <key> — first `key = "value"` / `key = value`, quotes stripped.
 toml_get() {
