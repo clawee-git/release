@@ -134,8 +134,8 @@ src_for() {
 # binary list per component (used at assembly time to copy into the zip)
 bins_for() {
     case "$1" in
-        clawee)   printf '%s' "clawee" ;;
-        claweed)  printf '%s' "claweed clawee-spawn" ;;
+        clawee)   printf '%s' "clawee clawee-updater" ;;
+        claweed)  printf '%s' "claweed clawee-spawn claweed-updater" ;;
     esac
 }
 

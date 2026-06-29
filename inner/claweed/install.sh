@@ -195,6 +195,13 @@ if [ "$MODE" = uninstall ]; then
         info "no claweed binary at $CLAWEED_BIN — skipped"
     fi
 
+    CLAWEED_UPDATER_BIN="$PREFIX/claweed-updater"
+    if [ -f "$CLAWEED_UPDATER_BIN" ]; then
+        rm -f "$CLAWEED_UPDATER_BIN" && ok "removed $CLAWEED_UPDATER_BIN"
+    else
+        info "no claweed-updater binary at $CLAWEED_UPDATER_BIN — skipped"
+    fi
+
     if [ "$PURGE" -eq 1 ]; then
         if [ -d "$DATA_DIR" ]; then
             warn "--purge: removing the data-dir $DATA_DIR (this deletes tenant trust keys; enrolled devices must re-enroll)"
@@ -272,7 +279,7 @@ if [ "$USER_UID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
 fi
 
 # ---- preflight: staged binaries present ---------------------------------
-for b in claweed clawee-spawn; do
+for b in claweed clawee-spawn claweed-updater; do
     [ -f "$SELF_DIR/$b" ] || fail "missing $b in $SELF_DIR — re-run build-local.sh to stage the binaries"
 done
 
@@ -285,6 +292,12 @@ mkdir -p "$PREFIX" || fail "could not create $PREFIX (set CLAWEE_PREFIX to a wri
 install -m 0755 "$SELF_DIR/claweed" "$CLAWEED_BIN"
 [ "$OS" = darwin ] && xattr -d com.apple.quarantine "$CLAWEED_BIN" 2>/dev/null || true
 ok "claweed installed: $($CLAWEED_BIN --version 2>/dev/null || echo claweed)"
+
+# claweed-updater — one-shot update trigger; no service unit.
+CLAWEED_UPDATER_BIN="$PREFIX/claweed-updater"
+install -m 0755 "$SELF_DIR/claweed-updater" "$CLAWEED_UPDATER_BIN"
+[ "$OS" = darwin ] && xattr -d com.apple.quarantine "$CLAWEED_UPDATER_BIN" 2>/dev/null || true
+ok "claweed-updater installed: $CLAWEED_UPDATER_BIN"
 
 # PATH hint: ~/.local/bin is frequently NOT on PATH.
 if ! command -v claweed >/dev/null 2>&1; then
