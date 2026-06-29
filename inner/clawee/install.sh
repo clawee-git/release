@@ -11,7 +11,7 @@
 set -eu
 
 BIN_DIR="${PREFIX:-$HOME/.local}/bin"
-BINS="clawee"
+BINS="clawee clawee-updater"
 
 # Update mode (set by `clawee update` via CLAWEE_UPDATE_MODE):
 #   plan  — print what would change (the clawee binary version), then STOP.

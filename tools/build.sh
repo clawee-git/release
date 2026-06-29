@@ -55,8 +55,8 @@ fi
 # binary -> package map (space-separated "bin:pkg" pairs per component).
 # clawee's source package is cmd/clawee — the binary keeps the clawee name.
 case "${COMP}" in
-    clawee)   MAP="clawee:./cmd/clawee" ;;
-    claweed)  MAP="claweed:./cmd/claweed clawee-spawn:./cmd/clawee-spawn" ;;
+    clawee)   MAP="clawee:./cmd/clawee clawee-updater:./cmd/clawee-updater" ;;
+    claweed)  MAP="claweed:./cmd/claweed clawee-spawn:./cmd/clawee-spawn claweed-updater:./cmd/claweed-updater" ;;
     *)        echo "✗ unknown COMP: ${COMP}" >&2; exit 2 ;;
 esac
 
