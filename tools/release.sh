@@ -461,12 +461,15 @@ NOTES
     # (downloads.clawee.org) as the install-time fallback. Non-fatal by design.
     mirror_to_r2 "${comp}" "${stamp}" "${new_semver}" "${stage}"
 
-    # (6) regenerate bootstraps + scp the static surface.
+    # (6) regenerate bootstraps + the version JSONP, then scp the static surface.
     bash "${REPO_ROOT}/tools/gen-bootstraps.sh" >&2
+    # Sources the just-published version from the R2 catalog (mirrored in 5b above).
+    bash "${REPO_ROOT}/tools/gen-version-jsonp.sh" "${comp}" >&2
 
     # shellcheck disable=SC2029  # ${STATIC_DIR}/${comp} are local, controlled values — expanding client-side into the remote command is intended.
     ssh "${RELEASE_HOST}" "mkdir -p '${STATIC_DIR}/${comp}'"
     scp -q "${REPO_ROOT}/${comp}/install.sh" "${RELEASE_HOST}:${STATIC_DIR}/${comp}/install.sh"
+    scp -q "${REPO_ROOT}/${comp}/version.js" "${RELEASE_HOST}:${STATIC_DIR}/${comp}/version.js"
     if [ -f "${REPO_ROOT}/clawee-release.pub" ]; then
         scp -q "${REPO_ROOT}/clawee-release.pub" "${RELEASE_HOST}:${STATIC_DIR}/clawee-release.pub"
     fi
@@ -475,7 +478,7 @@ NOTES
     fi
 
     # (7) marker commit.
-    git add "versions/${comp}" "${comp}/install.sh"
+    git add "versions/${comp}" "${comp}/install.sh" "${comp}/version.js"
     git commit -m "[RELEASED: ${comp}] $(date -u +%Y-%m-%d) ${stamp}"
 
     echo "✓ released ${tag}"
