@@ -73,8 +73,10 @@ DOWNLOADS_BASE="${CLAWEE_DOWNLOADS_BASE-https://downloads.clawee.org}"
 
 # Production downloads are pinned to HTTPS/TLS1.2 (--proto =https). The
 # CLAWEE_DL_BASE test hook points at a local plain-HTTP server, so when it is
-# set we drop the TLS-only flags (they'd reject http://); the version-pin guard
-# below keeps even that path scheme-locked to the test base.
+# set we drop the TLS-only flags (they'd reject http://). That relaxed mode
+# stays locked to the test base BY CONSTRUCTION (no separate guard check):
+# whenever DL_BASE is set, every dl() fetch uses $BASE=$DL_BASE and the
+# gh-proxy / downloads-mirror fallbacks (resolution AND download) are skipped.
 #
 # --speed-limit/--speed-time abort a STALLED transfer (< ~4 KB/s for 20s) instead
 # of hanging until --max-time. This matters for the gh-proxy mirror loop: a mirror
