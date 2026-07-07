@@ -357,7 +357,7 @@ do_release() {
     mkdir -p "${stage}"
 
     # (2) per-target build + assemble + zip.
-    local zips=() pair os arch out_bins assemble asset b
+    local zips=() pair os arch out_bins assemble asset b guard_paths
     for pair in "${TARGETS[@]}"; do
         read -r os arch <<<"${pair}"
         out_bins="${stage}/.bins-${os}-${arch}"
@@ -367,6 +367,16 @@ do_release() {
         COMP="${comp}" SRC_DIR="${src}" TARGETOS="${os}" TARGETARCH="${arch}" \
             STAMP="${stamp}" OUT_DIR="${out_bins}" GO_BIN="${GO_BIN}" \
             bash "${REPO_ROOT}/tools/build.sh" >&2
+
+        # env-config guard: no freshly built binary may embed a forbidden
+        # config-env literal (CLAWEE_DATA_DIR/CLAWEE_SOCKET/CLAWEE_SPAWN_HELPER/
+        # mustEnv — see tools/verify-no-env.sh). A hit aborts the cut here,
+        # before anything is signed or published (the ERR trap reverts the
+        # version bump).
+        guard_paths=()
+        # shellcheck disable=SC2086  # ${bins} is an intentional space-list of bin names from bins_for(); word-splitting is the point.
+        for b in ${bins}; do guard_paths+=("${out_bins}/${b}"); done
+        bash "${REPO_ROOT}/tools/verify-no-env.sh" "${guard_paths[@]}" >&2
 
         # assemble: component bins + inner installer (→ install.sh)
         assemble="${stage}/clawee-${comp}-${os}-${arch}"
