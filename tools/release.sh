@@ -437,7 +437,12 @@ do_release() {
 
     local tag="${comp}/${stamp}"
     if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
-        echo "✗ tag ${tag} already exists locally — reverting version" >&2; exit 1
+        # Explicit revert: plain `exit 1` fires only the EXIT trap (shred_key) —
+        # the ERR trap does NOT run on `exit`, so without this the bumped
+        # versions/<comp> would stay staged and the next cut would double-bump.
+        echo "✗ tag ${tag} already exists locally — reverting version" >&2
+        revert_version
+        exit 1
     fi
     git tag -a "${tag}" -m "clawee ${comp} ${stamp}"
 
