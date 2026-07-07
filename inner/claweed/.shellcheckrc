@@ -1,0 +1,8 @@
+# Scoped to inner/claweed/ only: install.sh here is a GENERATED reference copy
+# of the daemon repo's canonical install/install.sh.in, kept body-identical so
+# diffs against canonical stay trivial. Its tilde_path() intentionally prints a
+# literal leading ~ in operator copy-paste blocks (the operator's shell expands
+# it) — SC2088 is a false positive there, and an inline disable would diverge
+# this copy from canonical. Upstreaming the inline directive to the daemon
+# template would make this file unnecessary.
+disable=SC2088
