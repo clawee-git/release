@@ -13,12 +13,14 @@ set -eu
 BIN_DIR="${PREFIX:-$HOME/.local}/bin"
 BINS="clawee clawee-updater"
 
-# Update mode (set by `clawee update` via CLAWEE_UPDATE_MODE):
-#   plan  — print what would change (the clawee binary version), then STOP.
-#   auto  — install, unattended (the normal apply).
+# Update mode (set by `clawee update` via CLAWEE_UPDATE_MODE; the contract is
+# cli/cmd/clawee-updater):
+#   dry   — print what would change (the clawee binary version), then STOP.
+#   apply — print the plan, then PROMPT before installing (the updater default).
+#   auto  — install, unattended.
 #   force — reinstall even when the version already matches.
-# Empty = a fresh / direct install (apply). clawee is a client — no service to
-# restart, so the plan is just the binary.
+# Empty = a fresh / direct install (no plan, no prompt). clawee is a client —
+# no service to restart, so the plan is just the binary.
 UPDATE_MODE="${CLAWEE_UPDATE_MODE:-}"
 
 if [ -n "${CLAWEE_UNINSTALL:-}" ]; then
@@ -56,26 +58,6 @@ if [ -n "$UPDATE_MODE" ]; then
         fi
     fi
 fi
-
-# semver_lt A B — exit 0 iff version A is strictly older than B. Portable
-# (no GNU `sort -V`): strips a leading 'v', splits on '.', compares fields
-# numerically left-to-right, missing fields treated as 0.
-semver_lt() {
-    awk -v a="$1" -v b="$2" '
-        function norm(s) { sub(/^v/, "", s); return s }
-        BEGIN {
-            na = split(norm(a), x, ".")
-            nb = split(norm(b), y, ".")
-            n = (na > nb) ? na : nb
-            for (i = 1; i <= n; i++) {
-                xi = (i <= na) ? x[i] + 0 : 0
-                yi = (i <= nb) ? y[i] + 0 : 0
-                if (xi < yi) { exit 0 }
-                if (xi > yi) { exit 1 }
-            }
-            exit 1   # equal -> not strictly less
-        }'
-}
 
 mkdir -p "$BIN_DIR"
 for b in $BINS; do
