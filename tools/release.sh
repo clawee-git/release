@@ -77,7 +77,9 @@ for arg in "$@"; do
         --bump-minor)         BUMP_KIND="minor" ;;
         --bump-major)         BUMP_KIND="major" ;;
         --no-r2)              SKIP_R2=1 ;;
-        -h|--help)            sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        # Print the whole header comment (line 2 → the first non-# line), so
+        # added doc lines are never silently truncated by a hardcoded range.
+        -h|--help)            awk 'NR==1{next} !/^#/{exit} {sub(/^# ?/,""); print}' "$0"; exit 0 ;;
         *) echo "✗ unknown argument: ${arg}" >&2; exit 2 ;;
     esac
 done
