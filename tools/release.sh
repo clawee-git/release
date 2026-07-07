@@ -77,7 +77,9 @@ for arg in "$@"; do
         --bump-minor)         BUMP_KIND="minor" ;;
         --bump-major)         BUMP_KIND="major" ;;
         --no-r2)              SKIP_R2=1 ;;
-        -h|--help)            sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        # Print the whole header comment (line 2 → the first non-# line), so
+        # added doc lines are never silently truncated by a hardcoded range.
+        -h|--help)            awk 'NR==1{next} !/^#/{exit} {sub(/^# ?/,""); print}' "$0"; exit 0 ;;
         *) echo "✗ unknown argument: ${arg}" >&2; exit 2 ;;
     esac
 done
@@ -357,7 +359,7 @@ do_release() {
     mkdir -p "${stage}"
 
     # (2) per-target build + assemble + zip.
-    local zips=() pair os arch out_bins assemble asset b
+    local zips=() pair os arch out_bins assemble asset b guard_paths
     for pair in "${TARGETS[@]}"; do
         read -r os arch <<<"${pair}"
         out_bins="${stage}/.bins-${os}-${arch}"
@@ -367,6 +369,16 @@ do_release() {
         COMP="${comp}" SRC_DIR="${src}" TARGETOS="${os}" TARGETARCH="${arch}" \
             STAMP="${stamp}" OUT_DIR="${out_bins}" GO_BIN="${GO_BIN}" \
             bash "${REPO_ROOT}/tools/build.sh" >&2
+
+        # env-config guard: no freshly built binary may embed a forbidden
+        # config-env literal (CLAWEE_DATA_DIR/CLAWEE_SOCKET/CLAWEE_SPAWN_HELPER/
+        # mustEnv — see tools/verify-no-env.sh). A hit aborts the cut here,
+        # before anything is signed or published (the ERR trap reverts the
+        # version bump).
+        guard_paths=()
+        # shellcheck disable=SC2086  # ${bins} is an intentional space-list of bin names from bins_for(); word-splitting is the point.
+        for b in ${bins}; do guard_paths+=("${out_bins}/${b}"); done
+        bash "${REPO_ROOT}/tools/verify-no-env.sh" "${guard_paths[@]}" >&2
 
         # assemble: component bins + inner installer (→ install.sh)
         assemble="${stage}/clawee-${comp}-${os}-${arch}"
@@ -427,7 +439,12 @@ do_release() {
 
     local tag="${comp}/${stamp}"
     if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
-        echo "✗ tag ${tag} already exists locally — reverting version" >&2; exit 1
+        # Explicit revert: plain `exit 1` fires only the EXIT trap (shred_key) —
+        # the ERR trap does NOT run on `exit`, so without this the bumped
+        # versions/<comp> would stay staged and the next cut would double-bump.
+        echo "✗ tag ${tag} already exists locally — reverting version" >&2
+        revert_version
+        exit 1
     fi
     git tag -a "${tag}" -m "clawee ${comp} ${stamp}"
 

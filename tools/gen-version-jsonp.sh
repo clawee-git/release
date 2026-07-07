@@ -46,6 +46,19 @@ for comp in ${COMPS}; do
         version="$(printf '%s\n' "${json}" | json_str version)"
         stamp="$(printf '%s\n' "${json}" | json_str stamp)"
     fi
+    # These remote-sourced values are embedded into version.js — served on
+    # release.clawee.org and EXECUTED as JS on clawee.org. The [^"]* extraction
+    # above already prevents quote breakout, but validate the shape too so a
+    # corrupted/hostile catalog value (spaces, backslashes, garbage) can't
+    # propagate verbatim; on mismatch fall back as if the catalog were absent.
+    if [ -n "${version}" ] && ! printf '%s' "${version}" | grep -Eq '^[0-9][0-9.]*$'; then
+        echo "⚠ ${comp}: malformed catalog version '${version}' — falling back to versions/${comp}" >&2
+        version=""
+    fi
+    if [ -n "${stamp}" ] && ! printf '%s' "${stamp}" | grep -Eq '^v[0-9A-Za-z.]*$'; then
+        echo "⚠ ${comp}: malformed catalog stamp '${stamp}' — omitting stamp" >&2
+        stamp=""
+    fi
     # Offline fallback: the local marketing version (no stamp).
     [ -n "${version}" ] || version="$(cat "${ROOT}/versions/${comp}" 2>/dev/null || true)"
     [ -n "${version}" ] || { echo "✗ no version for ${comp} (R2 catalog + versions/${comp} both empty)" >&2; exit 1; }
