@@ -25,11 +25,17 @@
 #                           (default: gh-proxy.org cdn.gh-proxy.org v6.gh-proxy.org
 #                           gh-proxy.com; set empty to disable). minisign + sha256
 #                           verified, so an untrusted mirror cannot tamper undetected.
-#   CLAWEE_DOWNLOADS_BASE   Public R2 mirror base, the LAST-resort fallback after
-#                           GitHub + the gh-proxy mirrors (default
+#                           For VERSION RESOLUTION they are only consulted after the
+#                           operator-controlled downloads mirror (see below).
+#   CLAWEE_DOWNLOADS_BASE   Operator-controlled public R2 mirror base (default
 #                           https://downloads.clawee.org; set empty to disable).
-#                           Serves <comp>/<stamp>/<file> + <comp>/latest.json;
-#                           still minisign + sha256 verified, so it is untrusted.
+#                           Serves <comp>/<stamp>/<file> + <comp>/latest.json.
+#                           When GitHub is unreachable, VERSION RESOLUTION prefers
+#                           its latest.json BEFORE the third-party gh-proxy mirrors
+#                           (anti-rollback: a stale/hostile mirror could otherwise
+#                           pin fresh installs to an older, genuinely-signed
+#                           release). Byte DOWNLOADS still use it last-resort;
+#                           bytes from any source are minisign + sha256 verified.
 #
 # claweed note: the claweed inner installer is the canonical sudo-minimal daemon
 # installer. It reads CLAWEE_PREFIX (set here from PREFIX), CLAWEE_DATA_DIR, and
@@ -53,13 +59,16 @@ DL_BASE="${CLAWEE_DL_BASE:-}"           # test hook (undocumented to users)
 # ${VAR-default} (not :-) lets `CLAWEE_GH_PROXY=` explicitly disable the mirrors
 # while an unset value gets the default. Never used when DL_BASE is set.
 GH_PROXIES="${CLAWEE_GH_PROXY-https://gh-proxy.org https://cdn.gh-proxy.org https://v6.gh-proxy.org https://gh-proxy.com}"
-# Public R2 mirror (downloads.clawee.org) — the install-time fallback tried ONLY
-# after GitHub AND every gh-proxy mirror is unreachable. A plain public bucket:
-# <comp>/<stamp>/<file> mirrors the GitHub release assets 1:1, and
-# <comp>/latest.json carries the newest stamp for version resolution. Bytes are
-# still minisign + sha256 verified below, so this untrusted mirror cannot inject
-# tampered bytes undetected. ${VAR-default} (not :-) lets `CLAWEE_DOWNLOADS_BASE=`
-# explicitly disable it. Never used when DL_BASE (the test hook) is set.
+# Public R2 mirror (downloads.clawee.org) — a plain public bucket the operator
+# controls (TLS to a clawee-owned domain): <comp>/<stamp>/<file> mirrors the
+# GitHub release assets 1:1, and <comp>/latest.json carries the newest stamp.
+# Role differs by use: for VERSION RESOLUTION it is preferred over the
+# third-party gh-proxy mirrors when GitHub is unreachable (anti-rollback — see
+# the resolution section below); for byte DOWNLOADS it stays the last-resort
+# fallback after GitHub and every gh-proxy mirror. Bytes are still minisign +
+# sha256 verified below regardless of source. ${VAR-default} (not :-) lets
+# `CLAWEE_DOWNLOADS_BASE=` explicitly disable it. Never used when DL_BASE (the
+# test hook) is set.
 DOWNLOADS_BASE="${CLAWEE_DOWNLOADS_BASE-https://downloads.clawee.org}"
 
 # Production downloads are pinned to HTTPS/TLS1.2 (--proto =https). The
@@ -153,21 +162,16 @@ else
     # shellcheck disable=SC2086  # $CURL is an intentional space-split command string (flags + binary); POSIX sh has no arrays.
     body="$($CURL "$api" 2>/dev/null)" || true
     TAG="$(printf '%s' "$body" | latest_tag)" || true
-    # GitHub API unreachable/empty — retry through each mirror in turn (no auth).
-    # Skipped under the DL_BASE test hook and when mirrors are disabled (empty).
-    if [ -z "$TAG" ] && [ -z "$DL_BASE" ] && [ -n "$GH_PROXIES" ]; then
-        for _proxy in $GH_PROXIES; do
-            info "GitHub API unreachable — retrying via mirror $_proxy"
-            # shellcheck disable=SC2086  # intentional word-split of $CURL flags
-            body="$($CURL "$_proxy/$api" 2>/dev/null)" || true
-            TAG="$(printf '%s' "$body" | latest_tag)" || true
-            if [ -n "$TAG" ]; then info "mirror resolved: $TAG"; break; fi
-        done
-    fi
-    # Still unresolved — fall back to the public R2 mirror's latest.json (no auth).
+    # GitHub API unreachable/empty — resolve "latest" from the OPERATOR-CONTROLLED
+    # R2 mirror's latest.json FIRST (no auth). Anti-rollback: which TAG is "latest"
+    # decides which (genuinely-signed) release gets installed, so an on-path
+    # attacker who blocks GitHub must not be able to steer resolution to a
+    # stale/hostile third-party gh-proxy mirror serving an old /releases JSON and
+    # freeze fresh installs on an older release. downloads.clawee.org is TLS to a
+    # clawee-owned domain and its catalog is written by release.sh at cut time.
     # Skipped under the DL_BASE test hook and when the mirror is disabled (empty).
     if [ -z "$TAG" ] && [ -z "$DL_BASE" ] && [ -n "$DOWNLOADS_BASE" ]; then
-        info "GitHub + mirrors unreachable — trying $DOWNLOADS_BASE/$COMP/latest.json"
+        info "GitHub API unreachable — trying $DOWNLOADS_BASE/$COMP/latest.json"
         # shellcheck disable=SC2086  # intentional word-split of $CURL flags
         lj="$($CURL "$DOWNLOADS_BASE/$COMP/latest.json" 2>/dev/null)" || true
         st="$(printf '%s' "$lj" | latest_stamp)" || true
@@ -176,7 +180,20 @@ else
             v*) TAG="$COMP/$st"; info "downloads mirror: $TAG" ;;
         esac
     fi
-    [ -n "$TAG" ] || fail "no published release found for ${COMP} on ${REPO} (GitHub, the gh-proxy mirrors [$GH_PROXIES], and ${DOWNLOADS_BASE:-the R2 mirror} were all unreachable)"
+    # Still unresolved — last resort: the third-party gh-proxy mirrors (no auth).
+    # These only decide the tag when GitHub AND the downloads mirror are both
+    # unreachable; the bytes they serve are minisign + sha256 verified either way.
+    # Skipped under the DL_BASE test hook and when mirrors are disabled (empty).
+    if [ -z "$TAG" ] && [ -z "$DL_BASE" ] && [ -n "$GH_PROXIES" ]; then
+        for _proxy in $GH_PROXIES; do
+            info "GitHub API + downloads mirror unreachable — retrying via mirror $_proxy"
+            # shellcheck disable=SC2086  # intentional word-split of $CURL flags
+            body="$($CURL "$_proxy/$api" 2>/dev/null)" || true
+            TAG="$(printf '%s' "$body" | latest_tag)" || true
+            if [ -n "$TAG" ]; then info "mirror resolved: $TAG"; break; fi
+        done
+    fi
+    [ -n "$TAG" ] || fail "no published release found for ${COMP} on ${REPO} (GitHub, ${DOWNLOADS_BASE:-the R2 mirror}, and the gh-proxy mirrors [$GH_PROXIES] were all unreachable)"
     info "latest: $TAG"
 fi
 
