@@ -121,8 +121,26 @@ func srcDirFor(comp string) string {
 // --dry-run), runs the CVE gate unless NoVulncheck, then reuses orchestrate to
 // build+assemble+checksum+sign into <RepoDir>/dist/<stamp>/.
 func buildRun(o buildOpts) (err error) {
+	// Absolutize --repo before it's used to derive OutDir, the version.sh
+	// path, and the dist dir: build.Compile execs `go build -o <OutDir>/...`
+	// with cmd.Dir set to the component SOURCE worktree, so a relative
+	// RepoDir (e.g. the "." default) makes OutDir resolve inside the source
+	// tree instead of the release repo — the binary lands in the wrong place
+	// and the later codesign step (run from the orchestrator's own cwd) can't
+	// find it.
+	if abs, aerr := filepath.Abs(o.RepoDir); aerr == nil {
+		o.RepoDir = abs
+	} else {
+		return fmt.Errorf("resolve --repo %q: %w", o.RepoDir, aerr)
+	}
 	if o.SrcDir == "" {
 		o.SrcDir = o.RepoDir
+	} else if abs, aerr := filepath.Abs(o.SrcDir); aerr == nil {
+		// Defensive: --src could be relative too (srcDirFor's own defaults
+		// are already absolute, but an explicit flag isn't guaranteed to be).
+		o.SrcDir = abs
+	} else {
+		return fmt.Errorf("resolve --src %q: %w", o.SrcDir, aerr)
 	}
 
 	// Fail fast: a real cut requires a real sign key. Check this before the

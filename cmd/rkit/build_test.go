@@ -296,6 +296,87 @@ func TestBuildRunBumpDryRunReverts(t *testing.T) {
 	}
 }
 
+// TestBuildRunAbsolutizesRelativeRepoDir is the end-to-end regression test
+// for the misplacement bug: a RELATIVE --repo (the "." default a real
+// invocation from the release-repo root uses) must not make build.Compile's
+// `-o` resolve inside the COMPONENT SOURCE worktree (cmd.Dir for `go build`
+// is SrcDir, not RepoDir). RepoDir and SrcDir are deliberately two distinct
+// temp dirs, and buildRun runs from a THIRD cwd (RepoDir's parent), passing
+// RepoDir as a relative path (its basename) — exactly how `rkit build
+// --repo=.` behaves when invoked from the release-repo root. It asserts the
+// zip lands under the absolute RepoDir's dist/<stamp>/ AND that no dist/ was
+// created inside SrcDir (the bug this guards against).
+func TestBuildRunAbsolutizesRelativeRepoDir(t *testing.T) {
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "reporoot")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFixtureModule(t, repo)
+
+	// A component source worktree distinct from RepoDir, with its own git
+	// history — relconfig.Stamp reads the HEAD sha from SrcDir.
+	src := filepath.Join(parent, "srcroot")
+	if err := os.Mkdir(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mainSrc := "package main\n\nimport \"fmt\"\n\nvar version string\n\nfunc main() { fmt.Println(version) }\n"
+	mustWriteFile(t, filepath.Join(src, "go.mod"), "module fixturesrc\n\ngo 1.25.0\n")
+	mustWriteFile(t, filepath.Join(src, "cmd", "clawee", "main.go"), mainSrc)
+	mustWriteFile(t, filepath.Join(src, "cmd", "clawee-updater", "main.go"), mainSrc)
+	gitSrc := func(args ...string) {
+		t.Helper()
+		c := exec.Command("git", append([]string{"-C", src}, args...)...)
+		c.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	gitSrc("init", "-q")
+	gitSrc("add", "-A")
+	gitSrc("commit", "-q", "-m", "fixture src")
+
+	// cwd is parent — NEITHER repo nor src — so "reporoot" only resolves
+	// correctly if buildRun absolutizes it against this cwd.
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(origWD); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	if err := os.Chdir(parent); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := buildRun(buildOpts{
+		Component: "clawee", RepoDir: "reporoot", SrcDir: src,
+		DryRun: true, NoVulncheck: true, SignKey: testMinisignKey(t),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stamp, err := relconfig.Stamp(context.Background(), filepath.Join(repo, "versions", "clawee"), src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "dist", stamp, "clawee-clawee-linux-amd64.zip")); err != nil {
+		t.Errorf("artifacts not under the absolute repo's dist/<stamp>: %v", err)
+	}
+	// The component SOURCE worktree must stay untouched by the build — no
+	// dist/ misplaced inside it. This is the exact failure mode the bug
+	// produced: `go build -o dist/<stamp>/...` resolved relative to SrcDir
+	// (cmd.Dir), writing the binary into the source tree instead of the
+	// release repo.
+	if _, err := os.Stat(filepath.Join(src, "dist")); !os.IsNotExist(err) {
+		t.Fatalf("dist/ leaked into SrcDir %s (relative --repo misplacement bug), stat err = %v", src, err)
+	}
+}
+
 func TestBuildGateOnByDefaultCanBeSkipped(t *testing.T) {
 	// With NoVulncheck=false and no govulncheck resolvable, the gate must RUN
 	// (and here fail) — proving default-on. Then NoVulncheck=true bypasses.
