@@ -3,6 +3,12 @@
 #
 # Usage:
 #   bash tools/release.sh <clawee|claweed|all> [--apple] [--dry-run] [--bump-minor|--bump-major]
+#   bash tools/release.sh --distribute-only <clawee|claweed> <stamp> [--dry-run]
+#
+# --distribute-only publishes an already-staged dist/<stamp>/ (produced by
+#   `rkit build`, which now owns steps 1-4 below: stamp/build/sum/sign) WITHOUT
+#   building, signing, notarizing, or bumping a version — it runs only the
+#   publish half (steps 5-7). See distribute_only() further down.
 #
 # --apple: Developer ID sign the darwin binaries (modernech-sign, Modernech LLC)
 #   + notarize each darwin zip before publishing. WITHOUT it darwin bins are
@@ -63,6 +69,20 @@ GO_BIN="${GO_BIN:-go}"
 command -v "${GO_BIN}" >/dev/null 2>&1 || GO_BIN=/opt/homebrew/bin/go
 export GO_BIN
 
+# --distribute-only <comp> <stamp> [--dry-run]: takes its component + stamp as
+# positional args right after the flag (not from the general WHAT/comp case
+# below), so it's consumed here before the normal arg loop runs.
+DISTRIBUTE_ONLY=0
+DIST_COMP=""; DIST_STAMP=""
+if [ "${1:-}" = "--distribute-only" ]; then
+    DISTRIBUTE_ONLY=1
+    shift
+    DIST_COMP="${1:-}"; DIST_STAMP="${2:-}"
+    [ -n "${DIST_COMP}" ] && [ -n "${DIST_STAMP}" ] \
+        || { echo "✗ usage: release.sh --distribute-only <clawee|claweed> <stamp> [--dry-run]" >&2; exit 2; }
+    shift 2
+fi
+
 # ---- args -------------------------------------------------------------------
 WHAT=""
 DRY_RUN=0
@@ -83,7 +103,11 @@ for arg in "$@"; do
         *) echo "✗ unknown argument: ${arg}" >&2; exit 2 ;;
     esac
 done
-[ -n "${WHAT}" ] || { echo "✗ usage: release.sh <clawee|claweed|all> [--apple] [--dry-run] [--no-r2] [--bump-minor|--bump-major]" >&2; exit 2; }
+if [ "${DISTRIBUTE_ONLY}" = 1 ]; then
+    [ -z "${WHAT}" ] || { echo "✗ --distribute-only takes <comp> <stamp> as its own args — drop the trailing '${WHAT}'" >&2; exit 2; }
+else
+    [ -n "${WHAT}" ] || { echo "✗ usage: release.sh <clawee|claweed|all> [--apple] [--dry-run] [--no-r2] [--bump-minor|--bump-major]" >&2; exit 2; }
+fi
 export APPLE_SIGN
 
 # ---- config / defaults ------------------------------------------------------
@@ -144,6 +168,13 @@ bins_for() {
 GHP="$(command -v ghp 2>/dev/null || echo "${HOME}/.claude/bin/ghp")"
 
 # ---- pre-flight -------------------------------------------------------------
+# Skipped entirely under --distribute-only: no build/sign/notarize happens
+# there (that already ran upstream in `rkit build`), so none of zip/unzip/
+# minisign/age, Apple-sign resolution, the per-component source-cleanliness/
+# branch checks, or signing-key resolution are needed. distribute_only()
+# (further down) does its own light `src` existence check + the ghp checks it
+# actually needs.
+if [ "${DISTRIBUTE_ONLY}" != 1 ]; then
 need() { command -v "$1" >/dev/null 2>&1 || { echo "✗ required tool not found: $1" >&2; exit 1; }; }
 need zip
 need unzip
@@ -255,6 +286,7 @@ resolve_sign_key() {
     echo "→ signing with the real key (decrypted from release.dp)" >&2
 }
 resolve_sign_key
+fi # DISTRIBUTE_ONLY != 1 (pre-flight)
 
 # ---- inner installer resolution ---------------------------------------------
 # clawee ships the repo-committed inner/clawee/install.sh. claweed ships the
@@ -501,6 +533,136 @@ NOTES
     echo "✓ released ${tag}"
     echo "  Release: https://github.com/${RELEASE_REPO}/releases/tag/${tag}"
 }
+
+# ---- distribute_only: distribution-only mode over an already-staged
+# dist/<stamp>/ (produced by `rkit build` — the produce half lives there now).
+# Runs ONLY: tag + GitHub Release -> mirror_to_r2 -> gen-bootstraps.sh ->
+# gen-version-jsonp.sh -> scp install.sh/version.js/pubkey/site to the release
+# host -> [RELEASED] marker commit. No build, no sign, no notarize, no version
+# bump — all of that already happened upstream in `rkit build`. clawee has no
+# console/register step (unlike Burrowee) — nothing to skip there.
+#
+# The tag/notes/`ghp release create` block below is a DELIBERATE COPY of
+# do_release()'s step 5, not a shared helper: do_release's tag-exists path
+# does an EXPLICIT `revert_version` (see the comment there — a plain `exit 1`
+# only fires the EXIT trap, not ERR) to undo its version bump. distribute_only
+# never bumps a version, so that revert is meaningless here; factoring a
+# shared helper would either strip the revert out of do_release (a behavior
+# change to the existing full-cut path — risky) or carry dead revert-adjacent
+# logic into distribute_only. A copy keeps both paths exactly as narrow as
+# they need to be, and do_release is untouched.
+#
+# On --dry-run: validates the staged dir + component, then prints "would: ..."
+# for every publish action and returns — no ghp/git/ssh/scp/network writes.
+distribute_only() {
+    local comp="$1" stamp="$2"
+    case "${comp}" in
+        clawee|claweed) ;;
+        *) echo "✗ unknown component: ${comp}" >&2; exit 1 ;;
+    esac
+
+    local stage="${REPO_ROOT}/dist/${stamp}"
+    [ -d "${stage}" ] || { echo "✗ staged dir missing: ${stage} (run rkit build first)" >&2; exit 1; }
+    for f in SHA256SUMS.txt SHA256SUMS.txt.minisig; do
+        [ -f "${stage}/${f}" ] || { echo "✗ missing ${f} in ${stage} (rkit build must produce it)" >&2; exit 1; }
+    done
+    compgen -G "${stage}/clawee-${comp}-*.zip" >/dev/null \
+        || { echo "✗ no clawee-${comp}-*.zip found in ${stage} (rkit build must produce it)" >&2; exit 1; }
+
+    local src semver
+    src="$(src_for "${comp}")"
+    [ -d "${src}" ] || { echo "✗ ${comp} source worktree missing: ${src}" >&2; exit 1; }
+    semver="$(SRC_DIR="${src}" bash "${REPO_ROOT}/tools/version.sh" "${comp}" --semver)"
+
+    if [ "${DRY_RUN}" = 1 ]; then
+        echo "would: gh release create ${comp}/${stamp} (GitHub Release, public) via ghp"
+        echo "would: mirror_to_r2 ${comp} ${stamp} ${semver} (downloads.clawee.org)"
+        echo "would: gen-bootstraps.sh (regenerate ${comp}/install.sh)"
+        echo "would: gen-version-jsonp.sh ${comp} (regenerate ${comp}/version.js)"
+        echo "would: scp install.sh/version.js/clawee-release.pub/site/index.html to ${RELEASE_HOST}:${STATIC_DIR}/${comp}/"
+        echo "would: marker commit [RELEASED: ${comp}] ${stamp}"
+        echo "✓ dry-run distribute-only: no real writes"
+        return 0
+    fi
+
+    command -v ghp >/dev/null 2>&1 || { echo "✗ required tool not found: ghp" >&2; exit 1; }
+    [ -x "${GHP}" ] || { echo "✗ ghp wrapper not found at ${GHP}" >&2; exit 1; }
+    "${GHP}" repo view "${RELEASE_REPO}" --json name >/dev/null 2>&1 \
+        || { echo "✗ ghp cannot access ${RELEASE_REPO} — check gh.account + auth" >&2; exit 1; }
+
+    # (1) tag + GitHub Release — copied from do_release's step 5 (see the doc
+    # comment above for why this isn't a shared helper).
+    local prev_tag prev_sha changes
+    prev_tag="$(/usr/bin/git tag -l "${comp}/v*" --sort=version:refname | tail -n1)"
+    prev_sha="${prev_tag##*.}"
+    if [ -n "${prev_sha}" ] && git -C "${src}" cat-file -e "${prev_sha}^{commit}" 2>/dev/null; then
+        changes="$(git -C "${src}" log --oneline --no-merges "${prev_sha}..HEAD" 2>/dev/null)"
+        [ -n "${changes}" ] || changes="No code changes since ${prev_tag} (re-release)."
+    else
+        changes="Initial release."
+    fi
+
+    local tag="${comp}/${stamp}"
+    if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
+        echo "✗ tag ${tag} already exists locally" >&2
+        exit 1
+    fi
+    git tag -a "${tag}" -m "clawee ${comp} ${stamp}"
+
+    local notes; notes="${stage}/release-notes.md"
+    cat > "${notes}" <<NOTES
+clawee ${comp} ${stamp} — $(date -u +%Y-%m-%d)
+
+## Changes
+${changes}
+
+Install:
+  curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/${comp}/install.sh | sh
+
+Pin this version:
+  CLAWEE_$(printf '%s' "${comp}" | tr '[:lower:]' '[:upper:]')_VERSION=${tag} \\
+    curl -fsSL https://release.clawee.org/${comp}/install.sh | sh
+
+Verify by hand:
+  minisign -Vm SHA256SUMS.txt -P "\$(cat clawee-release.pub | tail -n1)"
+  shasum -a 256 -c SHA256SUMS.txt
+NOTES
+
+    ( cd "${stage}" && "${GHP}" -R "${RELEASE_REPO}" release create "${tag}" \
+        --title "${comp} ${stamp}" --notes-file "${notes}" \
+        clawee-"${comp}"-*.zip SHA256SUMS.txt SHA256SUMS.txt.minisig )
+
+    # (2) mirror to R2 (non-fatal by design — see mirror_to_r2's doc comment).
+    mirror_to_r2 "${comp}" "${stamp}" "${semver}" "${stage}"
+
+    # (3) regenerate bootstraps + version JSONP, then scp the static surface —
+    # mirrors do_release()'s step 6 verbatim.
+    bash "${REPO_ROOT}/tools/gen-bootstraps.sh" >&2
+    bash "${REPO_ROOT}/tools/gen-version-jsonp.sh" "${comp}" >&2
+
+    # shellcheck disable=SC2029  # ${STATIC_DIR}/${comp} are local, controlled values — expanding client-side into the remote command is intended.
+    ssh "${RELEASE_HOST}" "mkdir -p '${STATIC_DIR}/${comp}'"
+    scp -q "${REPO_ROOT}/${comp}/install.sh" "${RELEASE_HOST}:${STATIC_DIR}/${comp}/install.sh"
+    scp -q "${REPO_ROOT}/${comp}/version.js" "${RELEASE_HOST}:${STATIC_DIR}/${comp}/version.js"
+    if [ -f "${REPO_ROOT}/clawee-release.pub" ]; then
+        scp -q "${REPO_ROOT}/clawee-release.pub" "${RELEASE_HOST}:${STATIC_DIR}/clawee-release.pub"
+    fi
+    if [ -f "${REPO_ROOT}/site/index.html" ]; then
+        scp -q "${REPO_ROOT}/site/index.html" "${RELEASE_HOST}:${STATIC_DIR}/index.html"
+    fi
+
+    # (4) marker commit.
+    git add "versions/${comp}" "${comp}/install.sh" "${comp}/version.js"
+    git commit -m "[RELEASED: ${comp}] $(date -u +%Y-%m-%d) ${stamp}"
+
+    echo "✓ distributed ${tag}"
+    echo "  Release: https://github.com/${RELEASE_REPO}/releases/tag/${tag}"
+}
+
+if [ "${DISTRIBUTE_ONLY}" = 1 ]; then
+    distribute_only "${DIST_COMP}" "${DIST_STAMP}"
+    exit 0
+fi
 
 for comp in "${COMPONENTS[@]}"; do
     do_release "${comp}"
