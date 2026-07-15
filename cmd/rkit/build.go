@@ -326,7 +326,16 @@ func orchestrate(ctx context.Context, o Options) (*Result, error) {
 	if key == "" {
 		key = filepath.Join(o.RepoDir, "tools", "testkeys", "test.key")
 	}
-	if _, statErr := os.Stat(key); statErr == nil {
+	if _, statErr := os.Stat(key); statErr != nil {
+		// An explicit MinisignKey that doesn't resolve to a real file must fail
+		// the cut, not silently skip signing (a signed release with no
+		// SHA256SUMS.txt.minisig is unpublishable). Only the o.MinisignKey==""
+		// fixture fallback (test key, absent in unit-test repos) tolerates a
+		// missing file.
+		if o.MinisignKey != "" {
+			return nil, fmt.Errorf("minisign key %s: %w", key, statErr)
+		}
+	} else {
 		if err := minisign.Sign(ctx, sums, key); err != nil {
 			return nil, fmt.Errorf("minisign: %w", err)
 		}

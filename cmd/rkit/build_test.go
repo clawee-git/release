@@ -201,6 +201,28 @@ func TestOrchestrateSkipGateBypassesCVEGate(t *testing.T) {
 	}
 }
 
+// TestOrchestrateFailsClosedOnMissingExplicitMinisignKey proves that when a
+// NON-EMPTY Options.MinisignKey is supplied but doesn't resolve to a real
+// file, orchestrate returns an error instead of silently skipping the sign
+// step (leaving Result.Minisig empty and reporting success). The
+// o.MinisignKey=="" fixture fallback (testMinisignKey unavailable) must
+// still tolerate a missing key — see TestOrchestrateBuildsMatrixIntoScratch.
+func TestOrchestrateFailsClosedOnMissingExplicitMinisignKey(t *testing.T) {
+	repo := t.TempDir()
+	writeFixtureModule(t, repo)
+	ctx := context.Background()
+	_, err := orchestrate(ctx, Options{
+		Component: "clawee", OutDir: t.TempDir(), RepoDir: repo,
+		MinisignKey: filepath.Join(t.TempDir(), "nonexistent.key"), SkipGate: true,
+	})
+	if err == nil {
+		t.Fatal("expected error for missing explicit MinisignKey, got nil")
+	}
+	if !strings.Contains(err.Error(), "minisign") {
+		t.Fatalf("error = %q, want it to mention the minisign key", err.Error())
+	}
+}
+
 func TestBuildWritesToDistStamp(t *testing.T) {
 	repo := t.TempDir()
 	writeFixtureModule(t, repo)
@@ -398,6 +420,13 @@ func TestRenderInstall(t *testing.T) {
 		if string(got) != want {
 			t.Fatalf("claweed install.sh = %q, want %q", got, want)
 		}
+		fi, err := os.Stat(dst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm() != 0o755 {
+			t.Fatalf("mode = %v, want 0755", fi.Mode().Perm())
+		}
 	})
 
 	t.Run("unknown component", func(t *testing.T) {
@@ -415,5 +444,47 @@ func mustWriteFile(t *testing.T, path, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestOrchestrateAbortsOnForbiddenEnvLiteral proves the env-literal guard
+// (parity with release.sh's step 2 verify-no-env.sh call) actually aborts
+// the cut when a built binary embeds a forbidden config-env literal — the
+// happy path (a clean fixture build) never exercises the abort branch.
+// Exercised THROUGH orchestrate (preferred over a standalone unit test on
+// the guard script) so the assertion covers the real wiring: guard runs
+// after compile, before install.sh/assemble/sign, and its failure surfaces
+// as an orchestrate error mentioning "verify-no-env".
+func TestOrchestrateAbortsOnForbiddenEnvLiteral(t *testing.T) {
+	repo := t.TempDir()
+	writeFixtureModule(t, repo)
+
+	// Inject one of tools/verify-no-env.sh's forbidden literals
+	// (CLAWEE_DATA_DIR/CLAWEE_SOCKET/CLAWEE_SPAWN_HELPER/mustEnv) into the
+	// clawee main package's source so the compiled binary embeds it as a
+	// string constant `strings` can find.
+	forbidden := "package main\n\nimport \"fmt\"\n\nvar version string\n\nfunc main() { fmt.Println(version, \"CLAWEE_DATA_DIR\") }\n"
+	mainGo := filepath.Join(repo, "cmd", "clawee", "main.go")
+	if err := os.WriteFile(mainGo, []byte(forbidden), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commit := exec.Command("git", "-C", repo, "commit", "-aqm", "inject forbidden literal")
+	commit.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+	if out, err := commit.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+
+	ctx := context.Background()
+	_, err := orchestrate(ctx, Options{
+		Component: "clawee", OutDir: t.TempDir(), RepoDir: repo,
+		MinisignKey: testMinisignKey(t), SkipGate: true,
+	})
+	if err == nil {
+		t.Fatal("expected orchestrate to abort on a forbidden env literal, got nil error")
+	}
+	if !strings.Contains(err.Error(), "verify-no-env") {
+		t.Fatalf("error = %q, want it to mention verify-no-env", err.Error())
 	}
 }

@@ -90,6 +90,18 @@ BUMP_KIND="patch"
 APPLE_SIGN=""
 SKIP_R2="${CLAWEE_SKIP_R2:-}"
 for arg in "$@"; do
+    # --distribute-only publishes an already-staged dist/ — it takes no
+    # build/sign/notarize/bump flags (those already ran in `rkit build`).
+    # Accepting them would silently set unused vars and imply behavior
+    # (notarization, a version bump) that never happens under this mode.
+    if [ "${DISTRIBUTE_ONLY}" = 1 ]; then
+        case "${arg}" in
+            --dry-run) DRY_RUN=1 ;;
+            -h|--help) awk 'NR==1{next} !/^#/{exit} {sub(/^# ?/,""); print}' "$0"; exit 0 ;;
+            *) echo "✗ --distribute-only accepts only --dry-run (got '${arg}')" >&2; exit 2 ;;
+        esac
+        continue
+    fi
     case "${arg}" in
         clawee|claweed|all)   WHAT="${arg}" ;;
         --apple)              APPLE_SIGN=1 ;;
@@ -103,9 +115,7 @@ for arg in "$@"; do
         *) echo "✗ unknown argument: ${arg}" >&2; exit 2 ;;
     esac
 done
-if [ "${DISTRIBUTE_ONLY}" = 1 ]; then
-    [ -z "${WHAT}" ] || { echo "✗ --distribute-only takes <comp> <stamp> as its own args — drop the trailing '${WHAT}'" >&2; exit 2; }
-else
+if [ "${DISTRIBUTE_ONLY}" != 1 ]; then
     [ -n "${WHAT}" ] || { echo "✗ usage: release.sh <clawee|claweed|all> [--apple] [--dry-run] [--no-r2] [--bump-minor|--bump-major]" >&2; exit 2; }
 fi
 export APPLE_SIGN
@@ -589,6 +599,11 @@ distribute_only() {
     [ -x "${GHP}" ] || { echo "✗ ghp wrapper not found at ${GHP}" >&2; exit 1; }
     "${GHP}" repo view "${RELEASE_REPO}" --json name >/dev/null 2>&1 \
         || { echo "✗ ghp cannot access ${RELEASE_REPO} — check gh.account + auth" >&2; exit 1; }
+    # Same upfront reachability check the full-cut path runs (see the
+    # pre-flight block above) — without it a down host fails fast only at the
+    # scp below, AFTER the tag + GitHub Release + R2 mirror already published.
+    ssh -o BatchMode=yes -o ConnectTimeout=5 "${RELEASE_HOST}" 'true' 2>/dev/null \
+        || { echo "✗ cannot ssh to ${RELEASE_HOST}" >&2; exit 1; }
 
     # (1) tag + GitHub Release — copied from do_release's step 5 (see the doc
     # comment above for why this isn't a shared helper).
