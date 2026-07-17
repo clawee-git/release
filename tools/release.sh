@@ -124,6 +124,32 @@ export APPLE_SIGN
 RELEASE_HOST="${RELEASE_HOST:-nsm.renative.com}"
 STATIC_DIR="${STATIC_DIR:-/ebs_storage/apps/release.clawee.org/static}"
 RELEASE_REPO="${CLAWEE_RELEASE_REPO:-clawee-git/release}"
+
+# ---- Cloudflare edge purge of version.js -------------------------------------
+# The clawee.org version badge reads <comp>/version.js via JSONP, but the
+# clawee.org CF zone caches .js (4h browser TTL) — without a purge the badge
+# can show the previous release for hours. Best-effort: needs a CACHE-PURGE-
+# capable CF token on the release host (the certbot DNS token at
+# cloudflare-clawee.ini CANNOT purge — scope is DNS-only). Silently skipped
+# when the token file is absent; a failed purge only warns (the badge
+# self-heals when the TTL lapses).
+CF_ZONE_CLAWEE_ORG="${CF_ZONE_CLAWEE_ORG:-34317b4a011c53b64f3a1fe45a651fee}"
+CF_PURGE_TOKEN_FILE="${CF_PURGE_TOKEN_FILE:-/etc/cloud-certs/cloudflare-clawee-cache.ini}"
+purge_cf_version_js() {
+    local comp="$1"
+    # shellcheck disable=SC2029  # comp/zone/file are local, controlled values — client-side expansion into the remote command is intended.
+    ssh "${RELEASE_HOST}" "
+        [ -f '${CF_PURGE_TOKEN_FILE}' ] || exit 0
+        TOKEN=\$(grep -oE '[A-Za-z0-9_-]{30,}' '${CF_PURGE_TOKEN_FILE}' | head -1)
+        [ -n \"\$TOKEN\" ] || exit 0
+        curl -s -X POST -H \"Authorization: Bearer \$TOKEN\" -H 'Content-Type: application/json' \
+            'https://api.cloudflare.com/client/v4/zones/${CF_ZONE_CLAWEE_ORG}/purge_cache' \
+            --data '{\"files\":[\"https://release.clawee.org/${comp}/version.js\"]}' \
+            | grep -q '\"success\":true' \
+            && echo '✓ CF edge purge: ${comp}/version.js' \
+            || echo '⚠ CF purge failed (token lacks Cache Purge scope?) — badge follows the 4h TTL'
+    " >&2 || true
+}
 DP_DIR="${DP_DIR:-${REPO_ROOT}/../../../release.dp/code/release.dp}"
 AGE_KEY_AGE="${DP_DIR}/clawee-release.key.age"
 AGE_IDENTITY="${AGE_IDENTITY:-${HOME}/.age/clawee-release.txt}"
@@ -529,6 +555,7 @@ NOTES
     ssh "${RELEASE_HOST}" "mkdir -p '${STATIC_DIR}/${comp}'"
     scp -q "${REPO_ROOT}/${comp}/install.sh" "${RELEASE_HOST}:${STATIC_DIR}/${comp}/install.sh"
     scp -q "${REPO_ROOT}/${comp}/version.js" "${RELEASE_HOST}:${STATIC_DIR}/${comp}/version.js"
+    purge_cf_version_js "${comp}"
     if [ -f "${REPO_ROOT}/clawee-release.pub" ]; then
         scp -q "${REPO_ROOT}/clawee-release.pub" "${RELEASE_HOST}:${STATIC_DIR}/clawee-release.pub"
     fi
@@ -659,6 +686,7 @@ NOTES
     ssh "${RELEASE_HOST}" "mkdir -p '${STATIC_DIR}/${comp}'"
     scp -q "${REPO_ROOT}/${comp}/install.sh" "${RELEASE_HOST}:${STATIC_DIR}/${comp}/install.sh"
     scp -q "${REPO_ROOT}/${comp}/version.js" "${RELEASE_HOST}:${STATIC_DIR}/${comp}/version.js"
+    purge_cf_version_js "${comp}"
     if [ -f "${REPO_ROOT}/clawee-release.pub" ]; then
         scp -q "${REPO_ROOT}/clawee-release.pub" "${RELEASE_HOST}:${STATIC_DIR}/clawee-release.pub"
     fi
