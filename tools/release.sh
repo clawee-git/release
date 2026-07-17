@@ -226,8 +226,22 @@ if [ -n "${APPLE_SIGN}" ]; then
     command -v "${SIGN_BIN}" >/dev/null 2>&1 || SIGN_BIN="${HOME}/bin/modernech-sign"
     command -v "${SIGN_BIN}" >/dev/null 2>&1 \
         || { echo "✗ --apple set but modernech-sign not found on PATH or ~/bin" >&2; exit 1; }
-    security find-identity -v -p codesigning 2>/dev/null | grep -q "$("${SIGN_BIN}" id)" \
-        || { echo "✗ Developer ID identity not in keychain: $("${SIGN_BIN}" id)" >&2; exit 1; }
+    # Assert the identity is REACHABLE, not that it sits in the keychain: since
+    # 2026-07-17 modernech-sign's default `auto` mode prefers its rcodesign
+    # disk-key backend (decrypting the age-sealed .p12 at sign time), where the
+    # identity never enters a keychain at all. A keychain-presence assertion is
+    # therefore wrong under the mode we normally sign in, and it hard-fails every
+    # cut from a harness/SSH session, whose macOS security session is detached (its
+    # keychain search list is System-only, so the login keychain is unreachable).
+    # modernech-sign stays the source of truth for WHICH backend runs; this only
+    # fails fast when neither backend could possibly work.
+    if ! command -v rcodesign >/dev/null 2>&1 \
+        && ! security find-identity -v -p codesigning 2>/dev/null | grep -q "$("${SIGN_BIN}" id)"; then
+        echo "✗ Developer ID identity unreachable: $("${SIGN_BIN}" id)" >&2
+        echo "  rcodesign (disk-key backend) is not on PATH and the identity is not in this session's keychain." >&2
+        echo "  Install rcodesign (cargo install apple-codesign) or sign from a GUI Terminal session." >&2
+        exit 1
+    fi
     export MODERNECH_SIGN="${SIGN_BIN}"
     echo "→ --apple: Developer ID signing + notarization via ${SIGN_BIN}" >&2
 fi
