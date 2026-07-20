@@ -2,7 +2,7 @@
 # release.sh — cut a signed Clawee component release (clawee | claweed).
 #
 # Usage:
-#   bash tools/release.sh <clawee|claweed|all> [--apple] [--dry-run] [--bump-minor|--bump-major]
+#   bash tools/release.sh <clawee|claweed|all> [--apple] [--vulncheck|--public-release] [--dry-run] [--bump-minor|--bump-major]
 #   bash tools/release.sh --distribute-only <clawee|claweed> <stamp> [--dry-run]
 #
 # --distribute-only publishes an already-staged dist/<stamp>/ (produced by
@@ -12,9 +12,17 @@
 #
 # --apple: Developer ID sign the darwin binaries (modernech-sign, Modernech LLC)
 #   + notarize each darwin zip before publishing. WITHOUT it darwin bins are
-#   ad-hoc signed (the default) — fine for curl-install (no quarantine xattr);
-#   use --apple for release versions that may be browser-downloaded. Guideline:
+#   ad-hoc signed (the default) — fine for curl-install (no quarantine xattr).
+#   NOTE: --apple ALONE signs+notarizes but SKIPS the CVE gate; for a public,
+#   browser-downloadable release use --public-release (signing + govulncheck).
+#   --apple on its own is the conscious sign-only exception. Guideline:
 #   ~/.claude/guidelines/APPLE-SIGNING.md.
+#
+# --vulncheck: hard-gate the cut on govulncheck — scans every shipped module
+#   (clawee + claweed source, GOWORK=off) and aborts on any finding.
+#   --public-release is shorthand for --apple --vulncheck. Neither flag + an
+#   interactive TTY prompts to cut a public release (both); a non-interactive
+#   run or a "no" answer skips both.
 #
 # For each requested component this:
 #   1. Stamps the version (bump unless --dry-run) via tools/version.sh.
@@ -69,6 +77,9 @@ GO_BIN="${GO_BIN:-go}"
 command -v "${GO_BIN}" >/dev/null 2>&1 || GO_BIN=/opt/homebrew/bin/go
 export GO_BIN
 
+# shellcheck source=tools/vulncheck.sh
+source "${REPO_ROOT}/tools/vulncheck.sh"
+
 # --distribute-only <comp> <stamp> [--dry-run]: takes its component + stamp as
 # positional args right after the flag (not from the general WHAT/comp case
 # below), so it's consumed here before the normal arg loop runs.
@@ -88,6 +99,7 @@ WHAT=""
 DRY_RUN=0
 BUMP_KIND="patch"
 APPLE_SIGN=""
+VULNCHECK=""
 SKIP_R2="${CLAWEE_SKIP_R2:-}"
 for arg in "$@"; do
     # --distribute-only publishes an already-staged dist/ — it takes no
@@ -105,6 +117,8 @@ for arg in "$@"; do
     case "${arg}" in
         clawee|claweed|all)   WHAT="${arg}" ;;
         --apple)              APPLE_SIGN=1 ;;
+        --vulncheck)          VULNCHECK=1 ;;
+        --public-release)     APPLE_SIGN=1; VULNCHECK=1 ;;
         --dry-run)            DRY_RUN=1 ;;
         --bump-minor)         BUMP_KIND="minor" ;;
         --bump-major)         BUMP_KIND="major" ;;
@@ -116,9 +130,20 @@ for arg in "$@"; do
     esac
 done
 if [ "${DISTRIBUTE_ONLY}" != 1 ]; then
-    [ -n "${WHAT}" ] || { echo "✗ usage: release.sh <clawee|claweed|all> [--apple] [--dry-run] [--no-r2] [--bump-minor|--bump-major]" >&2; exit 2; }
+    [ -n "${WHAT}" ] || { echo "✗ usage: release.sh <clawee|claweed|all> [--apple] [--vulncheck|--public-release] [--dry-run] [--no-r2] [--bump-minor|--bump-major]" >&2; exit 2; }
+    # When neither signing nor the CVE gate was requested and we're interactive,
+    # offer the public-release path (both). Non-TTY or a "no" answer → dev/testing.
+    # --distribute-only never signs or CVE-gates (that already ran upstream in
+    # `rkit build`), so it skips this prompt entirely.
+    PROMPT_ANS=""
+    if [ -z "${APPLE_SIGN}" ] && [ -z "${VULNCHECK}" ] && [ -t 0 ]; then
+        printf 'Cut a PUBLIC release? — Developer-ID signing + CVE gate  [y/N] ' >&2
+        read -r PROMPT_ANS || PROMPT_ANS=""
+    fi
+    _mode="$(resolve_release_mode "${APPLE_SIGN}" "${VULNCHECK}" "${PROMPT_ANS}")"
+    APPLE_SIGN="${_mode%%|*}"; VULNCHECK="${_mode#*|}"
 fi
-export APPLE_SIGN
+export APPLE_SIGN VULNCHECK
 
 # ---- config / defaults ------------------------------------------------------
 RELEASE_HOST="${RELEASE_HOST:-nsm.renative.com}"
@@ -287,6 +312,11 @@ for comp in "${COMPONENTS[@]}"; do
             || { echo "✗ ${comp} source worktree is dirty: ${src}" >&2; exit 1; }
     fi
 done
+
+# CVE hard gate (public releases only): scan every module we're about to build.
+# Runs before the first build so a vulnerable cut never produces a binary.
+# No-op unless --vulncheck / --public-release set VULNCHECK.
+vulncheck_gate
 
 # ---- resolve the signing key ------------------------------------------------
 # Sets SIGN_KEY. For the real key we age-decrypt into a chmod-600 tmpfile and
