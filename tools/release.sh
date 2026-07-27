@@ -2,7 +2,7 @@
 # release.sh — cut a signed Clawee component release (clawee | claweed).
 #
 # Usage:
-#   bash tools/release.sh <clawee|claweed|all> [--apple] [--vulncheck|--public-release] [--dry-run] [--bump-minor|--bump-major]
+#   bash tools/release.sh <clawee|claweed|all> [--apple] [--vulncheck|--public|--public-release] [--dry-run] [--bump-minor|--bump-major]
 #   bash tools/release.sh --distribute-only <clawee|claweed> <stamp> [--dry-run]
 #
 # --distribute-only publishes an already-staged dist/<stamp>/ (produced by
@@ -20,7 +20,7 @@
 #
 # --vulncheck: hard-gate the cut on govulncheck — scans every shipped module
 #   (clawee + claweed source, GOWORK=off) and aborts on any finding.
-#   --public-release is shorthand for --apple --vulncheck. Neither flag + an
+#   --public / --public-release is shorthand for --apple --vulncheck. Neither flag + an
 #   interactive TTY prompts to cut a public release (both); a non-interactive
 #   run or a "no" answer skips both.
 #
@@ -98,6 +98,90 @@ fi
 WHAT=""
 DRY_RUN=0
 BUMP_KIND="patch"
+
+# --- Apple account plugin (project-specific) ---------------------------------
+# Resolves the account plugin and exports APPLE_ACCOUNT, APPLE_HOME and
+# APPLE_ACCOUNT_DIR for modernech-sign. Both values resolve the same way — an
+# exported variable first, then a per-product config file:
+#
+#   account   APPLE_ACCOUNT → config/apple-account   (the plugin folder name)
+#   home      APPLE_HOME    → config/apple-home      (the absolute plugin root)
+#
+# or APPLE_ACCOUNT_DIR names the account's folder directly and settles both.
+# The config files are gitignored, which is what lets this PUBLIC repo resolve a
+# machine path without carrying one. $HOME is never consulted: it is unset under
+# launchd, cron and a detached harness session, where a $HOME-derived default
+# silently goes RELATIVE. cmd/rkit/apple_account.go is the Go twin of this
+# resolution and shares the same precedence.
+#
+# Called only when Apple signing was requested, so every unresolved state exits
+# 1. This used to return 0 on a missing config and merely WARN on a missing
+# plugin folder, then sign anyway — producing an AD-HOC cut the operator
+# believes is Developer-ID signed and notarized.
+_first_config_line() {
+    [ -f "$1" ] || return 0
+    sed -n '/^[[:space:]]*#/d;/^[[:space:]]*$/d;p;q' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+_apple_refuse() {
+    echo "  refusing to continue: signing with no account plugin produces an AD-HOC build" >&2
+    echo "  that looks Developer-ID signed." >&2
+    exit 1
+}
+
+load_apple_account() {
+    if [ -n "${APPLE_ACCOUNT_DIR:-}" ]; then
+        if [ ! -d "${APPLE_ACCOUNT_DIR}" ]; then
+            echo "✗ Apple signing requested but APPLE_ACCOUNT_DIR points at" >&2
+            echo "  ${APPLE_ACCOUNT_DIR}, which is not a directory" >&2
+            _apple_refuse
+        fi
+        export APPLE_ACCOUNT_DIR
+        echo "→ Apple account dir (from APPLE_ACCOUNT_DIR): ${APPLE_ACCOUNT_DIR}" >&2
+        return 0
+    fi
+
+    local conf="${REPO_ROOT}/config/apple-account"
+    [ -f "$conf" ] || conf="${REPO_ROOT}/config/apple.account"
+    export APPLE_ACCOUNT="${APPLE_ACCOUNT:-$(_first_config_line "$conf")}"
+    if [ -z "${APPLE_ACCOUNT}" ]; then
+        echo "✗ Apple signing requested but APPLE_ACCOUNT is unresolved" >&2
+        echo "  supply it as one of:" >&2
+        echo "    ${REPO_ROOT}/config/apple-account" >&2
+        echo "        one line: the Apple account plugin folder name" >&2
+        echo "    \$APPLE_ACCOUNT      the same value, from the environment" >&2
+        echo "    \$APPLE_ACCOUNT_DIR  the account's folder itself, settling both" >&2
+        _apple_refuse
+    fi
+
+    local home_conf="${REPO_ROOT}/config/apple-home"
+    [ -f "$home_conf" ] || home_conf="${REPO_ROOT}/config/apple.home"
+    export APPLE_HOME="${APPLE_HOME:-$(_first_config_line "$home_conf")}"
+    if [ -z "${APPLE_HOME}" ]; then
+        echo "✗ Apple signing requested but APPLE_HOME is unresolved" >&2
+        echo "  supply it as one of:" >&2
+        echo "    ${REPO_ROOT}/config/apple-home" >&2
+        echo "        one line: the absolute directory holding one folder per Apple account" >&2
+        echo "    \$APPLE_HOME         the same value, from the environment" >&2
+        echo "    \$APPLE_ACCOUNT_DIR  the account's folder itself, settling both" >&2
+        _apple_refuse
+    fi
+    case "${APPLE_HOME}" in
+        /*) ;;
+        *)  echo "✗ Apple signing requested but APPLE_HOME resolved to" >&2
+            echo "  \"${APPLE_HOME}\", which is not an absolute path" >&2
+            _apple_refuse ;;
+    esac
+
+    export APPLE_ACCOUNT_DIR="${APPLE_HOME}/${APPLE_ACCOUNT}"
+    if [ ! -d "$APPLE_ACCOUNT_DIR" ]; then
+        echo "✗ Apple signing requested but the account plugin folder points at" >&2
+        echo "  ${APPLE_ACCOUNT_DIR}, which is not a directory" >&2
+        _apple_refuse
+    fi
+    echo "→ Apple account: $APPLE_ACCOUNT ($APPLE_ACCOUNT_DIR)" >&2
+}
+
 APPLE_SIGN=""
 VULNCHECK=""
 SKIP_R2="${CLAWEE_SKIP_R2:-}"
@@ -118,7 +202,7 @@ for arg in "$@"; do
         clawee|claweed|all)   WHAT="${arg}" ;;
         --apple)              APPLE_SIGN=1 ;;
         --vulncheck)          VULNCHECK=1 ;;
-        --public-release)     APPLE_SIGN=1; VULNCHECK=1 ;;
+        --public|--public-release) APPLE_SIGN=1; VULNCHECK=1 ;;
         --dry-run)            DRY_RUN=1 ;;
         --bump-minor)         BUMP_KIND="minor" ;;
         --bump-major)         BUMP_KIND="major" ;;
@@ -130,7 +214,7 @@ for arg in "$@"; do
     esac
 done
 if [ "${DISTRIBUTE_ONLY}" != 1 ]; then
-    [ -n "${WHAT}" ] || { echo "✗ usage: release.sh <clawee|claweed|all> [--apple] [--vulncheck|--public-release] [--dry-run] [--no-r2] [--bump-minor|--bump-major]" >&2; exit 2; }
+    [ -n "${WHAT}" ] || { echo "✗ usage: release.sh <clawee|claweed|all> [--apple] [--vulncheck|--public|--public-release] [--dry-run] [--no-r2] [--bump-minor|--bump-major]" >&2; exit 2; }
     # When neither signing nor the CVE gate was requested and we're interactive,
     # offer the public-release path (both). Non-TTY or a "no" answer → dev/testing.
     # --distribute-only never signs or CVE-gates (that already ran upstream in
@@ -144,6 +228,7 @@ if [ "${DISTRIBUTE_ONLY}" != 1 ]; then
     APPLE_SIGN="${_mode%%|*}"; VULNCHECK="${_mode#*|}"
 fi
 export APPLE_SIGN VULNCHECK
+[ -n "${APPLE_SIGN}" ] && load_apple_account
 
 # ---- config / defaults ------------------------------------------------------
 RELEASE_HOST="${RELEASE_HOST:-nsm.renative.com}"

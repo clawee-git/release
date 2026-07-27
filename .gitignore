@@ -1,6 +1,12 @@
 # build artifacts
 /dist/
 /build/
+# operator-local Apple signing config (this repo is public — the account name
+# and the plugin root are machine facts, not source)
+/config/apple-account
+/config/apple.account
+/config/apple-home
+/config/apple.home
 # decrypted secrets (never commit)
 *.key
 *.minisign.key

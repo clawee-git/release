@@ -70,7 +70,9 @@ func runBuild(args []string) error {
 	fs.StringVar(&o.RepoDir, "repo", ".", "release repo worktree")
 	fs.StringVar(&o.SrcDir, "src", "", "component source worktree (default: resolved from CLAWEE_SRC_<COMP>)")
 	fs.StringVar(&o.SignKey, "sign-key", "", "minisign secret key (required for a real cut; --dry-run defaults to the TEST key)")
-	fs.BoolVar(&o.Apple, "apple", false, "notarize macOS binaries")
+	appleFlag := fs.Bool("apple", false, "Developer-ID sign + notarize macOS binaries")
+	publicFlag := fs.Bool("public", false, "public release: apple sign+notarize + CVE gate (standard ship path)")
+	publicReleaseFlag := fs.Bool("public-release", false, "alias for --public")
 	fs.BoolVar(&o.DryRun, "dry-run", false, "build without bumping the version or requiring a real sign key")
 	fs.BoolVar(&o.NoVulncheck, "no-vulncheck", false, "skip the CVE gate (default: the gate runs)")
 	bumpPatch := fs.Bool("bump-patch", false, "bump the component's patch version before building")
@@ -78,6 +80,14 @@ func runBuild(args []string) error {
 	bumpMajor := fs.Bool("bump-major", false, "bump the component's major version before building (prompts unless CLAWEE_RELEASE_YES=1)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	// --public / --public-release is the standard ship path: Apple sign+notarize + CVE gate.
+	if *publicFlag || *publicReleaseFlag {
+		o.Apple = true
+		o.NoVulncheck = false
+	}
+	if *appleFlag {
+		o.Apple = true
 	}
 	if (*bumpPatch && *bumpMinor) || (*bumpPatch && *bumpMajor) || (*bumpMinor && *bumpMajor) {
 		return fmt.Errorf("only one of --bump-patch|--bump-minor|--bump-major may be set")
@@ -92,6 +102,14 @@ func runBuild(args []string) error {
 	}
 	if o.SrcDir == "" {
 		o.SrcDir = srcDirFor(o.Component)
+	}
+	if o.Apple {
+		// Fatal, not advisory: an unresolved account means the Developer-ID path
+		// runs with no account plugin, producing an ad-hoc signed build the
+		// operator believes is Developer-ID signed and notarized.
+		if err := loadAppleAccount(o.RepoDir); err != nil {
+			return err
+		}
 	}
 	return buildRun(o)
 }
@@ -120,6 +138,7 @@ func srcDirFor(comp string) string {
 // bumps the component's version (registering a revert that fires on error or
 // --dry-run), runs the CVE gate unless NoVulncheck, then reuses orchestrate to
 // build+assemble+checksum+sign into <RepoDir>/dist/<stamp>/.
+
 func buildRun(o buildOpts) (err error) {
 	// Absolutize --repo before it's used to derive OutDir, the version.sh
 	// path, and the dist dir: build.Compile execs `go build -o <OutDir>/...`
