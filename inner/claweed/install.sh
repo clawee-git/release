@@ -6,7 +6,7 @@
 # NEVER ships this copy; it exists only so repo-local shellcheck + reviews
 # audit the same code that ships. Refresh whenever the canonical template
 # changes: re-render it with __CLAWEED_VERSION__ -> (rendered-at-build) and
-# keep this header block. Last synced: 2026-07-06 (daemon @ 2a232e1).
+# keep this header block. Last synced: 2026-07-29 (daemon @ c5ad76d).
 # ===========================================================================
 # claweed installer — LOCAL-SOURCE variant (POSIX sh, macOS + Linux).
 #
@@ -18,12 +18,17 @@
 # claweed + clawee-spawn binaries sit alongside this script.
 #
 # SUDO-MINIMAL model. Run this AS THE USER — do NOT prefix it with sudo. Almost
-# everything (the claweed binary, the data-dir, the launchd/systemd boot unit in
-# your own user domain, the gateway dependency, the doctor tail) installs with NO
-# privilege. The script escalates with `sudo` for EXACTLY ONE tier: the
-# setuid-root spawn helper + its root-owned allowlist (Tier S). If passwordless
-# sudo isn't available, the rest of the install still completes and the exact
-# Tier-S sudo block is printed for you to run by hand.
+# everything (the claweed binary, the data-dir, the gateway dependency, the
+# doctor tail) installs with NO privilege. The script escalates with `sudo` for
+# exactly TWO steps:
+#   - Tier S: the setuid-root spawn helper + its root-owned allowlist.
+#   - the SYSTEM boot unit (/Library/LaunchDaemons on macOS, /etc/systemd/system
+#     on Linux) — written/loaded via sudo ONLY when its content changed or it
+#     isn't loaded. The unit is system-level so claweed starts at boot without
+#     a GUI login, but it RUNS AS YOU (UserName/User=); binaries, data-dir and
+#     config stay per-user.
+# If sudo isn't available, the rest of the install still completes and the
+# exact sudo block(s) are printed for you to run by hand.
 #
 # Usage (from the staged dir):
 #   sh ./install.sh                 # interactive: prompts before the boot step
@@ -37,6 +42,10 @@
 #   CLAWEE_REGISTER_SOCKET  burrowee-gateway register socket the daemon dials
 #                           (default: auto-detected from the running gateway)
 #   CLAWEE_DATA_DIR         claweed --data-dir (default: ~/.clawee/data)
+#   CLAWEE_FORCE_SERVICE_OVERRIDE=1
+#                           consent to replacing a system boot unit that belongs
+#                           to a DIFFERENT user (the system slot is single — it
+#                           is normally owned by whoever installed first)
 #
 # Only clawee's own channel is replaced by this local source; the burrowee
 # dependency still installs from burrowee's PUBLIC channel
@@ -57,11 +66,23 @@ SPAWN_DIR="/usr/local/bin"
 SPAWN_HELPER="$SPAWN_DIR/clawee-spawn"
 ETC_DIR="/usr/local/etc/clawee"
 ALLOW_FILE="$ETC_DIR/spawn-allow"
+# The operator opt-in that lets a SYSTEM account (root or a service uid) host
+# tenant sessions. The spawn helper refuses to fork a child as any uid below the
+# platform floor unless that uid is listed here, so a host administered entirely
+# as root installs fine and then fails at the FIRST session without it. Written
+# only when the installing user is itself below the floor — an ordinary user
+# install never creates it, and the refusal stays in force everywhere else.
+SYS_UID_FILE="$ETC_DIR/spawn-allow-system-uids"
 # Legacy: the old all-sudo installer put claweed here. We clean it up below.
 LEGACY_CLAWEED_BIN="/usr/local/bin/claweed"
 
 LABEL="org.clawee.claweed"
 VERSION="(rendered-at-build)"
+
+# System boot-unit locations. The CLAWEE_*_DIR overrides are TEST SEAMS for the
+# sandboxed installer harness (install_test.sh) — never set them in production.
+LAUNCHD_DIR="${CLAWEE_LAUNCHD_DIR:-/Library/LaunchDaemons}"
+SYSTEMD_DIR="${CLAWEE_SYSTEMD_DIR:-/etc/systemd/system}"
 
 # Minimum burrowee-gateway version this claweed expects (the register-link
 # contract floor). Empty = accept any installed gateway; only install when none.
@@ -88,14 +109,14 @@ sq() {
 # machine-specific home and each operator's shell re-expands ~ to THEIR own home.
 # The ~ is emitted OUTSIDE the quotes (tilde expansion never happens inside
 # quotes; POSIX exempts the expanded home from field splitting, so a space in
-# $HOME is still safe) while the remainder stays single-quoted to survive spaces
-# and shell metacharacters — matching this script's quoting discipline. Paths
-# outside $HOME are single-quoted whole.
+# $HOME is still safe) while the remainder is routed through sq() — this
+# script's quoting discipline — so even an embedded single quote survives the
+# operator's paste intact. Paths outside $HOME are sq-quoted whole.
 tilde_path() {
     case "$1" in
-        "$HOME"/*) printf "~/'%s'" "${1#"$HOME"/}" ;;
+        "$HOME"/*) printf '~/%s' "$(sq "${1#"$HOME"/}")" ;;
         "$HOME")   printf '~' ;;
-        *)         printf "'%s'" "$1" ;;
+        *)         sq "$1" ;;
     esac
 }
 
@@ -135,9 +156,15 @@ claweed installer ($VERSION) — sudo-minimal
   --dry         print the update plan (what would change + restart-required), no changes
   --auto        apply the update unattended; restart only if changed
   --force       reinstall everything (binary + spawn + boot-unit) + restart
-  --yes         unattended install; load the boot unit without prompting
+  --yes         unattended install; install + load the boot unit without prompting
   --no-restart  apply, but don't restart a running claweed afterward
   --purge       uninstall only: also delete ~/.clawee/data (TENANT TRUST KEYS)
+
+  The boot unit installs SYSTEM-level (/Library/LaunchDaemons on macOS,
+  /etc/systemd/system on Linux) so claweed starts at boot with nobody logged
+  in; it runs AS YOU. sudo is used only when the unit changed or isn't loaded.
+  One system unit per host: CLAWEE_FORCE_SERVICE_OVERRIDE=1 consents to taking
+  over another user's unit.
 EOF
 }
 # Consume an optional leading subcommand (install|uninstall), then flags.
@@ -176,6 +203,30 @@ case "$UPDATE_MODE" in
     *)     fail "invalid CLAWEE_UPDATE_MODE: $UPDATE_MODE (dry|apply|auto|force)" ;;
 esac
 
+# version_of <cmd> [args…] — the first version-shaped token from that command's
+# `--version` output, or "" if it prints none / isn't installed.
+#
+# `--version` output is HUMAN text, not a protocol, and every tool in this
+# product shapes it differently:
+#
+#   clawee            clawee v0.1.101.2026.07.29.04e3b4cf
+#   claweed           claweed v0.1.41.2026.07.29.d186508b (installed; running)
+#   burrowee-gateway  burrowee-gateway v0.1.102…  (installed binary)
+#                     running daemon:  v0.1.102…  ✓ up to date
+#   burrowee-cli      a THREE-line "versions" block
+#
+# Parsing by field position therefore breaks the moment a tool adds a line or a
+# suffix, and both callers below were broken by exactly that: `awk '{print $NF}'`
+# on claweed returned "running)" (the trailing word of its suffix), and
+# `awk '{print $2}'` on burrowee-gateway returned a TWO-line string, since awk
+# prints the field for EVERY line. Matching the version SHAPE survives all four
+# formats and any future reshuffle. Pipeline status is `head`'s (always 0), so a
+# no-match cannot trip `set -e`; a missing binary yields "" rather than failing.
+version_of() {
+    "$@" --version 2>/dev/null |
+        grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+[^[:space:]]*' | head -n1
+}
+
 # semver_lt A B — exit 0 iff version A is strictly older than B. Portable
 # (no GNU `sort -V`): strips a leading 'v', splits on '.', compares fields
 # numerically left-to-right, missing fields treated as 0. Non-numeric/garbage
@@ -210,9 +261,11 @@ confirm() {
 # ---- identity + data-dir ------------------------------------------------
 # This script runs AS THE INVOKING USER (no leading sudo), so id/$HOME are the
 # real human's. The spawn allowlist trusts THIS uid — it's the uid claweed runs
-# as. The data-dir is this user's ~/.clawee/data.
+# as (the SYSTEM boot unit's UserName/User= names this user too). The data-dir
+# is this user's ~/.clawee/data.
 USER_UID="$(id -u)"
 USER_NAME="$(id -un)"
+USER_GROUP="$(id -gn)"
 DATA_DIR="${CLAWEE_DATA_DIR:-$HOME/.clawee/data}"
 
 # ---- platform detection -------------------------------------------------
@@ -228,8 +281,101 @@ case "$(uname -m)" in
 esac
 KIND=$( [ "$OS" = darwin ] && echo launchd || echo systemd )
 
+# ---- system-account tenant (H3 floor) ------------------------------------
+# Mirrors internal/spawn_helper minTenantUID: 1000 on linux (/etc/login.defs
+# UID_MIN), 500 on darwin. When the installing user sits BELOW the floor — a box
+# administered entirely as root is the common case — the spawn helper will
+# refuse to fork sessions as that account unless the operator opts the uid in.
+# The installer knows this at install time, so it writes the opt-in as part of
+# the same privileged step that writes the caller allowlist, instead of leaving
+# the operator to discover it at the first failed session.
+MIN_TENANT_UID=$( [ "$OS" = darwin ] && echo 500 || echo 1000 )
+NEEDS_SYS_UID=0
+[ "$USER_UID" -lt "$MIN_TENANT_UID" ] && NEEDS_SYS_UID=1
+
 # resolve the directory holding this script (the staged dir with the binaries).
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# ---- system boot-unit helpers (shared by install + uninstall) ------------
+# The boot unit is SYSTEM-level: /Library/LaunchDaemons (macOS) or
+# /etc/systemd/system (Linux), running AS THE INVOKING USER — so claweed starts
+# at boot with nobody logged in. Writing/loading it needs root.
+
+# unit_path_for echoes the system boot-unit path for the current OS.
+unit_path_for() {
+    if [ "$OS" = darwin ]; then echo "$LAUNCHD_DIR/$LABEL.plist"
+    else echo "$SYSTEMD_DIR/claweed.service"; fi
+}
+
+# root_posture — decide ONCE how privileged commands run: "direct" (already
+# root), "sudo" (passwordless), "sudo_tty" (interactive password prompt on
+# /dev/tty — works under `curl … | sh` too), or "none" (defer to a printed
+# block). Cached in ROOT_HOW.
+ROOT_HOW=""
+root_posture() {
+    [ -n "$ROOT_HOW" ] && return 0
+    if [ "$USER_UID" -eq 0 ]; then ROOT_HOW=direct
+    elif sudo -n true 2>/dev/null; then ROOT_HOW=sudo
+    elif [ -r /dev/tty ]; then ROOT_HOW=sudo_tty
+    else ROOT_HOW=none; fi
+}
+
+# run_root CMD ARGS… — run a privileged command per root_posture. Returns 1
+# WITHOUT running anything when no sudo path exists (the caller defers).
+run_root() {
+    root_posture
+    case "$ROOT_HOW" in
+        direct)        "$@" ;;
+        sudo|sudo_tty) sudo "$@" ;;
+        none)          return 1 ;;
+    esac
+}
+
+# unit_owner FILE — extract the run-as user recorded in a system unit (the
+# plist <key>UserName</key> value / the systemd User= line); empty when the
+# file is absent or carries no owner. Mirrors print-boot-unit's rendering so
+# the single system slot's ownership is unambiguous.
+unit_owner() {
+    [ -f "$1" ] || return 0
+    if [ "$OS" = darwin ]; then
+        sed -n 's/.*<key>UserName<\/key><string>\([^<]*\)<\/string>.*/\1/p' "$1" | head -n 1
+    else
+        sed -n 's/^User=//p' "$1" | head -n 1
+    fi
+}
+
+# remove_legacy_user_unit — best-effort teardown of the pre-system-level
+# PER-USER boot unit (the gui-domain LaunchAgent / systemd --user unit) this
+# installer used to write. Idempotent, no sudo (everything is user-owned);
+# used by both the install migration and uninstall.
+remove_legacy_user_unit() {
+    if [ "$OS" = darwin ]; then
+        legacy_unit="$HOME/Library/LaunchAgents/$LABEL.plist"
+        launchctl bootout "gui/$USER_UID/$LABEL" 2>/dev/null || true
+        launchctl bootout "user/$USER_UID/$LABEL" 2>/dev/null || true
+        if [ -f "$legacy_unit" ]; then
+            rm -f "$legacy_unit" && ok "removed legacy LaunchAgent $legacy_unit"
+        fi
+    else
+        legacy_unit="$HOME/.config/systemd/user/claweed.service"
+        legacy_present=0
+        [ -f "$legacy_unit" ] && legacy_present=1
+        systemctl --user is-enabled claweed.service >/dev/null 2>&1 && legacy_present=1
+        if [ "$legacy_present" -eq 1 ]; then
+            systemctl --user disable --now claweed.service 2>/dev/null || true
+            rm -f "$legacy_unit" 2>/dev/null || true
+            systemctl --user daemon-reload 2>/dev/null || true
+            ok "removed legacy systemd user unit"
+        fi
+    fi
+}
+
+# system_unit_loaded — is the claweed system unit known to the system service
+# manager right now? (Both probes are readable without root.)
+system_unit_loaded() {
+    if [ "$OS" = darwin ]; then launchctl print "system/$LABEL" >/dev/null 2>&1
+    else systemctl is-active --quiet claweed.service 2>/dev/null; fi
+}
 
 # =========================================================================
 # UNINSTALL MODE
@@ -237,34 +383,28 @@ SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ "$MODE" = uninstall ]; then
     printf '\n  claweed uninstaller  %s  (%s/%s)\n\n' "$VERSION" "$OS" "$ARCH"
 
-    # ---- Tier U (no sudo): boot unit + user binary + (optionally) data ---
-    if [ "$OS" = darwin ]; then
-        UNIT_PATH="$HOME/Library/LaunchAgents/$LABEL.plist"
-        if launchctl bootout "gui/$USER_UID/$LABEL" 2>/dev/null; then
-            ok "unloaded LaunchAgent (gui/$USER_UID/$LABEL)"
+    # ---- system boot unit (sudo) + legacy per-user units (no sudo) --------
+    UNIT_PATH="$(unit_path_for)"
+    UNIT_MANUAL=0
+    if [ -f "$UNIT_PATH" ] || system_unit_loaded; then
+        if [ "$OS" = darwin ]; then
+            if run_root sh -c "launchctl bootout 'system/$LABEL' 2>/dev/null; rm -f '$UNIT_PATH'"; then
+                ok "unloaded + removed system unit $UNIT_PATH"
+            else
+                UNIT_MANUAL=1
+            fi
         else
-            info "LaunchAgent not loaded — nothing to unload"
-        fi
-        if [ -f "$UNIT_PATH" ]; then
-            rm -f "$UNIT_PATH"; ok "removed $UNIT_PATH"
-        else
-            info "no LaunchAgent plist at $UNIT_PATH — skipped"
+            if run_root sh -c "systemctl disable --now claweed.service 2>/dev/null; rm -f '$UNIT_PATH'; systemctl daemon-reload 2>/dev/null || true"; then
+                ok "disabled + removed system unit $UNIT_PATH"
+            else
+                UNIT_MANUAL=1
+            fi
         fi
     else
-        UNIT_PATH="$HOME/.config/systemd/user/claweed.service"
-        if systemctl --user disable --now claweed.service 2>/dev/null; then
-            ok "disabled + stopped systemd user unit"
-        else
-            info "systemd user unit not active — nothing to disable"
-        fi
-        if [ -f "$UNIT_PATH" ]; then
-            rm -f "$UNIT_PATH"
-            systemctl --user daemon-reload 2>/dev/null || true
-            ok "removed $UNIT_PATH"
-        else
-            info "no systemd unit at $UNIT_PATH — skipped"
-        fi
+        info "no system boot unit at $UNIT_PATH — skipped"
     fi
+    # Legacy per-user units from pre-system-level installs (user-owned, no sudo).
+    remove_legacy_user_unit
 
     if [ -f "$CLAWEED_BIN" ]; then
         rm -f "$CLAWEED_BIN" && ok "removed $CLAWEED_BIN"
@@ -302,12 +442,37 @@ if [ "$MODE" = uninstall ]; then
         fi
     fi
 
+    # print_unit_manual_block — the copy-paste commands to remove the system
+    # boot unit by hand (printed when run_root had no sudo path).
+    print_unit_manual_block() {
+        cat >&2 <<EOF
+
+  ! the system boot unit needs root to remove — do it by hand:
+
+EOF
+        if [ "$OS" = darwin ]; then
+            printf "      sudo launchctl bootout 'system/%s' 2>/dev/null || true\n" "$LABEL" >&2
+            printf "      sudo rm -f '%s'\n" "$UNIT_PATH" >&2
+        else
+            printf '      sudo systemctl disable --now claweed.service\n' >&2
+            printf "      sudo rm -f '%s'\n" "$UNIT_PATH" >&2
+            printf '      sudo systemctl daemon-reload\n' >&2
+        fi
+    }
+
     # ---- Tier S (sudo, only if anything root-owned is present) -----------
     NEED_TIER_S=0
     [ -e "$SPAWN_HELPER" ] && NEED_TIER_S=1
     [ -e "$ALLOW_FILE" ] && NEED_TIER_S=1
+    [ -e "$SYS_UID_FILE" ] && NEED_TIER_S=1
     [ -e "$LEGACY_CLAWEED_BIN" ] && NEED_TIER_S=1
     if [ "$NEED_TIER_S" -eq 0 ]; then
+        if [ "$UNIT_MANUAL" -eq 1 ]; then
+            print_unit_manual_block
+            printf '\n' >&2
+            warn "claweed uninstalled (user tier); the system boot unit was left for the manual block above"
+            exit 4
+        fi
         info "no root-owned spawn helper / allowlist present — nothing for sudo to remove"
         printf '\n  \xe2\x9c\x93 claweed uninstalled (local-source, %s)\n\n' "$VERSION"
         exit 0
@@ -319,12 +484,13 @@ if [ "$MODE" = uninstall ]; then
     elif sudo -n true 2>/dev/null; then
         SUDO="sudo"
     else
+        [ "$UNIT_MANUAL" -eq 1 ] && print_unit_manual_block
         cat >&2 <<EOF
 
   ! the setuid spawn helper + allowlist are root-owned — passwordless sudo is
     not available, so remove them by hand:
 
-      sudo rm -f '$SPAWN_HELPER' '$ALLOW_FILE'
+      sudo rm -f '$SPAWN_HELPER' '$ALLOW_FILE' '$SYS_UID_FILE'
       sudo rmdir '$ETC_DIR' 2>/dev/null || true
 EOF
         if [ -e "$LEGACY_CLAWEED_BIN" ]; then
@@ -340,6 +506,9 @@ EOF
     fi
     if [ -e "$ALLOW_FILE" ]; then
         $SUDO rm -f "$ALLOW_FILE" && ok "removed $ALLOW_FILE"
+    fi
+    if [ -e "$SYS_UID_FILE" ]; then
+        $SUDO rm -f "$SYS_UID_FILE" && ok "removed $SYS_UID_FILE"
     fi
     # rmdir only when empty — never recursive (it's a shared /usr/local tree).
     if [ -d "$ETC_DIR" ] && $SUDO rmdir "$ETC_DIR" 2>/dev/null; then
@@ -381,8 +550,15 @@ if [ -z "$REGISTER_SOCKET" ] && command -v lsof >/dev/null 2>&1; then
     # Use lsof's field output (-F n) so the socket NAME is on its own line (n-prefixed),
     # not the whitespace-split last column of the human table — a path containing a
     # space (e.g. a $HOME with a space) would otherwise be truncated by `awk $NF`.
+    # The name field is NOT the bare path on every lsof: Linux (4.93+) appends the
+    # socket type — "n/path/register.sock type=STREAM" — while macOS (4.91) emits
+    # "n/path/register.sock". Strip that trailing " type=<KIND>" before matching, or
+    # the anchored grep below silently finds nothing on Linux and the boot unit is
+    # never rendered. Unnamed sockets ("ntype=DGRAM") have no leading space, so they
+    # survive the strip unchanged and are dropped by the grep.
     socket_matches="$(lsof -U -F n 2>/dev/null \
         | sed -n 's/^n//p' \
+        | sed 's/ type=[^ ]*$//' \
         | grep '/register\.sock$' \
         | sort -u)"
     match_count="$(printf '%s' "$socket_matches" | grep -c . || true)"
@@ -404,11 +580,23 @@ if [ -z "$REGISTER_SOCKET" ] && command -v lsof >/dev/null 2>&1; then
     fi
 fi
 
-# unit_path_for echoes the boot-unit path for the current OS (used by the plan +
-# the boot-unit step).
-unit_path_for() {
-    if [ "$OS" = darwin ]; then echo "$HOME/Library/LaunchAgents/$LABEL.plist"
-    else echo "$HOME/.config/systemd/user/claweed.service"; fi
+# render_boot_unit BIN OUT — render the SYSTEM boot unit to OUT using BIN's
+# print-boot-unit (BIN = the staged claweed during the plan, the installed one
+# at apply time; the flags always name the INSTALLED paths). The unit runs as
+# THIS user (--user/--group/--home) so only the boot slot is system-level.
+render_boot_unit() {
+    if [ "$OS" = darwin ]; then
+        "$1" print-boot-unit --kind=launchd --claweed "$CLAWEED_BIN" \
+            --data-dir "$DATA_DIR" --spawn-helper "$SPAWN_HELPER" \
+            --register-socket "$REGISTER_SOCKET" \
+            --user "$USER_NAME" --group "$USER_GROUP" --home "$HOME" \
+            --log "$HOME/Library/Logs/claweed.log" >"$2" 2>/dev/null
+    else
+        "$1" print-boot-unit --kind=systemd --claweed "$CLAWEED_BIN" \
+            --data-dir "$DATA_DIR" --spawn-helper "$SPAWN_HELPER" \
+            --register-socket "$REGISTER_SOCKET" \
+            --user "$USER_NAME" --group "$USER_GROUP" --home "$HOME" >"$2" 2>/dev/null
+    fi
 }
 
 # spawn_unchanged / unit_unchanged are the idempotency checks shared by the PLAN
@@ -416,24 +604,25 @@ unit_path_for() {
 spawn_unchanged() {
     [ "$FORCE_REPLACE" -eq 0 ] \
         && [ -f "$SPAWN_HELPER" ] && cmp -s "$SELF_DIR/clawee-spawn" "$SPAWN_HELPER" \
-        && [ -f "$ALLOW_FILE" ] && grep -qx "$USER_UID" "$ALLOW_FILE" 2>/dev/null
+        && [ -f "$ALLOW_FILE" ] && grep -qx "$USER_UID" "$ALLOW_FILE" 2>/dev/null \
+        && sys_uid_optin_ok
+}
+# sys_uid_optin_ok: 0 when the system-account opt-in is not needed, or is needed
+# and already lists this uid. Folded into spawn_unchanged so a RE-INSTALL on a
+# host that is missing it re-enters the privileged step and repairs it, rather
+# than reporting "unchanged" and leaving sessions broken.
+sys_uid_optin_ok() {
+    [ "$NEEDS_SYS_UID" -eq 0 ] && return 0
+    [ -f "$SYS_UID_FILE" ] && grep -qx "$USER_UID" "$SYS_UID_FILE" 2>/dev/null
 }
 unit_unchanged() {
     # Render the would-be unit with the STAGED claweed (the plan runs before the
-    # binary is installed) and cmp against the installed unit. No socket / render
-    # failure / force ⇒ "changed".
+    # binary is installed) and cmp against the installed SYSTEM unit (0644 —
+    # readable without root). No socket / render failure / force ⇒ "changed".
     [ "$FORCE_REPLACE" -eq 0 ] && [ -n "$REGISTER_SOCKET" ] || return 1
     _up="$(unit_path_for)"; [ -f "$_up" ] || return 1
-    _tmp="$(mktemp)"; _kind=$( [ "$OS" = darwin ] && echo launchd || echo systemd )
-    if [ "$OS" = darwin ]; then
-        "$SELF_DIR/claweed" print-boot-unit --kind="$_kind" --claweed "$CLAWEED_BIN" \
-            --data-dir "$DATA_DIR" --spawn-helper "$SPAWN_HELPER" \
-            --register-socket "$REGISTER_SOCKET" --log "$HOME/Library/Logs/claweed.log" >"$_tmp" 2>/dev/null
-    else
-        "$SELF_DIR/claweed" print-boot-unit --kind="$_kind" --claweed "$CLAWEED_BIN" \
-            --data-dir "$DATA_DIR" --spawn-helper "$SPAWN_HELPER" \
-            --register-socket "$REGISTER_SOCKET" --user "$USER_NAME" >"$_tmp" 2>/dev/null
-    fi
+    _tmp="$(mktemp)"
+    render_boot_unit "$SELF_DIR/claweed" "$_tmp" || { rm -f "$_tmp"; return 1; }
     _r=1; cmp -s "$_tmp" "$_up" || _r=0; rm -f "$_tmp"; [ "$_r" -eq 1 ]
 }
 
@@ -443,7 +632,12 @@ unit_unchanged() {
 # =========================================================================
 RESTART_NEEDED=0
 if [ -n "$UPDATE_MODE" ]; then
-    installed_ver="$("$CLAWEED_BIN" --version 2>/dev/null | awk '{print $NF}')"
+    # NOT `awk '{print $NF}'`: claweed's --version ends "(installed; running)",
+    # so the last field was the literal "running)". That can never equal
+    # $VERSION, so bin_changed was ALWAYS 1 — every run planned a REPLACE and
+    # set RESTART_NEEDED, bouncing a healthy daemon on an update that had
+    # nothing to install, and printing "running) -> v0.1.41   REPLACE".
+    installed_ver="$(version_of "$CLAWEED_BIN")"
     [ -n "$installed_ver" ] || installed_ver="(none)"
     bin_changed=1; [ "$FORCE_REPLACE" -eq 0 ] && [ "$installed_ver" = "$VERSION" ] && bin_changed=0
     spawn_unchanged && spawn_line="unchanged" || spawn_line="REPLACE"
@@ -586,9 +780,11 @@ elif [ "$SPAWN_SKIPPED" -eq 1 ]; then
     # carries its surrounding single quotes, so the heredoc references them bare.
     SETUP_SCRIPT="$CLAWEE_HOME/clawee-spawn-setup.sh"
     Q_STAGED_SPAWN="$(sq "$STAGED_SPAWN")"
+    Q_SPAWN_DIR="$(sq "$SPAWN_DIR")"
     Q_SPAWN_HELPER="$(sq "$SPAWN_HELPER")"
     Q_ETC_DIR="$(sq "$ETC_DIR")"
     Q_ALLOW_FILE="$(sq "$ALLOW_FILE")"
+    Q_SYS_UID_FILE="$(sq "$SYS_UID_FILE")"
     Q_USER_UID="$(sq "$USER_UID")"
     {
         cat <<EOF
@@ -603,12 +799,29 @@ if [ "\$(id -u)" -ne 0 ]; then
     echo "clawee-spawn-setup: run me as root — e.g.  sudo sh \$0" >&2
     exit 1
 fi
+mkdir -p $Q_SPAWN_DIR
 install -m 4755 -o root $Q_STAGED_SPAWN $Q_SPAWN_HELPER
 mkdir -p $Q_ETC_DIR
 printf '%s\n' $Q_USER_UID > $Q_ALLOW_FILE
 chown root $Q_ALLOW_FILE
 chmod 0644 $Q_ALLOW_FILE
 EOF
+        # System-account tenant: also write the opt-in that lets the helper fork
+        # sessions as this below-the-floor uid. Appended to the SAME root script
+        # so the operator runs one block, not two.
+        if [ "$NEEDS_SYS_UID" -eq 1 ]; then
+            cat <<EOF
+# $USER_NAME (uid $USER_UID) is below the tenant uid floor ($MIN_TENANT_UID), so
+# the setuid helper refuses to fork sessions as it unless opted in here. This
+# widens the trust boundary on THIS host: a claweed compromise would reach
+# $USER_NAME. Remove the line to revoke.
+if ! grep -qx $Q_USER_UID $Q_SYS_UID_FILE 2>/dev/null; then
+    printf '%s\n' $Q_USER_UID >> $Q_SYS_UID_FILE
+fi
+chown root $Q_SYS_UID_FILE
+chmod 0644 $Q_SYS_UID_FILE
+EOF
+        fi
         if [ -e "$LEGACY_CLAWEED_BIN" ]; then
             printf 'rm -f %s   # legacy all-sudo install of claweed\n' "$(sq "$LEGACY_CLAWEED_BIN")"
         fi
@@ -633,6 +846,10 @@ EOF
 EOF
 else
     info "installing clawee-spawn setuid-root (4755) -> $SPAWN_HELPER"
+    # $SPAWN_DIR (/usr/local/bin) may not exist on a fresh macOS (Apple-Silicon
+    # Homebrew lives at /opt/homebrew); BSD install won't create it. Make it
+    # root-owned to satisfy the Tier-S non-user-writable invariant.
+    $SUDO mkdir -p "$SPAWN_DIR"
     $SUDO install -m 4755 -o root "$SELF_DIR/clawee-spawn" "$SPAWN_HELPER"
     [ "$OS" = darwin ] && $SUDO xattr -d com.apple.quarantine "$SPAWN_HELPER" 2>/dev/null || true
     ok "clawee-spawn installed setuid-root (root-owned, non-user-writable dir)"
@@ -643,6 +860,17 @@ else
     $SUDO chown root "$ALLOW_FILE"
     $SUDO chmod 0644 "$ALLOW_FILE"
     ok "allowlist written (root-owned, 0644)"
+
+    if [ "$NEEDS_SYS_UID" -eq 1 ]; then
+        info "permitting system account $USER_NAME (uid $USER_UID < $MIN_TENANT_UID) to host sessions -> $SYS_UID_FILE"
+        if ! $SUDO grep -qx "$USER_UID" "$SYS_UID_FILE" 2>/dev/null; then
+            # Append, never truncate: another system uid may already be opted in.
+            printf '%s\n' "$USER_UID" | $SUDO tee -a "$SYS_UID_FILE" >/dev/null
+        fi
+        $SUDO chown root "$SYS_UID_FILE"
+        $SUDO chmod 0644 "$SYS_UID_FILE"
+        ok "system-account opt-in written (root-owned, 0644) — a claweed compromise here would reach $USER_NAME"
+    fi
 
     # Legacy cleanup: the old all-sudo installer placed claweed in /usr/local/bin.
     # The user-tier binary now lives in $PREFIX, so a stale copy there shadows it
@@ -663,7 +891,11 @@ fi
 #   that stays public in this variant.
 # =========================================================================
 dep_burrowee_gateway() {
-    have="$(burrowee-gateway --version 2>/dev/null | awk '{print $2}')"
+    # NOT `awk '{print $2}'`: burrowee-gateway prints TWO lines, and awk emits
+    # field 2 of each, so $have became "v0.1.102…\ndaemon:" — which the ok()
+    # line splattered across the screen and semver_lt then compared against the
+    # floor.
+    have="$(version_of burrowee-gateway)"
     if [ -z "$have" ]; then
         info "burrowee-gateway not found — installing from burrowee's public channel"
     elif [ -n "$GATEWAY_FLOOR" ] && semver_lt "$have" "$GATEWAY_FLOOR"; then
@@ -694,125 +926,197 @@ dep_burrowee_gateway() {
 dep_burrowee_gateway
 
 # =========================================================================
-# BOOT UNIT (no sudo): render via `claweed print-boot-unit`, write under THIS
-#   user's home, and load it in THIS user's domain. Uses the register socket
-#   resolved earlier (explicit env or unique detect). The spawn-helper flag
-#   points at the Tier-S path even if Tier S was skipped — the helper is
-#   expected to be installed there (now or via the printed block).
+# BOOT UNIT (SYSTEM-level): render via `claweed print-boot-unit` and install to
+#   /Library/LaunchDaemons (macOS) / /etc/systemd/system (Linux), so claweed
+#   starts at boot with NOBODY logged in. The unit RUNS AS THIS USER
+#   (UserName/User= + HOME) — only the boot slot is system-level; binaries,
+#   data-dir and config stay per-user. Root is needed ONLY when the unit
+#   content changed or the unit isn't loaded: a routine `claweed update`
+#   (binary-only change) restarts via the supervisor when root is free
+#   (already root / passwordless sudo), else by SIGTERM-ing the running
+#   same-uid daemon — KeepAlive(PathState) / Restart=always respawn it on the
+#   new binary. When root is needed but unavailable, the rendered unit is
+#   staged and the exact sudo block printed (never half-installed).
 # =========================================================================
+BOOT_DEFERRED=0
+
+# stage_boot_sudo_block — stage the rendered unit ($NEW_UNIT) to a durable
+# user-owned path and print the exact sudo commands that finish the boot step.
+stage_boot_sudo_block() {
+    CLAWEE_HOME="$HOME/.clawee"
+    mkdir -p "$CLAWEE_HOME"
+    STAGED_UNIT="$CLAWEE_HOME/$(basename "$UNIT_PATH")"
+    cp "$NEW_UNIT" "$STAGED_UNIT"
+    STAGED_DISP="$(tilde_path "$STAGED_UNIT")"
+    cat >&2 <<EOF
+
+  ! the SYSTEM boot unit needs sudo, which is not available right now.
+    I staged the rendered unit — finish the boot step by hand:
+
+      sudo install -m 0644 $STAGED_DISP '$UNIT_PATH'
+EOF
+    if [ "$OS" = darwin ]; then
+        printf "      sudo launchctl bootout 'system/%s' 2>/dev/null || true\n" "$LABEL" >&2
+        printf "      sudo launchctl bootstrap system '%s'\n" "$UNIT_PATH" >&2
+    else
+        printf '      sudo systemctl daemon-reload\n' >&2
+        printf '      sudo systemctl enable --now claweed.service\n' >&2
+    fi
+    printf '\n' >&2
+    BOOT_DEFERRED=1
+}
+
+# supervisor_restart — restart the loaded system unit through the OS
+# supervisor (needs root; run_root decides how).
+supervisor_restart() {
+    if [ "$OS" = darwin ]; then run_root launchctl kickstart -k "system/$LABEL" 2>/dev/null
+    else run_root systemctl restart claweed.service 2>/dev/null; fi
+}
+
+# restart_claweed_no_sudo — SIGTERM the running same-uid claweed. It prefers
+# the pid the daemon RECORDED at serve startup ($DATA_DIR/pid — the file name
+# matches cmd/claweed's runningPidFile): with two genuinely matching processes
+# (e.g. a stuck stale daemon) a pattern match can SIGTERM the wrong one and
+# report success while the live daemon keeps running old code. A valid
+# recorded pid is used EXCLUSIVELY — when its verification below fails, the
+# recorded daemon is gone and pgrep would only reintroduce the wrong-pid risk.
+# pgrep discovery remains solely the fallback for an OLDER claweed that
+# recorded no pid. Either way the pid is signalled only after verifying its
+# command really names our binary + serve (a recycled pid must never be
+# signalled). The system unit's KeepAlive(PathState) / Restart=always respawns
+# it on the (possibly just-swapped) binary.
+restart_claweed_no_sudo() {
+    _pid=""
+    if [ -f "$DATA_DIR/pid" ]; then
+        _pid="$(tr -d '[:space:]' < "$DATA_DIR/pid" 2>/dev/null)"
+        case "$_pid" in ''|*[!0-9]*) _pid="" ;; esac   # garbage record -> treat as absent
+    fi
+    if [ -z "$_pid" ]; then
+        command -v pgrep >/dev/null 2>&1 || return 1
+        _pid="$(pgrep -u "$USER_UID" -f "$CLAWEED_BIN serve" 2>/dev/null | head -n 1)"
+        [ -n "$_pid" ] || return 1
+    fi
+    case "$(ps -o args= -p "$_pid" 2>/dev/null)" in
+        "$CLAWEED_BIN serve"*) ;;
+        *) return 1 ;;
+    esac
+    kill -TERM "$_pid" 2>/dev/null
+}
+
+# restart_claweed — the restart chain: supervisor restart when root is free
+# (already root / passwordless sudo — never a surprise password prompt for a
+# mere restart), else the no-sudo SIGTERM fallback, else — with a tty — an
+# interactive-sudo supervisor restart as the last resort.
+restart_claweed() {
+    root_posture
+    if [ "$ROOT_HOW" = direct ] || [ "$ROOT_HOW" = sudo ]; then
+        supervisor_restart && return 0
+    fi
+    restart_claweed_no_sudo && return 0
+    [ "$ROOT_HOW" = sudo_tty ] && supervisor_restart
+}
+
 if [ -z "$REGISTER_SOCKET" ]; then
     warn "could not detect the burrowee-gateway register socket."
     warn "render the boot unit yourself once the gateway is running:"
     warn "  $CLAWEED_BIN print-boot-unit --kind=$KIND --claweed '$CLAWEED_BIN' \\"
-    warn "    --data-dir '$DATA_DIR' --spawn-helper '$SPAWN_HELPER' --register-socket <path>"
+    warn "    --data-dir '$DATA_DIR' --spawn-helper '$SPAWN_HELPER' --register-socket <path> \\"
+    warn "    --user '$USER_NAME' --group '$USER_GROUP' --home '$HOME'"
 else
     info "register socket: $REGISTER_SOCKET"
-    if [ "$OS" = darwin ]; then
-        # The LaunchAgent belongs to THIS user's GUI domain — write it under this
-        # user's home and (re)start it as this user (no sudo).
-        UNIT_DIR="$HOME/Library/LaunchAgents"
-        UNIT_PATH="$UNIT_DIR/$LABEL.plist"
-        LOG_PATH="$HOME/Library/Logs/claweed.log"
-        mkdir -p "$UNIT_DIR" "$(dirname "$LOG_PATH")"
-        domain="gui/$USER_UID"
-        manual_hint="launchctl bootstrap $domain '$UNIT_PATH'"
+    UNIT_PATH="$(unit_path_for)"
+    [ "$OS" = darwin ] && mkdir -p "$HOME/Library/Logs"
 
-        # Render to a temp; only rewrite the plist when it actually changed
-        # (idempotent — a routine version bump leaves the unit identical, so no
-        # launchd reload is needed, only a binary restart).
-        NEW_UNIT="$(mktemp)"
-        "$CLAWEED_BIN" print-boot-unit --kind=launchd \
-            --claweed "$CLAWEED_BIN" --data-dir "$DATA_DIR" \
-            --spawn-helper "$SPAWN_HELPER" --register-socket "$REGISTER_SOCKET" \
-            --log "$LOG_PATH" >"$NEW_UNIT" \
-            || { rm -f "$NEW_UNIT"; fail "print-boot-unit failed"; }
-        unit_changed=1
-        if [ "$FORCE_REPLACE" -eq 0 ] && [ -f "$UNIT_PATH" ] && cmp -s "$NEW_UNIT" "$UNIT_PATH"; then unit_changed=0; fi
-        if [ "$unit_changed" -eq 1 ]; then
-            cp "$NEW_UNIT" "$UNIT_PATH"; ok "wrote LaunchAgent $UNIT_PATH"
-        else
-            ok "LaunchAgent unchanged -> $UNIT_PATH (kept)"
-        fi
-        rm -f "$NEW_UNIT"
+    # Cross-user single-slot guard: the system unit path is ONE slot per host,
+    # normally owned by whoever installed first. Refuse a silent takeover of
+    # another user's unit unless CLAWEE_FORCE_SERVICE_OVERRIDE=1 consents.
+    existing_owner="$(unit_owner "$UNIT_PATH")"
+    if [ -n "$existing_owner" ] && [ "$existing_owner" != "$USER_NAME" ] \
+        && [ "${CLAWEE_FORCE_SERVICE_OVERRIDE:-0}" != 1 ]; then
+        fail "the system unit $UNIT_PATH belongs to user '$existing_owner' (one claweed system service per host) — re-run with CLAWEE_FORCE_SERVICE_OVERRIDE=1 to take it over"
+    fi
 
-        loaded=0
-        launchctl print "$domain/$LABEL" >/dev/null 2>&1 && loaded=1
-        if [ "$loaded" -eq 1 ] && [ "$NO_RESTART" -eq 1 ]; then
-            info "auto-restart off (--no-restart) — restart later: launchctl kickstart -k $domain/$LABEL"
-        elif [ "$loaded" -eq 1 ] && [ -n "$UPDATE_MODE" ] && [ "$RESTART_NEEDED" -eq 0 ]; then
+    # Render with the INSTALLED binary to a temp; the write below happens only
+    # when the content actually changed (idempotent — a routine version bump
+    # leaves the unit identical, so no root is needed, only a binary restart).
+    NEW_UNIT="$(mktemp)"
+    render_boot_unit "$CLAWEED_BIN" "$NEW_UNIT" \
+        || { rm -f "$NEW_UNIT"; fail "print-boot-unit failed"; }
+    unit_changed=1
+    if [ "$FORCE_REPLACE" -eq 0 ] && [ -f "$UNIT_PATH" ] && cmp -s "$NEW_UNIT" "$UNIT_PATH"; then unit_changed=0; fi
+
+    loaded=0
+    system_unit_loaded && loaded=1
+
+    # Legacy per-user unit migration (idempotent, no sudo — everything legacy
+    # is user-owned). Booting out a legacy agent stops the OLD daemon; live
+    # session holders survive (they own the PTYs) and the system daemon
+    # re-adopts them once loaded.
+    remove_legacy_user_unit
+
+    if [ "$unit_changed" -eq 0 ] && [ "$loaded" -eq 1 ]; then
+        ok "system unit unchanged + loaded -> $UNIT_PATH"
+        restart_hint=$( [ "$OS" = darwin ] \
+            && echo "sudo launchctl kickstart -k system/$LABEL" \
+            || echo "sudo systemctl restart claweed.service" )
+        if [ "$NO_RESTART" -eq 1 ]; then
+            info "auto-restart off (--no-restart) — restart later: $restart_hint"
+        elif [ -n "$UPDATE_MODE" ] && [ "$RESTART_NEEDED" -eq 0 ]; then
             ok "claweed unchanged (binary + boot-unit) — no restart needed"
-        elif [ "$loaded" -eq 1 ]; then
-            # Already running — likely `claweed update` from inside a session this
-            # claweed brokers. Restart on the new binary WITHOUT a prompt via
-            # `kickstart -k`: launchd kills + relaunches the job, so it completes
-            # even though tearing claweed down kills this very session (no unload —
-            # the crash-only KeepAlive stays armed as a backstop). We deliberately
-            # do NOT bootout for a changed plist: bootout unloads the job, so if the
-            # session dies in the gap before bootstrap, claweed stays down. launchd
-            # has no in-place plist reload, so a changed unit (already written to
-            # disk) takes effect on the next reload/reboot — the new BINARY runs now
-            # regardless. The plist rarely changes; we just flag it.
-            launchctl kickstart -k "$domain/$LABEL" 2>/dev/null || true
-            ok "claweed restarting on the new build (launchd $domain)"
-            [ "$unit_changed" -eq 1 ] && warn "boot-unit changed on disk — it applies on the next reload/reboot, or now via: launchctl bootout '$domain/$LABEL'; launchctl bootstrap '$domain' '$UNIT_PATH'"
-        elif confirm "load the LaunchAgent now (launchctl)?"; then
-            if launchctl bootstrap "$domain" "$UNIT_PATH" 2>/dev/null; then
-                ok "launchd unit loaded ($domain)"
-            elif launchctl kickstart -k "$domain/$LABEL" 2>/dev/null; then
-                ok "launchd unit already loaded — kickstarted ($domain)"
-            else
-                warn "could not load the LaunchAgent — load it manually:"
-                warn "  $manual_hint"
-            fi
+        elif restart_claweed; then
+            ok "claweed restarting on the new build (system service)"
         else
-            info "skipped load — run later: $manual_hint"
+            warn "could not restart claweed — restart it later: $restart_hint"
         fi
     else
-        # The unit belongs to THIS user's systemd user manager — write it under
-        # ~/.config and drive systemctl --user (no sudo).
-        UNIT_DIR="$HOME/.config/systemd/user"
-        UNIT_PATH="$UNIT_DIR/claweed.service"
-        mkdir -p "$UNIT_DIR"
-        manual_hint="systemctl --user enable --now claweed.service"
-
-        NEW_UNIT="$(mktemp)"
-        "$CLAWEED_BIN" print-boot-unit --kind=systemd \
-            --claweed "$CLAWEED_BIN" --data-dir "$DATA_DIR" \
-            --spawn-helper "$SPAWN_HELPER" --register-socket "$REGISTER_SOCKET" \
-            --user "$USER_NAME" >"$NEW_UNIT" \
-            || { rm -f "$NEW_UNIT"; fail "print-boot-unit failed"; }
-        unit_changed=1
-        if [ "$FORCE_REPLACE" -eq 0 ] && [ -f "$UNIT_PATH" ] && cmp -s "$NEW_UNIT" "$UNIT_PATH"; then unit_changed=0; fi
-        if [ "$unit_changed" -eq 1 ]; then
-            cp "$NEW_UNIT" "$UNIT_PATH"; systemctl --user daemon-reload 2>/dev/null || true
-            ok "wrote systemd user unit $UNIT_PATH"
-        else
-            ok "systemd user unit unchanged -> $UNIT_PATH (kept)"
+        # The unit file and/or its load state needs root. A fresh interactive
+        # install still asks first (--yes / update modes skip the prompt).
+        boot_consented=1
+        if [ "$loaded" -eq 0 ] && [ -z "$UPDATE_MODE" ]; then
+            confirm "install + load the system boot unit now (needs sudo)?" || boot_consented=0
         fi
-        rm -f "$NEW_UNIT"
-
-        loaded=0
-        systemctl --user is-active --quiet claweed.service && loaded=1
-        if [ "$loaded" -eq 1 ] && [ "$NO_RESTART" -eq 1 ]; then
-            info "auto-restart off (--no-restart) — restart later: systemctl --user restart claweed.service"
-        elif [ "$loaded" -eq 1 ] && [ -n "$UPDATE_MODE" ] && [ "$RESTART_NEEDED" -eq 0 ]; then
-            ok "claweed unchanged (binary + boot-unit) — no restart needed"
-        elif [ "$loaded" -eq 1 ]; then
-            # Already running: systemd performs the restart on the new binary, so it
-            # completes even when this session is torn down (Restart=on-failure backs it).
-            systemctl --user restart claweed.service 2>/dev/null || true
-            ok "claweed restarting on the new build (systemd --user, uid $USER_UID)"
-        elif confirm "enable + start the systemd user unit now?"; then
-            if systemctl --user enable --now claweed.service 2>/dev/null; then
-                ok "systemd unit started (user manager, uid $USER_UID)"
-            else
-                warn "could not start the unit — start it manually:"
-                warn "  $manual_hint"
-            fi
+        root_posture
+        if [ "$boot_consented" -eq 0 ] || [ "$ROOT_HOW" = none ]; then
+            stage_boot_sudo_block
         else
-            info "skipped — run later: $manual_hint"
+            wrote_ok=1
+            if [ "$unit_changed" -eq 1 ]; then
+                if run_root install -m 0644 "$NEW_UNIT" "$UNIT_PATH"; then
+                    ok "wrote system unit $UNIT_PATH"
+                else
+                    warn "could not write $UNIT_PATH (sudo failed)"
+                    stage_boot_sudo_block
+                    wrote_ok=0
+                fi
+            else
+                ok "system unit unchanged -> $UNIT_PATH (kept)"
+            fi
+            if [ "$wrote_ok" -eq 1 ]; then
+                if [ "$NO_RESTART" -eq 1 ] && [ "$loaded" -eq 1 ]; then
+                    # The changed unit is on disk; reloading it would bounce the
+                    # running daemon, which --no-restart opts out of.
+                    info "auto-restart off (--no-restart) — the changed unit applies on the next reload/reboot"
+                elif [ "$OS" = darwin ]; then
+                    # bootout+bootstrap in ONE root shell: it both (re)loads the
+                    # changed unit and restarts the daemon on the new binary.
+                    if run_root sh -c "launchctl bootout 'system/$LABEL' 2>/dev/null; launchctl bootstrap system '$UNIT_PATH'"; then
+                        ok "system unit loaded (launchd system domain)"
+                    else
+                        warn "could not load the system unit — load it manually:"
+                        warn "  sudo launchctl bootstrap system '$UNIT_PATH'"
+                    fi
+                else
+                    if run_root sh -c "systemctl daemon-reload; systemctl enable claweed.service >/dev/null 2>&1 || true; systemctl restart claweed.service"; then
+                        ok "system unit enabled + started (systemd system)"
+                    else
+                        warn "could not start the system unit — start it manually:"
+                        warn "  sudo systemctl enable --now claweed.service"
+                    fi
+                fi
+            fi
         fi
     fi
+    rm -f "$NEW_UNIT"
 fi
 
 # =========================================================================
@@ -877,12 +1181,14 @@ if [ "$OS" = darwin ]; then
 fi
 
 # =========================================================================
-# COMPLETION: non-zero exit if the Tier-S spawn step was skipped, so callers
-#   (and the operator) know the install isn't fully done until the printed
-#   block runs.
+# COMPLETION: non-zero exit if the Tier-S spawn step or the system boot unit
+#   was skipped/deferred, so callers (and the operator) know the install isn't
+#   fully done until the printed block(s) run.
 # =========================================================================
-if [ "$SPAWN_SKIPPED" -eq 1 ]; then
-    printf '\n  ! claweed installed, but the spawn helper is NOT installed — run the printed Tier-S sudo block to finish.\n\n' >&2
+if [ "$SPAWN_SKIPPED" -eq 1 ] || [ "$BOOT_DEFERRED" -eq 1 ]; then
+    [ "$SPAWN_SKIPPED" -eq 1 ] && printf '\n  ! claweed installed, but the spawn helper is NOT installed — run the printed Tier-S sudo block to finish.\n' >&2
+    [ "$BOOT_DEFERRED" -eq 1 ] && printf '\n  ! claweed installed, but the SYSTEM boot unit is NOT in place — run the printed sudo block to finish.\n' >&2
+    printf '\n' >&2
     exit 3
 fi
 
