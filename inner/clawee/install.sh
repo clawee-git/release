@@ -13,6 +13,29 @@ set -eu
 BIN_DIR="${PREFIX:-$HOME/.local}/bin"
 BINS="clawee clawee-updater"
 
+# version_of <cmd> [args…] — the first version-shaped token from that command's
+# `--version` output, or "" if it prints none / isn't installed.
+#
+# `--version` output is HUMAN text, not a protocol, and every tool shapes it
+# differently: clawee prints one bare line, claweed appends "(installed;
+# running)", burrowee-cli prints a THREE-line block, burrowee-gateway two.
+# Parsing by field position (`awk '{print $2}'` / `'{print $NF}'`) therefore
+# breaks the moment a tool adds a line or a suffix — which is exactly what
+# happened here: burrowee-cli's block made `$2` a three-line string, and the
+# dependency line rendered as
+#
+#     ✓ burrowee-cli present (
+#     (not
+#     v0.1.68.2026.07.28.a44ccfb1) — dependency satisfied
+#
+# Matching the version SHAPE instead survives all four formats and any future
+# reshuffle. Pipeline status is `head`'s (always 0), so a no-match cannot trip
+# `set -e`; a missing binary is likewise "" rather than a failure.
+version_of() {
+    "$@" --version 2>/dev/null |
+        grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+[^[:space:]]*' | head -n1
+}
+
 # Update mode (set by `clawee update` via CLAWEE_UPDATE_MODE; the contract is
 # cli/cmd/clawee-updater):
 #   dry   — print what would change (the clawee binary version), then STOP.
@@ -32,8 +55,8 @@ fi
 # PLAN — what would change. Printed for any update mode. dry STOPS here; apply
 # PROMPTS before installing; auto/force proceed unattended.
 if [ -n "$UPDATE_MODE" ]; then
-    staged_ver="$(./clawee --version 2>/dev/null | awk '{print $NF}')"
-    installed_ver="$("$BIN_DIR/clawee" --version 2>/dev/null | awk '{print $NF}')"
+    staged_ver="$(version_of ./clawee)"
+    installed_ver="$(version_of "$BIN_DIR/clawee")"
     [ -n "$installed_ver" ] || installed_ver="(none)"
     if [ "$UPDATE_MODE" = force ] || [ "$installed_ver" != "$staged_ver" ]; then
         bin_line="$installed_ver -> $staged_ver   REPLACE"
@@ -67,14 +90,7 @@ for b in $BINS; do
         xattr -d com.apple.quarantine "$BIN_DIR/$b" 2>/dev/null || true
     fi
 done
-echo "installed to $BIN_DIR: $BINS"
-
-case ":$PATH:" in
-    *":$BIN_DIR:"*) ;;
-    *) echo "note: $BIN_DIR is not on PATH — add: export PATH=\"$BIN_DIR:\$PATH\"" ;;
-esac
-
-"$BIN_DIR/clawee" --version 2>/dev/null || true
+installed_version="$(version_of "$BIN_DIR/clawee")"
 
 # =========================================================================
 # DEPENDENCY: burrowee-cli (the client transport clawee dials through)
@@ -91,30 +107,68 @@ esac
 #   clawee to burrowee's signing keys. We fetch to a var and pipe so a
 #   truncated/failed fetch never partially executes.
 # =========================================================================
+# Sets DEP_LINE (the summary's burrowee-cli value). Never fails the install —
+# clawee is usable the moment it is on disk; a missing transport is reported,
+# not fatal.
 dep_burrowee_cli() {
+    # Check FIRST, fetch only if needed. The bootstrap used to be downloaded
+    # before this test, so the common case (burrowee-cli already installed)
+    # paid a network round-trip for a script it then threw away — and a channel
+    # outage printed a scary "cannot reach" note at an install that needed
+    # nothing from the channel at all.
+    have="$(version_of burrowee-cli)"
+    if [ -n "$have" ]; then
+        DEP_LINE="$have — dependency satisfied"
+        return 0
+    fi
+
     if ! command -v curl >/dev/null 2>&1; then
+        DEP_LINE="MISSING — curl not found, install it by hand"
         echo "note: curl not found — install burrowee-cli manually:" >&2
         echo "  curl -fsSL https://release.burrowee.com/cli/install.sh | sh" >&2
         return 0
     fi
     bootstrap="$(curl -fsSL --proto '=https' --tlsv1.2 \
         https://release.burrowee.com/cli/install.sh 2>/dev/null)" || {
-        echo "note: cannot reach release.burrowee.com — skipping burrowee-cli check" >&2
+        DEP_LINE="MISSING — release.burrowee.com unreachable"
+        echo "note: cannot reach release.burrowee.com — install burrowee-cli later:" >&2
+        echo "  curl -fsSL https://release.burrowee.com/cli/install.sh | sh" >&2
         return 0; }
 
     # The burrowee bootstrap resolves the latest tag itself; we only need to
     # know whether we already have a burrowee-cli at all (and, if so, leave it —
-    # the burrowee channel owns its upgrades). Run the burrowee installer only
-    # when burrowee-cli is missing or unreadable; never downgrade an existing one.
-    have="$(burrowee-cli --version 2>/dev/null | awk '{print $2}')"
-    if [ -n "$have" ]; then
-        echo "  ✓ burrowee-cli present ($have) — dependency satisfied"
-        return 0
-    fi
+    # the burrowee channel owns its upgrades). Never downgrade an existing one.
     echo "  → burrowee-cli not found — installing from burrowee's public channel"
     printf '%s' "$bootstrap" | sh || echo "warn: burrowee-cli install reported an error" >&2
+    # Re-read so the summary reports what actually landed, not what we hoped.
+    have="$(version_of burrowee-cli)"
+    if [ -n "$have" ]; then
+        DEP_LINE="$have — installed just now"
+    else
+        DEP_LINE="MISSING — burrowee install did not complete"
+    fi
 }
+DEP_LINE=""
 dep_burrowee_cli
 
-echo
-echo "next: clawee status   (then: clawee)"
+# =========================================================================
+# SUMMARY — one aligned block, printed last so it is what stays on screen.
+# Previously these facts were echoed as they happened, interleaved with the
+# burrowee bootstrap's own output, in three different shapes ("installed to
+# X: a b", a bare version line, a ✓ sentence). Same information, read in one
+# glance, with the version first because that is the thing anyone is asked to
+# quote in a bug report.
+# =========================================================================
+printf '\n  clawee %s\n\n' "${installed_version:-(unknown — the installed binary did not run)}"
+printf '  %-14s %s\n' "installed" "$BIN_DIR"
+printf '  %-14s %s\n' "binaries" "$(echo "$BINS" | sed 's/ /, /g')"
+printf '  %-14s %s\n' "burrowee-cli" "$DEP_LINE"
+
+# PATH is a genuine blocker (the operator's shell cannot find clawee), so it
+# reads as an action inside the block rather than a note above it.
+case ":$PATH:" in
+    *":$BIN_DIR:"*) ;;
+    *) printf '  %-14s %s\n' "PATH" "$BIN_DIR is NOT on PATH — add: export PATH=\"$BIN_DIR:\$PATH\"" ;;
+esac
+
+printf '\n  next: clawee status   (then: clawee)\n\n'
