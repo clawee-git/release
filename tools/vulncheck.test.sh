@@ -66,6 +66,19 @@ got="$(vulncheck_scan_dirs | tr '\t' '=' | paste -sd, -)"
 check "scan-dirs skips vendor/" "${got}" "claweed=${SRC_CLAWEED}"
 rm -rf "${SRC_CLAWEED}/vendor"
 
+# A root carrying a trailing slash must still name its ROOT module plainly.
+# The component source dirs are operator-overridable (CLAWEE_SRC_*), so a
+# trailing slash is an ordinary way to spell the same path — and dirname never
+# produces one, so the root module would otherwise fail to prefix-match itself.
+COMPONENTS=(claweed)
+src_for() { case "$1" in claweed) printf '%s/' "$SRC_CLAWEED";; esac; }
+got="$(vulncheck_scan_dirs | tr '\t' '=' | paste -sd, -)"
+check "scan-dirs normalises a trailing-slash root" "${got}" "claweed=${SRC_CLAWEED}"
+src_for() { case "$1" in
+    clawee)  printf '%s' "$SRC_CLAWEE";;
+    claweed) printf '%s' "$SRC_CLAWEED";;
+esac; }
+
 # A root with no go.mod is still emitted, so the gate tries it and reports it
 # unscannable. Dropping it here would ship an unchecked module while the gate
 # reported success.

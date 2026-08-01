@@ -44,6 +44,16 @@ vulncheck_scan_dirs() {
 # while the gate reported success.
 vulncheck_modules_under() {
     local name="$1" root="$2" mod dir sub found=0
+    # Normalise a trailing slash away FIRST. dirname never returns one, so a
+    # root that carries one (SRC_CLAWEE/SRC_CLAWEED are operator-overridable via
+    # CLAWEE_SRC_*, and a path pasted with a trailing slash is ordinary) would
+    # fail to prefix-match the dirname of its OWN go.mod — the root module's
+    # sub-path would come out as the entire absolute path, and its report would
+    # land at dist/vulncheck/clawee-Volumes-…-cli.txt instead of clawee.txt.
+    # Not fail-open (the right dir is still scanned and a finding still aborts),
+    # but it silently breaks the naming contract this function documents.
+    root="${root%/}"
+    [ -n "${root}" ] || root=/
     while IFS= read -r mod; do
         [ -n "${mod}" ] || continue
         found=1
