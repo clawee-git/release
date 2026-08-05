@@ -313,7 +313,7 @@ bins_for() {
     esac
 }
 
-GHP="$(command -v ghp 2>/dev/null || echo "${HOME}/.claude/bin/ghp")"
+GHP="$(command -v ghp 2>/dev/null || echo "${HOME}/bin/ghp")"
 
 # ---- pre-flight -------------------------------------------------------------
 # Skipped entirely under --distribute-only: no build/sign/notarize happens

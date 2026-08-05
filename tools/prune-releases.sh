@@ -44,7 +44,7 @@ for a in "$@"; do
   esac
 done
 
-GHP="$(command -v ghp || echo "${HOME}/.claude/bin/ghp")"
+GHP="$(command -v ghp || echo "${HOME}/bin/ghp")"
 [ -x "$GHP" ] || { echo "✗ ghp not found at ${GHP}" >&2; exit 1; }
 
 mode="DRY-RUN"; [ "$EXECUTE" = 1 ] && mode="EXECUTE"
