@@ -104,7 +104,7 @@ drift from source. `inner/claweed/install.sh` here is a committed render kept
 current for shellcheck + reference only.
 
 - `clawee-git/release` (PUBLIC). Trunk: `main`. gh.account: `clawee-git`.
-- Call gh via `~/.claude/bin/ghp`, never bare `gh`.
+- Call gh via `~/bin/ghp`, never bare `gh`.
 
 ## Status
 
