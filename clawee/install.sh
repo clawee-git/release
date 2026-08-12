@@ -320,9 +320,13 @@ ok "verified — running inner installer"
 #              escalates with sudo only for the steps that need root, and
 #              cross-installs burrowee-gateway. No setuid tier (the clawee-spawn
 #              helper is retired). NOTE: CLAWEE_PREFIX is still exported below.
-#              The CURRENT canonical installer no longer honours it (the daemon
-#              is always installed root-owned under /usr/local/bin), so on a
-#              current release it is inert; an OLDER pinned claweed still reads
+#              The CURRENT canonical installer no longer honours it, and the fix
+#              is NOT to restore that: an installer-honoured prefix is how a
+#              ROOT boot unit ended up naming a user-writable path, which is a
+#              standing uid-0 grant to whoever owns that path. The daemon repo
+#              removed it for that reason (whole-branch review C2) and now
+#              always installs root-owned under /usr/local/bin. So on a current
+#              release the export is inert; an OLDER pinned claweed still reads
 #              it. Whether to drop the export is a separate question from the
 #              spawn-helper retirement, and is not decided here.
 case "$COMP" in

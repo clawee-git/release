@@ -32,11 +32,27 @@ SHA-256, then unzips and runs the inner installer.
 - **claweed** is the canonical sudo-minimal daemon installer. Run it **as your
   user**, never under `sudo`: the data-dir, the `burrowee-gateway` dependency and
   the closing doctor run take **no** privilege. It escalates with `sudo` for
-  three steps only — the root-owned `claweed` + `claweed-updater` binaries in
-  `/usr/local/bin`, the root-owned spawn *policy* files, and the system boot
-  unit. Without sudo the last two degrade to a printed block you can run by
-  hand. To uninstall, run the inner installer with `uninstall` (`--purge` also
-  removes `~/.clawee/data`).
+  four steps:
+
+  1. the root-owned `claweed` + `claweed-updater` binaries in `/usr/local/bin`;
+  2. the root-owned spawn *policy* files (which uids may host a session) — this
+     step writes no binary;
+  3. the system boot unit (`/Library/LaunchDaemons` on macOS,
+     `/etc/systemd/system` on Linux), written only when its content changed;
+  4. **macOS only** — a sudoers drop-in at
+     `/etc/sudoers.d/clawee-powermetrics` (0440, root:wheel) that grants the
+     user running the installer **passwordless `sudo`** for one fixed
+     command: `/usr/bin/powermetrics --samplers thermal -n 1`. It is validated
+     with `visudo -c` first and skipped if that fails, and it grants no shell
+     and no script — but it is a standing NOPASSWD rule, so delete the file to
+     revoke it. Without it claweed reports `thermal=unknown` and everything
+     else still works.
+
+  If no `sudo` path exists at all — no passwordless sudo **and** no tty to
+  prompt on — the installer **stops at step 1 and installs nothing**: there is
+  no unprivileged variant of the daemon binary. With a tty it prompts for your
+  password. To uninstall, run the inner installer with `uninstall` (`--purge`
+  also removes `~/.clawee/data`).
 
   **There is no setuid tier.** claweed used to ship a third, mode-4755
   root-gaining binary (`clawee-spawn`) that an unprivileged daemon execed to fork
