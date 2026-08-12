@@ -117,9 +117,16 @@
     </span>
 
     <p class="faint">clawee lands in <code>$HOME/.local/bin</code> and ensures
-      <code>burrowee-cli</code> is present. claweed installs the daemon + boot unit with no
-      privilege and escalates with <code>sudo</code> only for the setuid <code>clawee-spawn</code>
-      helper, cross-installing <code>burrowee-gateway</code>.</p>
+      <code>burrowee-cli</code> is present. claweed escalates with <code>sudo</code> for four
+      steps: the root-owned daemon binaries, the root-owned spawn policy files, the system
+      boot unit, and — <strong>on macOS only</strong> — a sudoers drop-in at
+      <code>/etc/sudoers.d/clawee-powermetrics</code> granting the user who runs the installer
+      <strong>passwordless sudo</strong> for one fixed read-only command,
+      <code>powermetrics --samplers thermal -n 1</code>. That is a standing NOPASSWD rule;
+      delete the file to revoke it, and claweed simply reports
+      <code>thermal=unknown</code>. Without any sudo path the installer stops at the first
+      step and installs nothing. It cross-installs <code>burrowee-gateway</code>, and installs
+      <strong>no setuid binary</strong>.</p>
   </section>
 
   <section>

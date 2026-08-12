@@ -15,11 +15,14 @@
 #        claweed  — drives the SAME verification primitives the outer bootstrap
 #                   uses (minisign -V → sha256 -c → unzip), then asserts the
 #                   verified inner installer is the CANONICAL daemon template and
-#                   both binaries (claweed + clawee-spawn) are present and report
-#                   the stamp. It does NOT execute the side-effecting daemon
-#                   installer (setuid/sudo, launchd/systemd, gateway curl) — those
-#                   are operator-gated steps proven in Phase C live re-install, not
-#                   in an offline harness.
+#                   both binaries (claweed + claweed-updater) are present and
+#                   report the stamp — and that the zip's ENTRY SET is exactly
+#                   those two plus install.sh (so the retired setuid
+#                   clawee-spawn helper cannot return under any name), with no
+#                   live setuid step inside. It does NOT execute the
+#                   side-effecting daemon installer (sudo, launchd/systemd,
+#                   gateway curl) — those are operator-gated steps proven in
+#                   Phase C live re-install, not in an offline harness.
 #   5. TAMPER PATH: flips one byte inside the zip and asserts the verification
 #        gate ABORTS non-zero AND installs nothing.
 #
@@ -96,7 +99,7 @@ run_component() {
     unzip -q -o "${serve_dir}/${zip}" -d "${envchk}"
     case "${comp}" in
         clawee)   "${REPO_ROOT}/tools/verify-no-env.sh" "${envchk}/clawee" ;;
-        claweed)  "${REPO_ROOT}/tools/verify-no-env.sh" "${envchk}/claweed" "${envchk}/clawee-spawn" ;;
+        claweed)  "${REPO_ROOT}/tools/verify-no-env.sh" "${envchk}/claweed" "${envchk}/claweed-updater" ;;
     esac
     rm -rf "${envchk}"
     echo "ENV-GUARD OK (${comp})"
@@ -189,15 +192,43 @@ run_claweed() {
     grep -q 'claweed installer' "${x}/install.sh"      || die "inner install.sh is not the claweed installer"
     grep -q 'SUDO-MINIMAL' "${x}/install.sh"           || die "inner install.sh missing the sudo-minimal model marker"
     grep -qF "${stamp}" "${x}/install.sh"              || die "inner install.sh not version-stamped with ${stamp}"
-    # claweed uses `--version`; the setuid clawee-spawn uses `-version` (single
-    # dash, exact-argv match before any privileged logic) — any other argv drops
-    # it into its wire/child path.
-    for pair in "claweed --version" "clawee-spawn -version"; do
+    # claweed and claweed-updater both answer `--version`.
+    for pair in "claweed --version" "claweed-updater --version"; do
         b="${pair%% *}"; vflag="${pair#* }"
         [ -x "${x}/${b}" ] || die "release zip missing executable ${b}"
         got="$("${x}/${b}" "${vflag}" 2>&1 || true)"
         case "${got}" in *"${stamp}"*) ;; *) die "${b} version mismatch: want stamp ${stamp}, got: ${got}" ;; esac
     done
+    # The setuid-root clawee-spawn helper is RETIRED — the daemon runs as root and
+    # forks its own per-user children. Two assertions guard that.
+    #
+    # (a) The zip's entry SET, not the absence of one name. Checking only for
+    # "clawee-spawn" would pass for the same helper re-added under any other
+    # name; an exact set fails on any addition at all, and forces whoever adds a
+    # binary to come here and say so.
+    local got_entries want_entries
+    # shellcheck disable=SC2012  # entries are OUR release artifacts (plain ASCII names); ls is what makes the want-string readable, and a surprising name is exactly what this assertion should fail on.
+    got_entries="$(cd "${x}" && ls -A | LC_ALL=C sort | tr '\n' ' ')"
+    want_entries="claweed claweed-updater install.sh "
+    [ "${got_entries}" = "${want_entries}" ] \
+        || die "claweed zip entry set changed: got [${got_entries}] want [${want_entries}]"
+    #
+    # (b) No LIVE setuid step in the shipped inner installer. Only EXECUTABLE
+    # lines are read: the canonical template still explains the retirement in
+    # comments that name mode 4755, and that history is worth keeping (no live
+    # POSIX-sh statement can begin with #, so stripping whole-line comments
+    # cannot hide one). The match covers `chmod …+s` and any -m/--mode with the
+    # setuid/setgid bit set (4755, 6755, 4711, …), not just the one literal.
+    #
+    # This is a TEXT check on a shipped artifact, so it is a tripwire, not a
+    # proof: a mode computed at runtime would slip past it. It also runs only
+    # when an operator runs test-e2e.sh — `grep -n e2e tools/release.sh
+    # cmd/rkit/*.go` finds nothing, so neither cut path invokes it. Assertion (a)
+    # is the load-bearing one.
+    if grep -v '^[[:space:]]*#' "${x}/install.sh" \
+        | grep -Eq 'chmod[^;|&]*\+s|(-m|--mode)[= ]*0*[4-7][0-7]{3}'; then
+        die "inner install.sh has a live setuid/setgid step — the spawn tier was retired"
+    fi
     rm -rf "${x}"
     printf '\nHAPPY-PATH OK (%s)\n' "${comp}"
 

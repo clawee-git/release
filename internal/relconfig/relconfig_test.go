@@ -26,7 +26,10 @@ func TestBinsClaweed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{"claweed": "./cmd/claweed", "clawee-spawn": "./cmd/clawee-spawn", "claweed-updater": "./cmd/claweed-updater"}
+	// TWO binaries: the setuid clawee-spawn helper is retired and its package is
+	// gone from the daemon repo. The length check below is what makes this test
+	// able to fail if it is ever added back.
+	want := map[string]string{"claweed": "./cmd/claweed", "claweed-updater": "./cmd/claweed-updater"}
 	if len(got) != len(want) {
 		t.Fatalf("got %d bins, want %d", len(got), len(want))
 	}

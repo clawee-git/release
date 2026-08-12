@@ -28,10 +28,16 @@ func Bins(comp, stamp string) ([]build.BinSpec, error) {
 			{Name: "clawee", Package: "./cmd/clawee", Ldflags: v},
 			{Name: "clawee-updater", Package: "./cmd/clawee-updater", Ldflags: v},
 		}, nil
+	// claweed is TWO binaries, not three. It shipped a third — the setuid-root
+	// clawee-spawn helper an unprivileged daemon execed to gain the privilege to
+	// fork a tenant session. The daemon is root itself now and forks its own
+	// per-user children, so the helper was retired in the daemon repo: the
+	// ./cmd/clawee-spawn package is gone. Naming a package that no longer exists
+	// fails the cut at compile with "directory not found", so nothing may be
+	// added back here that the daemon does not build.
 	case "claweed":
 		return []build.BinSpec{
 			{Name: "claweed", Package: "./cmd/claweed", Ldflags: v},
-			{Name: "clawee-spawn", Package: "./cmd/clawee-spawn", Ldflags: v},
 			{Name: "claweed-updater", Package: "./cmd/claweed-updater", Ldflags: v},
 		}, nil
 	}
