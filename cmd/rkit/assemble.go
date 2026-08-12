@@ -12,8 +12,8 @@ import (
 
 // assemble builds one flat zip per target: component bins + install.sh. Zips
 // land at outRoot/stamp/clawee-<comp>-<os>-<arch>.zip in sorted-target order.
-// Clawee has no dispatcher and no extra payload — updaters/spawn are regular
-// bins already in compArts.
+// Clawee has no dispatcher and no extra payload — the updaters are regular bins
+// already in compArts.
 func assemble(comp, stamp, outRoot, installSh string, compArts []build.Artifact) ([]string, error) {
 	byTarget := map[string][]pack.Content{}
 	for _, a := range compArts {

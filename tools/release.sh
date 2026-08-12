@@ -305,11 +305,15 @@ src_for() {
     esac
 }
 
-# binary list per component (used at assembly time to copy into the zip)
+# binary list per component (used at assembly time to copy into the zip).
+# Must match tools/build.sh's MAP exactly — a name here that build.sh does not
+# produce fails the cut at the copy step, after the version bump. claweed is TWO
+# binaries: the setuid-root clawee-spawn helper is retired (the daemon runs as
+# root and forks its own per-user children) and its package is gone.
 bins_for() {
     case "$1" in
         clawee)   printf '%s' "clawee clawee-updater" ;;
-        claweed)  printf '%s' "claweed clawee-spawn claweed-updater" ;;
+        claweed)  printf '%s' "claweed claweed-updater" ;;
     esac
 }
 
@@ -458,8 +462,13 @@ fi # DISTRIBUTE_ONLY != 1 (pre-flight)
 # ---- inner installer resolution ---------------------------------------------
 # clawee ships the repo-committed inner/clawee/install.sh. claweed ships the
 # daemon repo's canonical install/install.sh.in, rendered per-build with the
-# stamp — never the repo-committed inner/claweed copy (which is only kept current
-# for shellcheck + reference). render_inner <comp> <stamp> <dest> writes install.sh.
+# stamp — it is the ONLY source, so the served installer cannot drift. There is
+# deliberately no inner/claweed copy in this repo: one used to sit there
+# "kept current for shellcheck + reference", nothing could enforce that from a
+# repo that cannot see the private canonical file, and it drifted 600+ lines
+# while still documenting a retired setuid tier. A second copy of a file this
+# repo does not own is a lie waiting to happen — read the daemon repo instead.
+# render_inner <comp> <stamp> <dest> writes install.sh.
 render_inner() {
     local comp="$1" stamp="$2" dest="$3"
     case "${comp}" in

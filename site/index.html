@@ -117,9 +117,10 @@
     </span>
 
     <p class="faint">clawee lands in <code>$HOME/.local/bin</code> and ensures
-      <code>burrowee-cli</code> is present. claweed installs the daemon + boot unit with no
-      privilege and escalates with <code>sudo</code> only for the setuid <code>clawee-spawn</code>
-      helper, cross-installing <code>burrowee-gateway</code>.</p>
+      <code>burrowee-cli</code> is present. claweed escalates with <code>sudo</code> only for the
+      steps that need root — the root-owned daemon binaries, the spawn policy files and the
+      system boot unit — and cross-installs <code>burrowee-gateway</code>. It installs
+      <strong>no setuid binary</strong>.</p>
   </section>
 
   <section>

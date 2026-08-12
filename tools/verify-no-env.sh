@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # verify-no-env.sh — fail if a built Clawee binary embeds a forbidden config-env
-# runtime literal. claweed + clawee-spawn take ALL config from flags
-# (`claweed serve --data-dir/--spawn-helper/--register-socket`) and root-owned
-# files (the spawn allowlist) — never from env. This is the release-channel
-# guard: run it on every freshly built component binary before publishing.
+# runtime literal. claweed takes ALL config from flags (`claweed serve
+# --data-dir/--register-socket`) and root-owned files (the spawn allowlist) —
+# never from env. This is the release-channel guard: run it on every freshly
+# built component binary before publishing.
 #
 # Usage: verify-no-env.sh <binary> [<binary> ...]
 # Forbidden literals (config-env names that must NOT drive runtime config):
 #   CLAWEE_DATA_DIR       data-dir must come from --data-dir, not env
 #   CLAWEE_SOCKET         the transport socket must come from a flag, not env
-#   CLAWEE_SPAWN_HELPER   the spawn-helper path must come from --spawn-helper
+#   CLAWEE_SPAWN_HELPER   retired with the setuid clawee-spawn helper, and kept
+#                         forbidden on purpose: the helper's path was the one
+#                         piece of config a hostile env var could have pointed
+#                         at a root-gaining binary. Nothing may reintroduce it.
 #   mustEnv               the helper pattern that fatals on a missing required env
 #
 # NOTE: legitimate read-only env knobs are NOT forbidden — e.g. clawee reads

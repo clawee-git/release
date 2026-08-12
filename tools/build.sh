@@ -54,9 +54,15 @@ fi
 
 # binary -> package map (space-separated "bin:pkg" pairs per component).
 # clawee's source package is cmd/clawee — the binary keeps the clawee name.
+#
+# claweed is TWO binaries. The setuid-root clawee-spawn helper was retired in the
+# daemon repo (the daemon runs as root and forks its own per-user children), and
+# ./cmd/clawee-spawn no longer exists — naming it here fails the build outright.
+# Keep this map and internal/relconfig's Bins() in step; both must only name
+# packages the component actually has.
 case "${COMP}" in
     clawee)   MAP="clawee:./cmd/clawee clawee-updater:./cmd/clawee-updater" ;;
-    claweed)  MAP="claweed:./cmd/claweed clawee-spawn:./cmd/clawee-spawn claweed-updater:./cmd/claweed-updater" ;;
+    claweed)  MAP="claweed:./cmd/claweed claweed-updater:./cmd/claweed-updater" ;;
     *)        echo "✗ unknown COMP: ${COMP}" >&2; exit 2 ;;
 esac
 

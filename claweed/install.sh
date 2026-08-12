@@ -38,9 +38,11 @@
 #                           bytes from any source are minisign + sha256 verified.
 #
 # claweed note: the claweed inner installer is the canonical sudo-minimal daemon
-# installer. It reads CLAWEE_PREFIX (set here from PREFIX), CLAWEE_DATA_DIR, and
-# CLAWEE_REGISTER_SOCKET, escalates with sudo only for the setuid spawn helper,
-# and cross-installs burrowee-gateway. To uninstall claweed, run its inner
+# installer. It escalates with sudo only for the steps that genuinely need root
+# (the root-owned daemon binaries, the boot unit, and the root-owned spawn
+# policy files) and cross-installs burrowee-gateway. There is NO setuid tier any
+# more — the setuid-root clawee-spawn helper is retired; the daemon runs as root
+# and forks its own per-user children. To uninstall claweed, run its inner
 # installer directly with the `uninstall` subcommand (not via this bootstrap).
 
 set -eu
@@ -310,13 +312,19 @@ unzip -q -o "$TMP/$ZIP" -d "$TMP/x" || fail "zip extraction failed — corrupt d
 
 ok "verified — running inner installer"
 # Run with cwd = the unzipped dir: the inner installer resolves the binaries
-# relative to its own location (./clawee, ./claweed, ./clawee-spawn).
+# relative to its own location (./clawee, ./claweed, ./claweed-updater).
 #
 # The two components have DIFFERENT inner-installer contracts:
 #   clawee   — simple bin-placer: reads PREFIX + CLAWEE_UNINSTALL.
-#   claweed  — canonical sudo-minimal daemon installer: reads CLAWEE_PREFIX
-#              (mapped from PREFIX here), runs interactively, escalates with sudo
-#              only for the setuid spawn helper, cross-installs burrowee-gateway.
+#   claweed  — canonical sudo-minimal daemon installer: runs interactively,
+#              escalates with sudo only for the steps that need root, and
+#              cross-installs burrowee-gateway. No setuid tier (the clawee-spawn
+#              helper is retired). NOTE: CLAWEE_PREFIX is still exported below.
+#              The CURRENT canonical installer no longer honours it (the daemon
+#              is always installed root-owned under /usr/local/bin), so on a
+#              current release it is inert; an OLDER pinned claweed still reads
+#              it. Whether to drop the export is a separate question from the
+#              spawn-helper retirement, and is not decided here.
 case "$COMP" in
     clawee)
         ( cd "$TMP/x" && PREFIX="$PREFIX" CLAWEE_UNINSTALL="${CLAWEE_UNINSTALL:-}" sh ./install.sh )
