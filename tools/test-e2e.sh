@@ -209,9 +209,23 @@ run_claweed() {
     local got_entries want_entries
     # shellcheck disable=SC2012  # entries are OUR release artifacts (plain ASCII names); ls is what makes the want-string readable, and a surprising name is exactly what this assertion should fail on.
     got_entries="$(cd "${x}" && ls -A | LC_ALL=C sort | tr '\n' ' ')"
-    want_entries="claweed claweed-updater install.sh "
+    want_entries="claweed claweed-updater install.sh migrations "
     [ "${got_entries}" = "${want_entries}" ] \
         || die "claweed zip entry set changed: got [${got_entries}] want [${want_entries}]"
+    # (a2) migrations/ is not decoration: install.sh calls
+    # "$SELF_DIR/migrations/run.sh" and REFUSES the install when it is absent, so
+    # a kit without it is uninstallable rather than degraded. v0.2.0.2026.08.13
+    # shipped exactly that — three top-level files, no ladder — because the
+    # release assembles its own zips and only the daemon's build-local.sh staging
+    # was guarded. Assert the runner is present, executable, and accompanied by
+    # the file every rung sources; and that no test harness rode along.
+    [ -x "${x}/migrations/run.sh" ] \
+        || die "claweed zip has migrations/ but no executable migrations/run.sh"
+    [ -f "${x}/migrations/lib.sh" ] \
+        || die "claweed zip is missing migrations/lib.sh — every rung sources it, so no rung can run"
+    if ls "${x}/migrations/"*_test.sh >/dev/null 2>&1; then
+        die "claweed zip ships a migrations test harness (*_test.sh) — release kits carry the ladder, not its suite"
+    fi
     #
     # (b) No LIVE setuid step in the shipped inner installer. Only EXECUTABLE
     # lines are read: the canonical template still explains the retirement in
