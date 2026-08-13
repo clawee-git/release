@@ -351,12 +351,39 @@ if [ -n "${APPLE_SIGN}" ]; then
     # keychain search list is System-only, so the login keychain is unreachable).
     # modernech-sign stays the source of truth for WHICH backend runs; this only
     # fails fast when neither backend could possibly work.
-    if ! command -v rcodesign >/dev/null 2>&1 \
+    #
+    # LOOK WHERE cargo PUTS IT, not only on PATH. `cargo install apple-codesign`
+    # lands rcodesign in ~/.cargo/bin, which is on an interactive shell's PATH via
+    # the cargo env snippet and absent from a harness/SSH environment — exactly the
+    # session this check was written to keep working. A bare `command -v` therefore
+    # reported "no backend possible" on a host where the disk-key backend was
+    # installed and functional, and refused a cut that would have succeeded. The
+    # message was true ("not on PATH") and the conclusion it justified was not.
+    # Same two-step shape modernech-sign gets above and govulncheck gets in
+    # vulncheck.sh: probe PATH, then the canonical install location.
+    RCODESIGN="${RCODESIGN:-rcodesign}"
+    command -v "${RCODESIGN}" >/dev/null 2>&1 || RCODESIGN="${HOME}/.cargo/bin/rcodesign"
+    if ! { command -v "${RCODESIGN}" >/dev/null 2>&1 || [ -x "${RCODESIGN}" ]; } \
         && ! security find-identity -v -p codesigning 2>/dev/null | grep -q "$("${SIGN_BIN}" id)"; then
         echo "✗ Developer ID identity unreachable: $("${SIGN_BIN}" id)" >&2
-        echo "  rcodesign (disk-key backend) is not on PATH and the identity is not in this session's keychain." >&2
-        echo "  Install rcodesign (cargo install apple-codesign) or sign from a GUI Terminal session." >&2
+        echo "  rcodesign (disk-key backend) not found on PATH nor at ${HOME}/.cargo/bin/rcodesign," >&2
+        echo "  and the identity is not in this session's keychain." >&2
+        echo "  Install it (cargo install apple-codesign), set RCODESIGN=/path/to/rcodesign," >&2
+        echo "  or sign from a GUI Terminal session whose login keychain is reachable." >&2
         exit 1
+    fi
+    # HAND IT DOWN BY PATH, because modernech-sign execs `rcodesign` BY NAME.
+    # Satisfying the check above is not enough: this script resolves an absolute
+    # path, the child does not, and a child that cannot find it silently falls back
+    # to the keychain backend ("headless: signing via throwaway keychain") and dies
+    # with "no identity found" — a signing failure two steps removed from its cause.
+    #
+    # Guard on the bare NAME, never on "${RCODESIGN}": `command -v` on an absolute
+    # path succeeds whether or not that directory is on PATH, so testing the
+    # resolved value makes this branch dead and reintroduces the bug it exists to
+    # fix. (It did, in the first cut of this fix.)
+    if ! command -v rcodesign >/dev/null 2>&1 && [ -x "${RCODESIGN}" ]; then
+        export PATH="$(dirname "${RCODESIGN}"):${PATH}"
     fi
     export MODERNECH_SIGN="${SIGN_BIN}"
     echo "→ --apple: Developer ID signing + notarization via ${SIGN_BIN}" >&2
