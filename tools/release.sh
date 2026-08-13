@@ -496,6 +496,39 @@ fi # DISTRIBUTE_ONLY != 1 (pre-flight)
 # while still documenting a retired setuid tier. A second copy of a file this
 # repo does not own is a lie waiting to happen — read the daemon repo instead.
 # render_inner <comp> <stamp> <dest> writes install.sh.
+# stage_migrations_for <comp> <assemble-dir> — put claweed's migration ladder in
+# the zip, beside install.sh.
+#
+# WHY THIS EXISTS. The daemon's installer calls "$SELF_DIR/migrations/run.sh" and
+# REFUSES outright when it is absent ("this release is missing migrations/run.sh
+# — refusing to install an incomplete kit", install.sh.in:1122). A kit without it
+# is not degraded, it is uninstallable — and v0.2.0.2026.08.13.89abc56b shipped
+# exactly that way: three top-level files, no ladder, dead on arrival.
+#
+# HOW IT WAS MISSED, so the next person does not repeat it. The daemon's
+# build-local.sh stages the ladder and a gate pins that call site — but the
+# release assembles its own zips here, and nothing watched this path. Two
+# staging routes, one guarded. The rule for WHAT ships therefore lives in ONE
+# place, the daemon's stage_migrations.sh, sourced by both callers: a second copy
+# of the rule here could drift from the one the daemon tests.
+#
+# clawee has no ladder; only claweed stages one.
+stage_migrations_for() {
+    local comp="$1" assemble="$2" src rule n
+    [ "${comp}" = claweed ] || return 0
+    src="${SRC_CLAWEED}/install/migrations"
+    rule="${SRC_CLAWEED}/install/stage_migrations.sh"
+    [ -f "${rule}" ] \
+        || { echo "✗ ${rule} missing — cannot stage the migration ladder (set CLAWEE_SRC_CLAWEED)" >&2; exit 1; }
+    # shellcheck source=/dev/null
+    . "${rule}"
+    n="$(stage_migrations "${src}" "${assemble}/migrations")" \
+        || { echo "✗ staging the migration ladder from ${src} failed" >&2; exit 1; }
+    [ -x "${assemble}/migrations/run.sh" ] \
+        || { echo "✗ staged ${n} migration file(s) but migrations/run.sh is missing or not executable" >&2; exit 1; }
+    echo "✓ migrations/ (${n} files) → ${assemble##*/}" >&2
+}
+
 render_inner() {
     local comp="$1" stamp="$2" dest="$3"
     case "${comp}" in
@@ -622,10 +655,32 @@ do_release() {
         # shellcheck disable=SC2086  # ${bins} is an intentional space-list of bin names from bins_for(); word-splitting is the point.
         for b in ${bins}; do cp "${out_bins}/${b}" "${assemble}/${b}"; done
         render_inner "${comp}" "${stamp}" "${assemble}/install.sh"
+        stage_migrations_for "${comp}" "${assemble}"
 
         asset="clawee-${comp}-${os}-${arch}.zip"
         rm -f "${stage}/${asset}"
-        ( cd "${assemble}" && zip -j -q "${stage}/${asset}" ./* )
+        # -r, NOT -j. `-j` junks paths, which flattens migrations/run.sh to a
+        # top-level run.sh — the installer looks for "$SELF_DIR/migrations/run.sh"
+        # and would refuse a kit whose files were all present but unstructured.
+        # Everything else in the assemble dir is top-level either way.
+        ( cd "${assemble}" && zip -q -r "${stage}/${asset}" . )
+
+        # ASSERT ON THE ARTIFACT, IN THE CUT PATH. stage_migrations_for's own
+        # checks fire when staging goes wrong; nothing fires if the CALL is
+        # deleted — which is how the ladder went missing in the first place, and
+        # test-e2e.sh's entry-set assertion cannot help because no cut path runs
+        # it (`grep -n e2e tools/release.sh cmd/rkit/*.go` finds nothing). This
+        # reads the zip that is about to be signed and published.
+        # Ask the archive for the ONE entry, rather than grepping a listing:
+        # `unzip -l <zip> <name>` exits non-zero when it matches nothing, so the
+        # test does not depend on column widths, spacing, or line anchoring in
+        # unzip's human-readable table.
+        if [ "${comp}" = claweed ] \
+            && ! unzip -l "${stage}/${asset}" 'migrations/run.sh' >/dev/null 2>&1; then
+            echo "✗ ${asset} has no migrations/run.sh — the installer refuses a kit without it" >&2
+            echo "  assemble dir holds: $(ls -A "${assemble}" | tr '\n' ' ')" >&2
+            exit 1
+        fi
 
         # Apple-sign mode: notarize the darwin zips (binaries were Developer ID
         # signed by build.sh). Submitting doesn't alter the zip, so the later
