@@ -324,8 +324,9 @@ func orchestrate(ctx context.Context, o Options) (*Result, error) {
 		return nil, fmt.Errorf("install.sh: %w", err)
 	}
 
-	// 5. Assemble one flat zip per target: component bins + install.sh.
-	zips, err := assemble(o.Component, stamp, o.OutDir, installSh, arts)
+	// 5. Assemble one flat zip per target: component bins + install.sh (+
+	//    claweed's migration ladder — see stageMigrations in assemble.go).
+	zips, err := assemble(o.Component, stamp, o.OutDir, o.SrcDir, installSh, arts)
 	if err != nil {
 		return nil, fmt.Errorf("assemble: %w", err)
 	}
