@@ -552,11 +552,23 @@ render_inner() {
 # mirror_to_r2 <comp> <stamp> <semver> <stage_dir>
 #
 # Publishes a just-released component's staged artifacts to the PUBLIC R2 bucket
-# behind downloads.clawee.org (the install-time fallback). GRACEFUL: any missing
-# config (no account id / no creds file) → warn + skip; an upload failure → warn
-# loudly but still return 0. The GitHub release is already published by the time
-# this runs, so a broken mirror must NEVER abort the release. clawee's R2 is a
-# plain public bucket — no console, no presigning. Never called under --dry-run.
+# behind downloads.clawee.org (the install-time fallback), whose latest.json is
+# also the SOURCE OF TRUTH gen-version-jsonp.sh reads to write version.js (see
+# that script's header). Two DELIBERATELY different postures, drawn from the
+# 2026-08-20 incident where a timed-out upload was let through as a warning and
+# gen-version-jsonp.sh went on to publish a WITHDRAWN stamp's version.js off the
+# stale catalog:
+#
+#   - config genuinely absent (no r2_account_id / no creds file) → this machine
+#     has no R2 mirror configured at all, GitHub Releases stays primary, and
+#     that's a fine, deliberate posture on a box without R2 creds: warn + return
+#     0, distribute continues.
+#   - an upload was ATTEMPTED with creds present and FAILED → the catalog is now
+#     BEHIND the GitHub release that just got published, and continuing is
+#     exactly what shipped a withdrawn stamp's version.js on 2026-08-20. FAIL
+#     CLOSED: return 1 and stop the distribute there.
+#
+# Never called under --dry-run.
 mirror_to_r2() {
     local comp="$1" stamp="$2" semver="$3" stage="$4"
     if [ -n "${SKIP_R2}" ]; then
@@ -582,10 +594,32 @@ mirror_to_r2() {
             --version "${semver}" --stamp "${stamp}" \
             --creds "${R2_CREDS}" ); then
         echo "✓ mirrored ${comp} to R2 (downloads.clawee.org/${comp}/latest.json)"
-    else
-        echo "⚠ R2 mirror FAILED for ${comp} ${stamp} — GitHub release is published; re-run the mirror by hand (tools/r2-mirror)" >&2
+        return 0
     fi
-    return 0
+    # FAILED, creds present — fail closed (2026-08-20 incident). State the
+    # world precisely and give a recovery that matches reality: --distribute-only
+    # cannot simply be re-run past this point (it refuses on the tag it already
+    # created locally at "tag already exists locally", and even past that
+    # `ghp release create` refuses a duplicate release for an already-published
+    # tag) — the remaining steps must be finished by hand.
+    echo "✗ R2 mirror FAILED for ${comp} ${stamp} — stopping the distribute here." >&2
+    echo "  State: the GitHub release IS published; the R2 catalog" >&2
+    echo "  (downloads.clawee.org/${comp}/latest.json) did NOT update; version.js," >&2
+    echo "  bootstraps, the scp to \${RELEASE_HOST}, and the [RELEASED] marker commit" >&2
+    echo "  did NOT run." >&2
+    echo "  Recover by hand:" >&2
+    echo "  1) re-run the mirror with the same args this call used:" >&2
+    echo "       ( cd '${REPO_ROOT}/tools/r2-mirror' && '${GO_BIN}' run . \\" >&2
+    echo "           --account '${account}' --bucket '${bucket}' --stage-dir '${stage}' \\" >&2
+    echo "           --comp '${comp}' --version '${semver}' --stamp '${stamp}' --creds '${R2_CREDS}' )" >&2
+    echo "  2) then finish the rest by hand: tools/gen-bootstraps.sh, then" >&2
+    echo "     tools/gen-version-jsonp.sh ${comp}, then scp ${comp}/install.sh and" >&2
+    echo "     ${comp}/version.js to \${RELEASE_HOST}:\${STATIC_DIR}/${comp}/, then commit" >&2
+    echo "     the [RELEASED: ${comp}] ${stamp} marker." >&2
+    echo "  Re-running \`release.sh --distribute-only ${comp} ${stamp}\` will NOT work:" >&2
+    echo "  it refuses at \"tag ${comp}/${stamp} already exists locally\", and even past" >&2
+    echo "  that GitHub refuses a duplicate release for an already-published tag." >&2
+    return 1
 }
 
 # ---- per-component release --------------------------------------------------
@@ -769,7 +803,9 @@ NOTES
     trap shred_key ERR
 
     # (5b) mirror the published artifacts to the public R2 bucket
-    # (downloads.clawee.org) as the install-time fallback. Non-fatal by design.
+    # (downloads.clawee.org) as the install-time fallback. Only a genuinely
+    # unconfigured mirror is non-fatal; a FAILED upload stops here (fail
+    # closed) — see mirror_to_r2's doc comment.
     mirror_to_r2 "${comp}" "${stamp}" "${new_semver}" "${stage}"
 
     # (6) regenerate bootstraps + the version JSONP, then scp the static surface.
@@ -900,7 +936,9 @@ NOTES
         --title "${comp} ${stamp}" --notes-file "${notes}" \
         clawee-"${comp}"-*.zip SHA256SUMS.txt SHA256SUMS.txt.minisig )
 
-    # (2) mirror to R2 (non-fatal by design — see mirror_to_r2's doc comment).
+    # (2) mirror to R2 — fails closed on a FAILED upload (stops here, before
+    # gen-version-jsonp reads the now-stale catalog); only a genuinely
+    # unconfigured mirror is non-fatal. See mirror_to_r2's doc comment.
     mirror_to_r2 "${comp}" "${stamp}" "${semver}" "${stage}"
 
     # (3) regenerate bootstraps + version JSONP, then scp the static surface —
