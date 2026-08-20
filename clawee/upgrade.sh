@@ -92,7 +92,7 @@ COMP="clawee"
 # "install" or "upgrade" — see the two-modes note in the header. Baked, never
 # read from the environment: the mode is a property of the URL the operator
 # curl'd, and a runtime override would make one file behave as the other.
-MODE="install"
+MODE="upgrade"
 PUBKEY="RWTuO+iTqEyo52tDnuRxx1IsrARInzZbBSfgbj4r5jZusvksN2VHuY3E"
 REPO="${CLAWEE_RELEASE_REPO:-clawee-git/release}"
 PREFIX="${PREFIX:-$HOME/.local}"

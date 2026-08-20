@@ -48,6 +48,22 @@ SHA-256, then unzips and runs the inner installer.
      revoke it. Without it claweed reports `thermal=unknown` and everything
      else still works.
 
+  **Force this line's state migrations** with `upgrade.sh` instead of
+  `install.sh` — same verified kit, plus a forced run of
+  `migrations/upgrade.sh` after the install:
+
+  ```sh
+  curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/claweed/upgrade.sh | sh -s -- 0.1.15
+  ```
+
+  This is the exception path, not the routine upgrade: `install.sh` already
+  runs the ladder gated on every install, and `<line>` is optional (omitted,
+  the latest release is used). It exists for the case the gate cannot see —
+  a build that changed without the semver changing. `clawee` (the terminal
+  client) ships no migration ladder today; its `upgrade.sh` still renders (so
+  the URL never 404s) and refuses at runtime, naming the component and the
+  version it just installed.
+
   If no `sudo` path exists at all — no passwordless sudo **and** no tty to
   prompt on — the installer **stops at step 1 and installs nothing**: there is
   no unprivileged variant of the daemon binary. With a tty it prompts for your
@@ -109,7 +125,7 @@ can't be `curl`'d anonymously). The static bootstrap scripts are mirrored to
 `release.clawee.org` (nginx + Cloudflare).
 
 ```
-clawee/    claweed/        ← per-component outer bootstrap (install.sh, generated)
+clawee/    claweed/        ← per-component outer bootstrap (install.sh + upgrade.sh, generated)
 inner/clawee/install.sh     ← clawee's inner installer, repo-committed (ships
                               verbatim inside each verified clawee zip). claweed
                               has no committed copy: its inner installer is
@@ -119,7 +135,7 @@ versions/<comp>             ← per-component SemVer source of truth
 site/index.html             ← release.clawee.org landing page
 tools/                      ← version.sh, build.sh, gen-bootstraps.sh, release.sh,
                               prune-releases.sh, test-e2e.sh, verify-no-env.sh,
-                              test-r2-mirror-fail-closed.sh
+                              test-r2-mirror-fail-closed.sh, test-upgrade-bootstrap.sh
 clawee-release.pub          ← minisign signing public key (added at activation)
 ```
 
