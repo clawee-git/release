@@ -118,7 +118,8 @@ inner/clawee/install.sh     ← clawee's inner installer, repo-committed (ships
 versions/<comp>             ← per-component SemVer source of truth
 site/index.html             ← release.clawee.org landing page
 tools/                      ← version.sh, build.sh, gen-bootstraps.sh, release.sh,
-                              prune-releases.sh, test-e2e.sh, verify-no-env.sh
+                              prune-releases.sh, test-e2e.sh, verify-no-env.sh,
+                              test-r2-mirror-fail-closed.sh
 clawee-release.pub          ← minisign signing public key (added at activation)
 ```
 

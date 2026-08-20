@@ -569,6 +569,9 @@ render_inner() {
 #     CLOSED: return 1 and stop the distribute there.
 #
 # Never called under --dry-run.
+#
+# Touching this function's branches → run tools/test-r2-mirror-fail-closed.sh
+# (unit-level; extracts this function verbatim and pins all three branches).
 mirror_to_r2() {
     local comp="$1" stamp="$2" semver="$3" stage="$4"
     if [ -n "${SKIP_R2}" ]; then
@@ -597,11 +600,13 @@ mirror_to_r2() {
         return 0
     fi
     # FAILED, creds present — fail closed (2026-08-20 incident). State the
-    # world precisely and give a recovery that matches reality: --distribute-only
-    # cannot simply be re-run past this point (it refuses on the tag it already
-    # created locally at "tag already exists locally", and even past that
-    # `ghp release create` refuses a duplicate release for an already-published
-    # tag) — the remaining steps must be finished by hand.
+    # world precisely and give a recovery that matches reality: this function is
+    # reached from both do_release (full cut) and distribute_only, and neither
+    # can simply be re-run past this point — --distribute-only refuses on the
+    # tag it already created locally ("tag already exists locally"), a full cut
+    # instead bumps to a new stamp and cuts a different release, and even past
+    # the tag check `ghp release create` refuses a duplicate release for an
+    # already-published tag — so the remaining steps must be finished by hand.
     echo "✗ R2 mirror FAILED for ${comp} ${stamp} — stopping the distribute here." >&2
     echo "  State: the GitHub release IS published; the R2 catalog" >&2
     echo "  (downloads.clawee.org/${comp}/latest.json) did NOT update; version.js," >&2
@@ -616,9 +621,11 @@ mirror_to_r2() {
     echo "     tools/gen-version-jsonp.sh ${comp}, then scp ${comp}/install.sh and" >&2
     echo "     ${comp}/version.js to \${RELEASE_HOST}:\${STATIC_DIR}/${comp}/, then commit" >&2
     echo "     the [RELEASED: ${comp}] ${stamp} marker." >&2
-    echo "  Re-running \`release.sh --distribute-only ${comp} ${stamp}\` will NOT work:" >&2
-    echo "  it refuses at \"tag ${comp}/${stamp} already exists locally\", and even past" >&2
-    echo "  that GitHub refuses a duplicate release for an already-published tag." >&2
+    echo "  Re-running \`release.sh\` (either mode, same target) will NOT safely" >&2
+    echo "  finish this: --distribute-only refuses at \"tag already exists locally\";" >&2
+    echo "  a full cut bumps to a new stamp and cuts a DIFFERENT release instead of" >&2
+    echo "  finishing this one — and even past the tag check, GitHub refuses a" >&2
+    echo "  duplicate release for an already-published tag. Recover by hand:" >&2
     return 1
 }
 

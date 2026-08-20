@@ -38,6 +38,12 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 
 # ---- extract toml_get() + mirror_to_r2() verbatim from release.sh -----------
+# ASSUMPTION: each function's closing brace is alone on a column-0 line ("}")
+# and nothing inside the function body opens a column-0 "{ ... }" group of its
+# own — the awk range stops at the FIRST such line, so a future edit that adds
+# one inside either function would silently truncate the extraction. The
+# `^toml_get() {` / `^mirror_to_r2() {` grep guards below only catch a missing
+# or renamed opening line, not a truncated body.
 FUNCS="${WORK}/funcs.sh"
 {
     awk '/^toml_get\(\) \{/,/^}/' "${RELEASE_SH}"
@@ -87,8 +93,12 @@ echo "${out}" | grep -qi 'did NOT' \
     || die "recovery message doesn't state what did NOT run"
 echo "${out}" | grep -q 'tools/r2-mirror' \
     || die "recovery message doesn't name tools/r2-mirror for the by-hand re-run"
-echo "${out}" | grep -qi -- '--distribute-only .* will NOT work' \
-    || die "recovery message doesn't warn that re-running --distribute-only won't work"
+echo "${out}" | grep -qi 'will NOT safely' \
+    || die "recovery message doesn't warn that re-running release.sh won't safely finish this"
+echo "${out}" | grep -qi -- '--distribute-only' \
+    || die "recovery message doesn't cover the --distribute-only caller"
+echo "${out}" | grep -qi 'full cut' \
+    || die "recovery message doesn't cover the do_release (full cut) caller"
 say "case 1 OK (rc=${rc})"
 
 # ---- case 2: SKIP — no r2_account_id in config ------------------------------
