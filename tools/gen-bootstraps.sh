@@ -1,10 +1,22 @@
 #!/bin/sh
-# gen-bootstraps.sh — generate the two self-contained outer bootstraps
-# (clawee/install.sh, claweed/install.sh) from one template.
+# gen-bootstraps.sh — generate the self-contained outer bootstraps
+# (<comp>/install.sh, <comp>/upgrade.sh, for comp in clawee claweed) from one
+# template.
 #
-# Each generated file is byte-identical to the other except for the @COMP@
-# and @PUBKEY@ substitutions. The outer bootstrap is THE TRUST ANCHOR, so the
-# baked @PUBKEY@ must be the real release signing pubkey before activation.
+# install.sh and upgrade.sh are ONE template under a @MODE@ substitution, not
+# two files: the baked pubkey and the minisign gate are what make it the trust
+# anchor, and a second copy of those is a copy that drifts. BOTH MODES FOR
+# EVERY COMPONENT, not only claweed (the one whose kit ships a migration
+# ladder today) — which kits carry migrations/ is decided in the COMPONENT
+# repos at their build, and a conditional render here would put a belief about
+# that in this repo that nothing keeps in step with the zips. A kit with no
+# ladder is instead a runtime refusal from the shipped bootstrap, naming the
+# component and the version it just installed.
+#
+# Each generated file is byte-identical to its sibling except for the @COMP@,
+# @MODE@ and @PUBKEY@ substitutions. The outer bootstrap is THE TRUST ANCHOR,
+# so the baked @PUBKEY@ must be the real release signing pubkey before
+# activation.
 #
 # Pubkey resolution (first that exists wins):
 #   1. $CLAWEE_PUBKEY_FILE   (explicit override; used by the offline E2E test)
@@ -45,13 +57,16 @@ fi
 
 # ---- generate -----------------------------------------------------------
 for comp in clawee claweed; do
-    out="$ROOT/$comp/install.sh"
     mkdir -p "$ROOT/$comp"
-    # @PUBKEY@ first would be fine, but do @COMP@ first; neither value contains
-    # the other's placeholder. Use a tmp then move so a partial write can't ship.
-    tmp="$out.tmp.$$"
-    sed -e "s|@COMP@|$comp|g" -e "s|@PUBKEY@|$PUBKEY|g" "$TEMPLATE" > "$tmp"
-    chmod +x "$tmp"
-    mv -f "$tmp" "$out"
-    echo "✓ wrote $out"
+    # @COMP@, @MODE@ and @PUBKEY@ — order doesn't matter, none of the three
+    # values contains another's placeholder. Use a tmp then move so a partial
+    # write can't ship.
+    for mode in install upgrade; do
+        out="$ROOT/$comp/$mode.sh"
+        tmp="$out.tmp.$$"
+        sed -e "s|@COMP@|$comp|g" -e "s|@MODE@|$mode|g" -e "s|@PUBKEY@|$PUBKEY|g" "$TEMPLATE" > "$tmp"
+        chmod +x "$tmp"
+        mv -f "$tmp" "$out"
+        echo "✓ wrote $out  (mode $mode)"
+    done
 done

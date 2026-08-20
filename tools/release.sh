@@ -618,8 +618,9 @@ mirror_to_r2() {
     echo "           --account '${account}' --bucket '${bucket}' --stage-dir '${stage}' \\" >&2
     echo "           --comp '${comp}' --version '${semver}' --stamp '${stamp}' --creds '${R2_CREDS}' )" >&2
     echo "  2) then finish the rest by hand: tools/gen-bootstraps.sh, then" >&2
-    echo "     tools/gen-version-jsonp.sh ${comp}, then scp ${comp}/install.sh and" >&2
-    echo "     ${comp}/version.js to \${RELEASE_HOST}:\${STATIC_DIR}/${comp}/, then commit" >&2
+    echo "     tools/gen-version-jsonp.sh ${comp}, then scp ${comp}/install.sh," >&2
+    echo "     ${comp}/upgrade.sh and ${comp}/version.js to" >&2
+    echo "     \${RELEASE_HOST}:\${STATIC_DIR}/${comp}/, then commit" >&2
     echo "     the [RELEASED: ${comp}] ${stamp} marker." >&2
     echo "  Re-running \`release.sh\` (either mode, same target) will NOT safely" >&2
     echo "  finish this: --distribute-only refuses at \"tag already exists locally\";" >&2
@@ -823,6 +824,7 @@ NOTES
     # shellcheck disable=SC2029  # ${STATIC_DIR}/${comp} are local, controlled values — expanding client-side into the remote command is intended.
     ssh "${RELEASE_HOST}" "mkdir -p '${STATIC_DIR}/${comp}'"
     scp -q "${REPO_ROOT}/${comp}/install.sh" "${RELEASE_HOST}:${STATIC_DIR}/${comp}/install.sh"
+    scp -q "${REPO_ROOT}/${comp}/upgrade.sh" "${RELEASE_HOST}:${STATIC_DIR}/${comp}/upgrade.sh"
     scp -q "${REPO_ROOT}/${comp}/version.js" "${RELEASE_HOST}:${STATIC_DIR}/${comp}/version.js"
     purge_cf_version_js "${comp}"
     if [ -f "${REPO_ROOT}/clawee-release.pub" ]; then
@@ -833,7 +835,7 @@ NOTES
     fi
 
     # (7) marker commit.
-    git add "versions/${comp}" "${comp}/install.sh" "${comp}/version.js"
+    git add "versions/${comp}" "${comp}/install.sh" "${comp}/upgrade.sh" "${comp}/version.js"
     git commit -m "[RELEASED: ${comp}] $(date -u +%Y-%m-%d) ${stamp}"
 
     echo "✓ released ${tag}"
@@ -843,8 +845,8 @@ NOTES
 # ---- distribute_only: distribution-only mode over an already-staged
 # dist/<stamp>/ (produced by `rkit build` — the produce half lives there now).
 # Runs ONLY: tag + GitHub Release -> mirror_to_r2 -> gen-bootstraps.sh ->
-# gen-version-jsonp.sh -> scp install.sh/version.js/pubkey/site to the release
-# host -> [RELEASED] marker commit. No build, no sign, no notarize, no version
+# gen-version-jsonp.sh -> scp install.sh/upgrade.sh/version.js/pubkey/site to
+# the release host -> [RELEASED] marker commit. No build, no sign, no notarize, no version
 # bump — all of that already happened upstream in `rkit build`. clawee has no
 # console/register step (unlike Burrowee) — nothing to skip there.
 #
@@ -883,9 +885,9 @@ distribute_only() {
     if [ "${DRY_RUN}" = 1 ]; then
         echo "would: gh release create ${comp}/${stamp} (GitHub Release, public) via ghp"
         echo "would: mirror_to_r2 ${comp} ${stamp} ${semver} (downloads.clawee.org)"
-        echo "would: gen-bootstraps.sh (regenerate ${comp}/install.sh)"
+        echo "would: gen-bootstraps.sh (regenerate ${comp}/install.sh + ${comp}/upgrade.sh)"
         echo "would: gen-version-jsonp.sh ${comp} (regenerate ${comp}/version.js)"
-        echo "would: scp install.sh/version.js/clawee-release.pub/site/index.html to ${RELEASE_HOST}:${STATIC_DIR}/${comp}/"
+        echo "would: scp install.sh/upgrade.sh/version.js/clawee-release.pub/site/index.html to ${RELEASE_HOST}:${STATIC_DIR}/${comp}/"
         echo "would: marker commit [RELEASED: ${comp}] ${stamp}"
         echo "✓ dry-run distribute-only: no real writes"
         return 0
@@ -956,6 +958,7 @@ NOTES
     # shellcheck disable=SC2029  # ${STATIC_DIR}/${comp} are local, controlled values — expanding client-side into the remote command is intended.
     ssh "${RELEASE_HOST}" "mkdir -p '${STATIC_DIR}/${comp}'"
     scp -q "${REPO_ROOT}/${comp}/install.sh" "${RELEASE_HOST}:${STATIC_DIR}/${comp}/install.sh"
+    scp -q "${REPO_ROOT}/${comp}/upgrade.sh" "${RELEASE_HOST}:${STATIC_DIR}/${comp}/upgrade.sh"
     scp -q "${REPO_ROOT}/${comp}/version.js" "${RELEASE_HOST}:${STATIC_DIR}/${comp}/version.js"
     purge_cf_version_js "${comp}"
     if [ -f "${REPO_ROOT}/clawee-release.pub" ]; then
@@ -966,7 +969,7 @@ NOTES
     fi
 
     # (4) marker commit.
-    git add "versions/${comp}" "${comp}/install.sh" "${comp}/version.js"
+    git add "versions/${comp}" "${comp}/install.sh" "${comp}/upgrade.sh" "${comp}/version.js"
     git commit -m "[RELEASED: ${comp}] $(date -u +%Y-%m-%d) ${stamp}"
 
     echo "✓ distributed ${tag}"
