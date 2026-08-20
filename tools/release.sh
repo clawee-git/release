@@ -499,11 +499,15 @@ fi # DISTRIBUTE_ONLY != 1 (pre-flight)
 # stage_migrations_for <comp> <assemble-dir> — put claweed's migration ladder in
 # the zip, beside install.sh.
 #
-# WHY THIS EXISTS. The daemon's installer calls "$SELF_DIR/migrations/run.sh" and
-# REFUSES outright when it is absent ("this release is missing migrations/run.sh
-# — refusing to install an incomplete kit", install.sh.in:1122). A kit without it
-# is not degraded, it is uninstallable — and v0.2.0.2026.08.13.89abc56b shipped
-# exactly that way: three top-level files, no ladder, dead on arrival.
+# WHY THIS EXISTS. The daemon's installer calls "$SELF_DIR/migrations/run.sh"
+# when present; it now SKIPS migration when the ladder is absent, rather than
+# refusing the install outright, so an operator on an old kit is never hard
+# blocked. That tolerance is exactly why staging cannot be skipped here: a
+# skip-if-absent installer will happily install an incomplete kit and never
+# say so — staging is what actually SHIPS the ladder, and the assert below is
+# the build-time completeness gate that catches its absence before an
+# operator ever sees the kit. v0.2.0.2026.08.13.89abc56b shipped exactly
+# that way once already: three top-level files, no ladder, dead on arrival.
 #
 # HOW IT WAS MISSED, so the next person does not repeat it. The daemon's
 # build-local.sh stages the ladder and a gate pins that call site — but the
