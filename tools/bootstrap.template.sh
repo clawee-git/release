@@ -2,7 +2,7 @@
 # Clawee outer bootstrap — THE TRUST ANCHOR (POSIX sh, macOS + Linux).
 #
 #   curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/@COMP@/install.sh | sh
-#   curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/@COMP@/upgrade.sh | sh -s -- 0.1.15
+#   curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/@COMP@/upgrade.sh | sh -s -- 0.2.0
 #
 # This is the stable, curl'd-alone entry point for the `@COMP@` component. It
 # NEVER runs an unverified byte: it downloads the release zip + SHA256SUMS.txt +
@@ -40,12 +40,14 @@
 # they are produced from tools/bootstrap.template.sh by tools/gen-bootstraps.sh.
 #
 # Arguments (upgrade.sh only; install.sh takes none and REJECTS any):
-#   <line>                   the release line to force migrations for, e.g.
-#                            0.1.15. Optional — absent, latest is resolved
-#                            exactly as install.sh does. Present, it is checked
-#                            against the RESOLVED release: a mismatch refuses
-#                            rather than forcing a different line's migrations
-#                            under a wrong banner.
+#   <line>                   the MIGRATION line to force, e.g. 0.2.0 — "assume
+#                            this host is below <line>". Optional: absent, the
+#                            line is read out of the verified kit's own ledger.
+#                            Handed to the kit's migrations/upgrade.sh VERBATIM;
+#                            whether this kit carries that line is that script's
+#                            own cross-check (refusal names both values). The
+#                            release installed is always the resolved one
+#                            (latest, or the version-pin env var).
 #
 # Exit codes (upgrade.sh):
 #   0   installed; the ladder applied nothing (its 0) or its rungs RAN (its 2)
@@ -226,20 +228,28 @@ esac
 #
 # install.sh takes NO arguments and rejects them rather than discarding them: a
 # verb that silently drops what it was given is what a mistyped subcommand
-# becomes, and `| sh -s -- 0.1.15` against install.sh is exactly that mistype.
+# becomes, and `| sh -s -- 0.2.0` against install.sh is exactly that mistype.
 #
-# upgrade.sh takes at most one — the release line. It is optional (absent,
-# latest is resolved as always) and it is not a label: see the cross-check
-# after version resolution for what "checked against the resolved release"
-# means.
+# upgrade.sh takes at most one — the MIGRATION LINE: "assume this host is
+# below <line>, and force that line's state migrations" (operator ruling
+# 2026-08-21; the argument used to be a release-line cross-check, which made
+# `-- 0.2.0` refuse whenever the channel had moved past 0.2.0 — the exact
+# invocation the backfill needs). It is optional: absent, the line is read out
+# of the verified kit's own ledger. It is handed to the kit's
+# migrations/upgrade.sh VERBATIM — whether this kit carries that line is that
+# script's own cross-check, which names both values on refusal; this file only
+# rejects a value that is not a version at all. Release selection is a
+# different axis and stays where it was: latest by default, or the component's
+# version-pin env var.
 usage() {
     printf 'usage: curl -fsSL https://release.clawee.org/%s/%s.sh | sh' "$COMP" "$MODE"
     if [ "$MODE" = upgrade ]; then
         printf ' -s -- [<line>]\n\n'
-        printf 'Install the %s release and then FORCE this line'"'"'s state migrations from the\n' "$COMP"
-        printf 'same verified kit. <line> is MAJOR.MINOR.PATCH (e.g. 0.1.15); a leading "v" and a\n'
-        printf 'release stamp'"'"'s trailing .date.sha are accepted. Given, it is checked against the\n'
-        printf 'resolved release; omitted, the latest release is used and the line is read off it.\n\n'
+        printf 'Install the latest %s release and then FORCE state migrations from the same\n' "$COMP"
+        printf 'verified kit, as if this host were still below <line>. <line> is the MIGRATION\n'
+        printf 'line, MAJOR.MINOR.PATCH (e.g. 0.2.0); a leading "v" and a release stamp'"'"'s\n'
+        printf 'trailing .date.sha are accepted. Omitted, the line is read out of the kit'"'"'s own\n'
+        printf 'migration ledger; either way the kit'"'"'s migrations/upgrade.sh cross-checks it.\n\n'
         printf 'exit: 0 installed (ladder applied nothing, or its rungs ran) · 1 the ladder\n'
         printf 'refused or failed · 3 the ladder ran but a receipt was lost · 64 bad command line.\n'
     else
@@ -292,11 +302,11 @@ while [ $# -gt 0 ]; do
             usage_error "unknown option '$1'" ;;
         *)
             [ "$MODE" = upgrade ] \
-                || usage_error "$COMP/install.sh takes no arguments, and was given '$1' — did you mean upgrade.sh, which takes the release line?"
+                || usage_error "$COMP/install.sh takes no arguments, and was given '$1' — did you mean upgrade.sh, which takes the migration line?"
             [ -z "$LINE" ] \
-                || usage_error "unexpected extra argument '$1' — upgrade.sh takes at most one, the release line"
+                || usage_error "unexpected extra argument '$1' — upgrade.sh takes at most one, the migration line"
             LINE="$(norm_line "$1")" \
-                || usage_error "'$1' is not a release line this bootstrap can compare — expected MAJOR.MINOR.PATCH, all numeric (0.1.15, v0.1.15, or a release stamp like v0.1.15.2026.06.14.86f2a984)"
+                || usage_error "'$1' is not a migration line this bootstrap can pass on — expected MAJOR.MINOR.PATCH, all numeric (0.2.0, v0.2.0, or a release stamp like v0.2.0.2026.08.19.4e43c2ed)"
             shift ;;
     esac
 done
@@ -357,17 +367,12 @@ else
     info "latest: $TAG"
 fi
 
-# THE LINE IS A CROSS-CHECK ON WHAT GETS INSTALLED, whoever answered — an env
-# pin reaches $TAG without passing through any of the resolution branches
-# above, so the check is asserted once, here, where every path has converged.
-if [ -n "${LINE:-}" ]; then
-    _resolved_line="$(semver_of "${TAG#*/}")"
-    [ "$_resolved_line" = "${LINE}" ] || fail "you asked for line ${LINE}, but the release resolved for this host is \"$TAG\" (line ${_resolved_line}).
-    Refusing: installing ${_resolved_line} and then forcing its migrations while
-    reporting a ${LINE} upgrade is exactly the wrong belief this argument exists
-    to catch. Drop the argument to take what the channel is serving, or pin the
-    exact tag you want via this component's version-pin env var."
-fi
+# THE ARGUMENT IS NOT COMPARED TO THE RELEASE. It is the MIGRATION line, and
+# its one legitimate judge is the kit's own migrations/upgrade.sh below —
+# which refuses a line its ledger does not carry, naming both values. The old
+# release-line cross-check here is what made `-- 0.2.0` refuse on every
+# channel that had moved past 0.2.0, i.e. on exactly the hosts a forced
+# backfill exists for.
 
 # ---- download -----------------------------------------------------------
 if [ -n "$DL_BASE" ]; then
@@ -565,14 +570,18 @@ if [ "$MODE" = upgrade ]; then
     { [ -f "$TMP/x/migrations/run.sh" ] && [ -r "$TMP/x/migrations/run.sh" ] && [ -s "$TMP/x/migrations/run.sh" ]; } \
         || fail "$COMP $TAG ships migrations/upgrade.sh but no migrations/run.sh — a mis-assembled release; refusing to force a ladder that has no runner. The ${COMP} binaries from $TAG ARE installed."
 
-    # The newest target, by numeric field comparison over the (version, script)
-    # pairs — ledger order is the runner's contract, not this script's to
-    # assume, and rows legitimately share a target.
-    MIG_LINE="$(awk '
+    # THE OPERATOR'S LINE WINS; the kit's ledger is the DEFAULT. An explicit
+    # argument means "assume this host is below <line>" and is handed to the
+    # kit verbatim — migrations/upgrade.sh's own cross-check decides whether
+    # this kit carries that line. Absent, the newest target is read out of the
+    # ledger, by numeric field comparison over the (version, script) pairs —
+    # ledger order is the runner's contract, not this script's to assume, and
+    # rows legitimately share a target.
+    if [ -n "${LINE:-}" ]; then MIG_LINE="$LINE"; else MIG_LINE="$(awk '
         /^MIGRATIONS="$/ { f = 1; next }
         f && /^"$/       { f = 0 }
         f && NF == 2     { print $1 }
-    ' "$TMP/x/migrations/run.sh" | sort -t. -k 1,1n -k 2,2n -k 3,3n | tail -n 1)"
+    ' "$TMP/x/migrations/run.sh" | sort -t. -k 1,1n -k 2,2n -k 3,3n | tail -n 1)"; fi
     is_semver "$MIG_LINE" \
         || fail "cannot read a newest target out of $COMP $TAG's migrations/run.sh ledger (got '$MIG_LINE') — refusing to force migrations for a line this bootstrap cannot name. The ${COMP} binaries from $TAG ARE installed."
 

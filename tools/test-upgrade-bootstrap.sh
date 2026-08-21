@@ -296,12 +296,22 @@ for SH in ${SHELLS}; do
     want_log "${INSTALLED}" "[${SH}] install.sh must run ONLY the inner installer"
     pass "[${SH}] install.sh runs the installer and nothing else"
 
-    # (5b) upgrade.sh runs the installer, THEN the migration.
-    run_boot "${SH}" "${UPGRADE_SH}" kit "${LINE}"
-    want_code 0 "[${SH}] upgrade.sh ${LINE}"
+    # (5b) upgrade.sh runs the installer, THEN the migration, with the
+    # operator's MIGRATION line handed through.
+    run_boot "${SH}" "${UPGRADE_SH}" kit "0.1.3"
+    want_code 0 "[${SH}] upgrade.sh 0.1.3"
     want_log "${INSTALLED}
 ${MIGRATED}" "[${SH}] upgrade.sh must run the installer first and the ladder second"
     pass "[${SH}] upgrade.sh: install then migrate, in that order"
+
+    # The operator's line WINS over the ledger derivation — a value that is a
+    # real version but NOT the ledger's newest target still reaches the ladder
+    # verbatim (the kit's own cross-check is its judge, and the stub accepts).
+    run_boot "${SH}" "${UPGRADE_SH}" kit "0.1.2"
+    want_code 0 "[${SH}] upgrade.sh 0.1.2"
+    want_log "${INSTALLED}
+migrate argc=1 arg1=0.1.2" "[${SH}] an explicit line must be handed through, not replaced by the derived one"
+    pass "[${SH}] an explicit migration line beats the ledger derivation"
 
     # (5c) The <line> comes from the VERIFIED KIT'S LEDGER — not from the
     # argument, and not from the resolved tag (whose line, 0.1.15, differs
@@ -427,14 +437,18 @@ ${MIGRATED}" "[${SH}] the ladder's line must be derived from the kit's own ledge
     want_log "" "[${SH}] install.sh must reject an argument before installing"
     pass "[${SH}] install.sh rejects arguments rather than discarding them"
 
-    # (5h) The argument is checked against the resolved release: a mismatch
-    # refuses, before anything is installed, naming both values.
+    # (5h) The argument is NOT compared to the resolved release — it is the
+    # MIGRATION line, and its judge is the kit's own migrations/upgrade.sh
+    # (the stub here accepts anything; a real kit refuses a line its ledger
+    # does not carry, naming both values). The old release cross-check made
+    # `-- 0.2.0` refuse on every channel past 0.2.0 — the exact backfill
+    # invocation. 0.9.9 differs from BOTH the release line (0.1.15) and the
+    # ledger top (0.1.3), so neither could satisfy this by accident.
     run_boot "${SH}" "${UPGRADE_SH}" kit "0.9.9"
-    [ "${RUN_CODE}" != 0 ] || die "[${SH}] a line that does not match the resolved release was accepted"
-    want_out "0.9.9" "[${SH}] the refusal must name what was asked for"
-    want_out "${TAG}" "[${SH}] the refusal must name what was resolved"
-    want_log "" "[${SH}] nothing may be installed when the line does not match"
-    pass "[${SH}] a line/release mismatch refuses before installing anything"
+    want_code 0 "[${SH}] a line unrelated to the release must not be refused by the bootstrap"
+    want_log "${INSTALLED}
+migrate argc=1 arg1=0.9.9" "[${SH}] the line must reach the ladder verbatim for ITS cross-check to judge"
+    pass "[${SH}] the argument is the migration line, judged by the kit — not a release cross-check"
 
     # (5i) Explicit help is STDOUT + exit 0 — measured on the SPLIT streams,
     # not a 2>&1 merge: a merged capture would pass this even if usage had
