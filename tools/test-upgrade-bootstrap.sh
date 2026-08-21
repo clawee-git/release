@@ -139,12 +139,32 @@ cat > "${W}/kit/migrations/upgrade.sh" <<'LADDER'
 printf 'migrate argc=%s arg1=%s\n' "$#" "${1:-}" >> "$UB_LOG"
 exit "${UB_LADDER_CODE:-0}"
 LADDER
+# The ledger the bootstrap's line-derivation reads. Its newest target (0.1.3)
+# is DELIBERATELY NOT the release line (0.1.15): a release that ships no new
+# rung keeps an older ladder top, and the old tag-derived line broke exactly
+# there — claweed 0.2.5's kit topped at 0.2.0, migrations/upgrade.sh's equality
+# check refused the tag's 0.2.5, and every `upgrade.sh | sh` failed AFTER a
+# successful install. The MIGRATED expectation below pins the kit-derived
+# value; rows are unordered on purpose (newest is computed, not positional).
+cat > "${W}/kit/migrations/run.sh" <<'RUNSH'
+#!/bin/sh
+MIGRATIONS="
+0.1.3 b.sh
+0.1.2 a.sh
+"
+RUNSH
 cp "${W}/kit/install.sh" "${W}/nokit/install.sh"
 mkdir -p "${W}/emptykit/migrations"
 cp "${W}/kit/install.sh" "${W}/emptykit/install.sh"
 : > "${W}/emptykit/migrations/upgrade.sh"
+# A ladder with no runner: upgrade.sh present and non-empty, migrations/run.sh
+# absent — the mis-assembled shape the run.sh guard exists for.
+mkdir -p "${W}/norun/migrations"
+cp "${W}/kit/install.sh" "${W}/norun/install.sh"
+cp "${W}/kit/migrations/upgrade.sh" "${W}/norun/migrations/upgrade.sh"
 chmod +x "${W}/kit/install.sh" "${W}/kit/migrations/upgrade.sh" "${W}/nokit/install.sh" \
-    "${W}/emptykit/install.sh" "${W}/emptykit/migrations/upgrade.sh"
+    "${W}/emptykit/install.sh" "${W}/emptykit/migrations/upgrade.sh" \
+    "${W}/norun/install.sh" "${W}/norun/migrations/upgrade.sh"
 
 sign_kit() {
     # sign_kit <src-dir> <serve-subdir> <zip-args...>
@@ -161,6 +181,7 @@ sign_kit() {
 sign_kit "${W}/kit" kit install.sh migrations
 sign_kit "${W}/nokit" nokit install.sh
 sign_kit "${W}/emptykit" emptykit install.sh migrations
+sign_kit "${W}/norun" norun install.sh migrations
 unzip -Z1 "${W}/serve/kit/${ZIP}" | grep -qx 'migrations/upgrade.sh' \
     || die "the fabricated kit does not actually carry migrations/upgrade.sh — the fixture proves nothing"
 unzip -Z1 "${W}/serve/nokit/${ZIP}" | grep -q 'migrations/' \
@@ -261,7 +282,9 @@ want_no_out() {
 }
 
 INSTALLED="install prefix=${W}/home/.local/bin"
-MIGRATED="migrate argc=1 arg1=${LINE}"
+# arg1 is the KIT LEDGER's newest target, not the release line ${LINE} — see
+# the fixture run.sh above for why the two deliberately differ here.
+MIGRATED="migrate argc=1 arg1=0.1.3"
 
 for SH in ${SHELLS}; do
     say "SCENARIOS under ${SH}"
@@ -280,13 +303,15 @@ for SH in ${SHELLS}; do
 ${MIGRATED}" "[${SH}] upgrade.sh must run the installer first and the ladder second"
     pass "[${SH}] upgrade.sh: install then migrate, in that order"
 
-    # (5c) The <line> comes from the RESOLVED TAG, not from the argument — with
-    # no argument at all the ladder still gets 0.1.15.
+    # (5c) The <line> comes from the VERIFIED KIT'S LEDGER — not from the
+    # argument, and not from the resolved tag (whose line, 0.1.15, differs
+    # from the fixture ladder's 0.1.3 top precisely so a tag-derived value
+    # cannot pass). With no argument at all the ladder still gets 0.1.3.
     run_boot "${SH}" "${UPGRADE_SH}" kit
     want_code 0 "[${SH}] upgrade.sh (no argument)"
     want_log "${INSTALLED}
-${MIGRATED}" "[${SH}] the ladder's line must be derived from the resolved tag"
-    pass "[${SH}] the line is derived from the resolved tag, not the argument"
+${MIGRATED}" "[${SH}] the ladder's line must be derived from the kit's own ledger"
+    pass "[${SH}] the line is derived from the kit's ledger, not the tag or the argument"
 
     # (5d) THE EXIT MAPPING. 2 = rungs ran = SUCCESS.
     LADDER_CODE=2
@@ -358,6 +383,16 @@ ${MIGRATED}" "[${SH}] the ladder's line must be derived from the resolved tag"
     want_out "ships no migrations/upgrade.sh" "[${SH}] an unusable ladder must refuse for the same stated reason"
     want_no_out "migration ladder exited" "[${SH}] an unusable ladder must be caught before it is invoked"
     pass "[${SH}] an empty/unreadable ladder refuses instead of passing as exit 2"
+
+    # A kit whose ladder has no RUNNER: upgrade.sh is present, migrations/run.sh
+    # is not — the derivation has nothing to read, and invoking the ladder
+    # anyway would let ITS missing-runner refusal be reported as a fault of the
+    # host instead of the release.
+    run_boot "${SH}" "${UPGRADE_SH}" norun "${LINE}"
+    [ "${RUN_CODE}" != 0 ] || die "[${SH}] a kit shipping upgrade.sh without migrations/run.sh succeeded"
+    want_out "no migrations/run.sh" "[${SH}] the missing-runner refusal must say what is missing"
+    want_no_out "migration ladder exited" "[${SH}] the missing runner must be caught before the ladder is invoked"
+    pass "[${SH}] a ladder with no run.sh refuses, naming the release as mis-assembled"
 
     # (5g) THE COMMAND LINE, refused before the network is touched.
     run_boot "${SH}" "${UPGRADE_SH}" kit "${LINE}" extra

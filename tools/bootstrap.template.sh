@@ -520,15 +520,22 @@ esac
 # block above aborts the script on a non-zero inner installer, so the ladder
 # cannot run against a host whose binaries did not land.
 #
-# THE LINE COMES FROM THE RESOLVED TAG, never from the operator's argument —
-# the argument was already checked against it above. Deriving the ladder's
-# argument from the operator's argument as well would make
-# migrations/upgrade.sh's own kit-level cross-check compare a string to
-# itself, which is a check that cannot fail.
+# THE LINE COMES FROM THE VERIFIED KIT'S OWN LEDGER — the newest target in its
+# migrations/run.sh — never from the operator's argument and NO LONGER from the
+# resolved tag. The tag-derived line (the original port) silently assumed the
+# ladder's newest target equals the release line, which is only true for a
+# release that ships a new rung: the first release cut WITHOUT one (claweed
+# 0.2.1, ladder still topping at 0.2.0) made migrations/upgrade.sh's own
+# kit-level equality check refuse the tag's line, and this bootstrap then
+# failed EVERY run — after a successful install, reporting a healthy upgrade as
+# broken. Deriving from the kit states exactly what this mode does: force THE
+# LADDER IN THE KIT THAT WAS JUST VERIFIED AND INSTALLED. Nothing is lost:
+# the operator's wrong-belief protection is the LINE argument, already checked
+# against the resolved tag above, and migrations/upgrade.sh's cross-check stays
+# load-bearing where it was written for — an operator hand-running a ladder in
+# a directory that may not be the kit they think it is. The ledger is read with
+# the same (version, script) word-split its own runner uses.
 if [ "$MODE" = upgrade ]; then
-    MIG_LINE="$(semver_of "${TAG#*/}")"
-    is_semver "$MIG_LINE" \
-        || fail "cannot read a release line out of the resolved tag \"$TAG\" — refusing to force migrations for a version this bootstrap cannot name"
 
     # A kit with no ladder SAYS SO AND FAILS. Silent success here is the worst
     # outcome this file can produce: a zip shipped without migrations/, an
@@ -550,6 +557,24 @@ if [ "$MODE" = upgrade ]; then
     the migration half had nothing to run. If ${COMP} is not expected to have a
     ladder, the plain installer is the right entry point:
       curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/$COMP/install.sh | sh"
+
+    # migrations/run.sh is the ledger's home; a kit carrying upgrade.sh without
+    # it is as mis-assembled as one with no ladder at all, and upgrade.sh's own
+    # first act would be to refuse over the missing runner — refuse HERE, with
+    # the component and tag named, rather than reporting that as a host fault.
+    { [ -f "$TMP/x/migrations/run.sh" ] && [ -r "$TMP/x/migrations/run.sh" ] && [ -s "$TMP/x/migrations/run.sh" ]; } \
+        || fail "$COMP $TAG ships migrations/upgrade.sh but no migrations/run.sh — a mis-assembled release; refusing to force a ladder that has no runner. The ${COMP} binaries from $TAG ARE installed."
+
+    # The newest target, by numeric field comparison over the (version, script)
+    # pairs — ledger order is the runner's contract, not this script's to
+    # assume, and rows legitimately share a target.
+    MIG_LINE="$(awk '
+        /^MIGRATIONS="$/ { f = 1; next }
+        f && /^"$/       { f = 0 }
+        f && NF == 2     { print $1 }
+    ' "$TMP/x/migrations/run.sh" | sort -t. -k 1,1n -k 2,2n -k 3,3n | tail -n 1)"
+    is_semver "$MIG_LINE" \
+        || fail "cannot read a newest target out of $COMP $TAG's migrations/run.sh ledger (got '$MIG_LINE') — refusing to force migrations for a line this bootstrap cannot name. The ${COMP} binaries from $TAG ARE installed."
 
     info "forcing the $MIG_LINE state migrations from the verified kit"
     # `set +e` around the call ONLY. The ladder's non-zero codes are its
