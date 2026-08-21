@@ -1,1 +1,1 @@
-__claweeVersion({"component":"clawee","version":"0.2.3","stamp":"v0.2.3.2026.08.21.09e1e097"});
+__claweeVersion({"component":"clawee","version":"0.2.4","stamp":"v0.2.4.2026.08.21.d25a3f53"});
