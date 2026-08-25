@@ -14,3 +14,8 @@
 .tmp-*
 # TEST signing key (the .pub is committed; the secret key never is)
 tools/testkeys/test.key
+# operator-run release launcher artifacts (tools/release.command)
+.release.log
+.release.log.prev
+.release.lock/
+.release-request
