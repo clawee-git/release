@@ -24,9 +24,9 @@ resolve_release_mode() {
 # it unscanned, and a gate that silently under-covers looks identical to a clean
 # scan. (Ported from burrowee-git/release, where relay/cli was that module.)
 #
-# Per-component BINARIES (clawee-updater, clawee-spawn, claweed-updater) are
-# cmd/ dirs inside their module, so `./...` at the module root already covers
-# them; they are not separate entries and do not need to be.
+# Per-component BINARIES (clawee-updater, claweed-updater) are cmd/ dirs inside
+# their module, so `./...` at the module root already covers them; they are not
+# separate entries and do not need to be.
 vulncheck_scan_dirs() {
     local c root
     for c in "${COMPONENTS[@]}"; do
