@@ -137,9 +137,7 @@ else
 fi
 
 # ---- helpers ------------------------------------------------------------
-fail() { printf '\n  ✗ %s\n\n' "$*" >&2; exit 1; }
-info() { printf '  → %s\n' "$*"; }
-ok()   { printf '  ✓ %s\n' "$*"; }
+@INCLUDE:helpers@
 
 # Extract the highest "<comp>/v<semver>" tag from a GitHub /releases JSON body
 # read on stdin. The /releases order is by tag-commit date, NOT publish order,
@@ -192,24 +190,10 @@ is_semver() {
 }
 
 # ---- platform detection -------------------------------------------------
-case "$(uname -s)" in
-    Darwin) OS=darwin ;;
-    Linux)  OS=linux ;;
-    *)      fail "unsupported OS: $(uname -s) (clawee ships darwin + linux only)" ;;
-esac
-case "$(uname -m)" in
-    arm64|aarch64) ARCH=arm64 ;;
-    x86_64|amd64)  ARCH=amd64 ;;
-    *)             fail "unsupported arch: $(uname -m) (clawee ships arm64 + amd64 only)" ;;
-esac
-
-printf '\n  clawee %s installer  (%s/%s)\n\n' "$COMP" "$OS" "$ARCH"
+@INCLUDE:platform-detect@
 
 # ---- guard against a TEMP / unbaked pubkey ------------------------------
-case "$PUBKEY" in
-    ""|*REPLACE*|*PLACEHOLDER*|*TEMP*)
-        fail "this installer was built without a real signing key — refusing to verify against a placeholder (regenerate with tools/gen-bootstraps.sh)" ;;
-esac
+@INCLUDE:pubkey-guard@
 
 # ---- guard against an unbaked mode --------------------------------------
 # Fails closed for the same reason the pubkey guard does: an unsubstituted
@@ -312,8 +296,7 @@ while [ $# -gt 0 ]; do
 done
 
 # ---- temp workspace -----------------------------------------------------
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/clawee-${COMP}-XXXXXX")" || fail "could not create temp dir"
-trap 'rm -rf "$TMP"' EXIT INT TERM
+@INCLUDE:tmp-workspace@
 
 # ---- version resolution -------------------------------------------------
 # Read the per-component pin env var by name (no eval). $COMP is a baked
@@ -375,6 +358,11 @@ fi
 # backfill exists for.
 
 # ---- download -----------------------------------------------------------
+# LOCAL FORK — see docs/adoption-2026-08-25-bootstrap-modules.md: the shared
+# download module's fallback is a grant-gated `clawee download-url` R2 lookup
+# (Burrowee's console/device-grant mechanism), which would REPLACE Clawee's own
+# no-auth public downloads.clawee.org mirror fallback rather than add to it —
+# a real capability lost, not a wash. Keeping Clawee's own block.
 if [ -n "$DL_BASE" ]; then
     BASE="$DL_BASE"
 else
@@ -437,44 +425,16 @@ dl "SHA256SUMS.txt"         "SHA256SUMS.txt"
 dl "SHA256SUMS.txt.minisig" "SHA256SUMS.txt.minisig"
 
 # ---- require minisign ---------------------------------------------------
-# minisign is the trust root: it must already be on PATH from a trusted source
-# (your package manager). We never auto-fetch the verifier — a binary pulled
-# over the network and run unverified would itself become an unverified trust
-# root, defeating the whole signature chain. Verification is mandatory and is
-# only ever performed by a minisign the operator already trusts.
-if command -v minisign >/dev/null 2>&1; then
-    MINISIGN=minisign
-else
-    case "$OS" in
-        darwin) hint="brew install minisign" ;;
-        *)      hint="apt-get install minisign  (or your distro's package manager)" ;;
-    esac
-    fail "minisign is required and is not installed — install it and re-run.
-    $hint
-    upstream: https://github.com/jedisct1/minisign
-    Verification is mandatory; this installer will NOT run an unverified verifier."
-fi
+@INCLUDE:require-minisign@
 
 # ---- VERIFY (the trust gate) --------------------------------------------
-info "verifying signature"
-# 1) signature over the sums file, using the baked pubkey (inline, no key fetch)
-"$MINISIGN" -V -P "$PUBKEY" -m "$TMP/SHA256SUMS.txt" -x "$TMP/SHA256SUMS.txt.minisig" >/dev/null \
-    || fail "signature verification failed — aborting (refusing to install unverified bytes)"
-ok "minisign signature valid"
+@INCLUDE:verify-signature@
+
+@INCLUDE:sha256@
 
 info "verifying checksum"
 # 2) the zip's checksum against the now-trusted sums file
-grep -qF "$ZIP" "$TMP/SHA256SUMS.txt" \
-    || fail "no checksum entry for $ZIP — release incomplete or tampered; aborting"
-if command -v shasum >/dev/null 2>&1; then
-    ( cd "$TMP" && shasum -a 256 -c --ignore-missing SHA256SUMS.txt >/dev/null ) \
-        || fail "checksum mismatch — aborting (zip tampered or download corrupted)"
-elif command -v sha256sum >/dev/null 2>&1; then
-    ( cd "$TMP" && sha256sum -c --ignore-missing SHA256SUMS.txt >/dev/null ) \
-        || fail "checksum mismatch — aborting (zip tampered or download corrupted)"
-else
-    fail "neither shasum nor sha256sum found — cannot verify; aborting"
-fi
+@INCLUDE:verify-checksum@
 ok "checksum verified"
 
 # ---- unzip + exec the verified inner installer --------------------------
