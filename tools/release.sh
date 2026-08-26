@@ -80,6 +80,8 @@ export GO_BIN
 
 # shellcheck source=tools/vulncheck.sh
 source "${REPO_ROOT}/tools/vulncheck.sh"
+# shellcheck source=tools/module_gate.sh
+source "${REPO_ROOT}/tools/module_gate.sh"
 
 # --distribute-only <comp> <stamp> [--dry-run]: takes its component + stamp as
 # positional args right after the flag (not from the general WHAT/comp case
@@ -430,6 +432,14 @@ for comp in "${COMPONENTS[@]}"; do
             || { echo "✗ ${comp} source worktree is dirty: ${src}" >&2; exit 1; }
     fi
 done
+
+# Outer-bootstrap trust-chain gate (every cut, including --dry-run): the modules
+# are locked, their dependencies ordered, and the committed bootstraps are what
+# the generator writes. Runs before the first build for the same reason
+# vulncheck_gate does — a tree whose install chain is not what it claims must
+# never mint an artifact. Which suites are in the set, and why the others are
+# not, is documented in tools/module_gate.sh.
+module_gate
 
 # CVE hard gate (public releases only): scan every module we're about to build.
 # Runs before the first build so a vulnerable cut never produces a binary.
