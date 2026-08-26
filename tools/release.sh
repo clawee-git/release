@@ -810,7 +810,12 @@ Pin this version:
 
 Verify by hand:
   minisign -Vm SHA256SUMS.txt -P "\$(cat clawee-release.pub | tail -n1)"
-  shasum -a 256 -c SHA256SUMS.txt
+  f=<file>                                      # the file you downloaded
+  want=\$(awk -v f="\$f" '{ n = \$2; sub(/^\\*/, "", n); if (n == f) { print \$1; exit } }' SHA256SUMS.txt)
+  got=\$(shasum -a 256 "\$f" | awk '{print \$1}')  # sha256sum "\$f" on Linux
+  if   [ -z "\$want" ];        then echo "NO ENTRY for \$f in SHA256SUMS.txt — do not install"
+  elif [ "\$want" = "\$got" ];  then echo "OK \$f"
+  else                             echo "MISMATCH for \$f — do not install"; fi
 NOTES
 
     ( cd "${stage}" && "${GHP}" -R "${RELEASE_REPO}" release create "${tag}" \
@@ -948,7 +953,12 @@ Pin this version:
 
 Verify by hand:
   minisign -Vm SHA256SUMS.txt -P "\$(cat clawee-release.pub | tail -n1)"
-  shasum -a 256 -c SHA256SUMS.txt
+  f=<file>                                      # the file you downloaded
+  want=\$(awk -v f="\$f" '{ n = \$2; sub(/^\\*/, "", n); if (n == f) { print \$1; exit } }' SHA256SUMS.txt)
+  got=\$(shasum -a 256 "\$f" | awk '{print \$1}')  # sha256sum "\$f" on Linux
+  if   [ -z "\$want" ];        then echo "NO ENTRY for \$f in SHA256SUMS.txt — do not install"
+  elif [ "\$want" = "\$got" ];  then echo "OK \$f"
+  else                             echo "MISMATCH for \$f — do not install"; fi
 NOTES
 
     ( cd "${stage}" && "${GHP}" -R "${RELEASE_REPO}" release create "${tag}" \

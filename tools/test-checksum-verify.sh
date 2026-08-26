@@ -12,7 +12,10 @@
 #     sh tools/test-checksum-verify.sh          # this shell
 #     dash tools/test-checksum-verify.sh        # and this one, always
 #
-# (1) STATIC   — no bootstrap, template or generated, may name --ignore-missing.
+# (1) STATIC   — no bootstrap, template or generated, may name --ignore-missing,
+#     and the advice a human READS — site/index.html, the release notes in
+#     tools/release.sh — must verify one file by exact name rather than run
+#     `-c` over the whole sums file, which fails on an intact download.
 # (2) BEHAVIOR — the shipped block, extracted verbatim from clawee/install.sh, is
 #     driven against a stub `shasum` that models the old one: good zip verifies,
 #     tampered zip aborts, absent entry aborts, and a name that merely CONTAINS
@@ -37,6 +40,33 @@ found="$(grep -lE '^[^#]*--ignore-missing' \
     || die "these still verify with --ignore-missing (breaks pre-2016 hashers):
 $found"
 printf '  OK: no --ignore-missing\n'
+
+# The hand-verify recipe an operator READS is a third surface, and nothing gated
+# it: the glob above only ever looked at bootstraps, so the download page and
+# the generated GitHub release notes went on printing `-c` over the whole sums
+# file after the READMEs were corrected (2026-08-26). That advice accuses an
+# intact download of tampering — the reader has one file, the checklist names
+# every file — and `sha256sum -c` on an empty or malformed checklist exits 0,
+# so the obvious repair reports success having verified nothing. Both surfaces
+# must select the entry by exact name and shout when there is none, as the
+# installer's own gate does.
+say "STATIC: operator-facing verify advice selects one file by name, not -c over the sums file"
+for advice in "$REPO_ROOT/site/index.html" "$REPO_ROOT/tools/release.sh"; do
+    rel="${advice#"$REPO_ROOT"/}"
+    [ -f "$advice" ] || { printf '  (no %s — skipped)\n' "$rel"; continue; }
+    # Command-shaped hits only: quote, entity and tag boundaries end the match,
+    # so prose that merely names the old flag does not trip this.
+    bad="$(grep -nE '(shasum|sha256sum)[^<&"]*-c[^<&"]*SHA256SUMS' "$advice" || true)"
+    [ -z "$bad" ] || die "$rel still tells the reader to verify with -c over the whole SHA256SUMS.txt
+(one downloaded file + a checklist naming every file = a false tampering verdict):
+$bad"
+    # shellcheck disable=SC2016  # the literal text $f is the point — this greps
+    # for the recipe's no-entry arm. `\\?` allows the release-notes copy, which
+    # lives in an unquoted heredoc and so writes that dollar as \$f.
+    grep -qE 'NO ENTRY for \\?\$f in SHA256SUMS\.txt' "$advice" \
+        || die "$rel has lost the no-entry arm of the verify recipe — it must fail loudly when the downloaded name is not listed, not report success on an empty selection"
+    printf '  OK: %s selects by exact name and shouts when there is none\n' "$rel"
+done
 
 # ---- (2) extract the shipped block ------------------------------------------
 # Out of the GENERATED clawee/install.sh, so the test drives the bytes that ship.
