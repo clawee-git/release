@@ -34,6 +34,47 @@ ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
 TEMPLATE="$ROOT/tools/bootstrap.template.sh"
 [ -f "$TEMPLATE" ] || { echo "✗ missing template: $TEMPLATE" >&2; exit 1; }
 
+MODDIR="$ROOT/tools/modules"
+
+# expand_includes <template> — write <template> to stdout with every line that is
+# exactly `@INCLUDE:<name>@` replaced by tools/modules/<name>.sh, wrapped in
+# `# BEGIN <name>` / `# END <name>` markers and with the module's own header
+# lines dropped. Runs BEFORE the sed substitution pass, so a module may contain
+# @COMP@ / @MODE@ / @BRAND@ / @brand@ like any other template text.
+#
+# The bootstrap is the trust anchor: it is delivered as `curl … | sh` and fetches
+# no code. Modules are therefore spliced HERE, at generation time, and never
+# sourced at runtime.
+#
+# The emitted `# BEGIN <name>` / `# END <name>` markers are LOAD-BEARING: one
+# or more tools/test-*.sh scripts (e.g. tools/test-checksum-verify.sh) extract
+# a module's spliced block out of a GENERATED bootstrap by matching these exact
+# marker names verbatim. Renaming a module (and therefore its markers) without
+# first grepping tools/test-*.sh for the old name will silently break that
+# extraction.
+expand_includes() {
+    awk -v moddir="$MODDIR" '
+        /^@INCLUDE:[a-z0-9-]+@$/ {
+            name = substr($0, 10, length($0) - 9 - 1)
+            path = moddir "/" name ".sh"
+            if ((getline probe < path) < 0) {
+                printf("✗ @INCLUDE:%s@ but %s does not exist\n", name, path) > "/dev/stderr"
+                exit 1
+            }
+            close(path)
+            printf("# BEGIN %s\n", name)
+            while ((getline line < path) > 0) {
+                if (line ~ /^# (module|needs|since):/) continue
+                print line
+            }
+            close(path)
+            printf("# END %s\n", name)
+            next
+        }
+        { print }
+    ' "$1"
+}
+
 # ---- resolve the pubkey -------------------------------------------------
 pubfile=""
 for cand in "${CLAWEE_PUBKEY_FILE:-}" "$ROOT/clawee-release.pub" "$ROOT/tools/testkeys/test.pub"; do
@@ -64,7 +105,21 @@ for comp in clawee claweed; do
     for mode in install upgrade; do
         out="$ROOT/$comp/$mode.sh"
         tmp="$out.tmp.$$"
-        sed -e "s|@COMP@|$comp|g" -e "s|@MODE@|$mode|g" -e "s|@PUBKEY@|$PUBKEY|g" "$TEMPLATE" > "$tmp"
+        exp="$out.exp.$$"
+        # expand_includes runs OFF the left of the pipeline (its own redirection,
+        # not a pipe) so `set -e` sees its exit status directly — a pipeline's
+        # left-hand failure is otherwise invisible under plain `set -eu` and
+        # would silently ship a bootstrap truncated at the include point,
+        # losing the whole trust gate while exiting 0. The @INCLUDE: guard below
+        # still runs against the tmp file BEFORE the mv, to catch the OTHER
+        # failure shape: a malformed include name the awk regex declines to
+        # match and so passes through literally.
+        expand_includes "$TEMPLATE" > "$exp"
+        sed -e "s|@COMP@|$comp|g" -e "s|@MODE@|$mode|g" -e "s|@PUBKEY@|$PUBKEY|g" \
+            -e "s|@BRAND@|CLAWEE|g" -e "s|@brand@|clawee|g" \
+            "$exp" > "$tmp"
+        rm -f "$exp"
+        grep -q '@INCLUDE:' "$tmp" && { rm -f "$tmp"; echo "✗ unexpanded @INCLUDE in $out" >&2; exit 1; }
         chmod +x "$tmp"
         mv -f "$tmp" "$out"
         echo "✓ wrote $out  (mode $mode)"

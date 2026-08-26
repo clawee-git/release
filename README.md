@@ -85,10 +85,23 @@ The signing public key lives in this repo and is mirrored at
 ```sh
 minisign -V -P "$(cat clawee-release.pub | tail -n1)" \
   -m SHA256SUMS.txt -x SHA256SUMS.txt.minisig
-shasum -a 256 -c --ignore-missing SHA256SUMS.txt   # or sha256sum on Linux
+f=<file>                                      # the file you downloaded
+want=$(awk -v f="$f" '{ n = $2; sub(/^\*/, "", n); if (n == f) { print $1; exit } }' SHA256SUMS.txt)
+got=$(shasum -a 256 "$f" | awk '{print $1}')  # sha256sum "$f" on Linux
+if   [ -z "$want" ];        then echo "NO ENTRY for $f in SHA256SUMS.txt — do not install"
+elif [ "$want" = "$got" ];  then echo "OK $f"
+else                             echo "MISMATCH for $f — do not install"; fi
 ```
 
 A failed signature check means the bytes are untrusted — do not install them.
+
+The checksum block compares one digest by hand on purpose. `shasum -c
+--ignore-missing` is what the installers used to run, and the stock `shasum` on
+a pre-2016 macOS rejects that option outright — which read as "tampered". Its
+obvious replacement is worse: `sha256sum -c` exits **0** on an empty or
+malformed checklist, so a mistyped filename would report success having verified
+nothing. Selecting the entry by exact name and shouting when there is none is
+what the installer's own gate does.
 
 ## Pin a version
 
@@ -136,6 +149,27 @@ site/index.html             ← release.clawee.org landing page
 tools/                      ← version.sh, build.sh, gen-bootstraps.sh, release.sh,
                               prune-releases.sh, test-e2e.sh, verify-no-env.sh,
                               test-r2-mirror-fail-closed.sh, test-upgrade-bootstrap.sh
+tools/modules/               ← shared bootstrap trust-chain modules (Task 10,
+                              2026-08-25): SHARED WITH BURROWEE, spliced into
+                              tools/bootstrap.template.sh at generation time by
+                              gen-bootstraps.sh's expand_includes (never at
+                              runtime). Lock-gated: tools/modules/MODULES.lock
+                              pins each module's version + sha256, enforced by
+                              tools/test-modules.sh; see
+                              docs/adoption-2026-08-25-bootstrap-modules.md for
+                              which modules Clawee adopted vs. forked.
+tools/lock-modules.sh        ← rewrites tools/modules/MODULES.lock from the
+                              modules on disk
+tools/sync-modules.sh        ← compares tools/modules/ against another
+                              product's (e.g. Burrowee's) and copies in newer
+                              ones; tools/sync-modules.test.sh covers its four
+                              verdicts
+tools/test-modules.sh        ← the module gates: lock integrity, `# needs:`
+                              ordering, and that committed bootstraps match
+                              what gen-bootstraps.sh would (re)generate
+tools/test-checksum-verify.sh ← drives the shipped verify-checksum block
+                              against a stub pre-2016 shasum (no
+                              --ignore-missing) for both clawee and claweed
 clawee-release.pub          ← minisign signing public key (added at activation)
 ```
 

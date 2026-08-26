@@ -137,9 +137,11 @@ else
 fi
 
 # ---- helpers ------------------------------------------------------------
+# BEGIN helpers
 fail() { printf '\n  ✗ %s\n\n' "$*" >&2; exit 1; }
 info() { printf '  → %s\n' "$*"; }
 ok()   { printf '  ✓ %s\n' "$*"; }
+# END helpers
 
 # Extract the highest "<comp>/v<semver>" tag from a GitHub /releases JSON body
 # read on stdin. The /releases order is by tag-commit date, NOT publish order,
@@ -192,6 +194,7 @@ is_semver() {
 }
 
 # ---- platform detection -------------------------------------------------
+# BEGIN platform-detect
 case "$(uname -s)" in
     Darwin) OS=darwin ;;
     Linux)  OS=linux ;;
@@ -204,12 +207,15 @@ case "$(uname -m)" in
 esac
 
 printf '\n  clawee %s installer  (%s/%s)\n\n' "$COMP" "$OS" "$ARCH"
+# END platform-detect
 
 # ---- guard against a TEMP / unbaked pubkey ------------------------------
+# BEGIN pubkey-guard
 case "$PUBKEY" in
     ""|*REPLACE*|*PLACEHOLDER*|*TEMP*)
         fail "this installer was built without a real signing key — refusing to verify against a placeholder (regenerate with tools/gen-bootstraps.sh)" ;;
 esac
+# END pubkey-guard
 
 # ---- guard against an unbaked mode --------------------------------------
 # Fails closed for the same reason the pubkey guard does: an unsubstituted
@@ -312,8 +318,10 @@ while [ $# -gt 0 ]; do
 done
 
 # ---- temp workspace -----------------------------------------------------
+# BEGIN tmp-workspace
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/clawee-${COMP}-XXXXXX")" || fail "could not create temp dir"
 trap 'rm -rf "$TMP"' EXIT INT TERM
+# END tmp-workspace
 
 # ---- version resolution -------------------------------------------------
 # Read the per-component pin env var by name (no eval). $COMP is a baked
@@ -375,6 +383,11 @@ fi
 # backfill exists for.
 
 # ---- download -----------------------------------------------------------
+# LOCAL FORK — see docs/adoption-2026-08-25-bootstrap-modules.md: the shared
+# download module's fallback is a grant-gated `clawee download-url` R2 lookup
+# (Burrowee's console/device-grant mechanism), which would REPLACE Clawee's own
+# no-auth public downloads.clawee.org mirror fallback rather than add to it —
+# a real capability lost, not a wash. Keeping Clawee's own block.
 if [ -n "$DL_BASE" ]; then
     BASE="$DL_BASE"
 else
@@ -437,6 +450,7 @@ dl "SHA256SUMS.txt"         "SHA256SUMS.txt"
 dl "SHA256SUMS.txt.minisig" "SHA256SUMS.txt.minisig"
 
 # ---- require minisign ---------------------------------------------------
+# BEGIN require-minisign
 # minisign is the trust root: it must already be on PATH from a trusted source
 # (your package manager). We never auto-fetch the verifier — a binary pulled
 # over the network and run unverified would itself become an unverified trust
@@ -446,7 +460,9 @@ if command -v minisign >/dev/null 2>&1; then
     MINISIGN=minisign
 else
     case "$OS" in
-        darwin) hint="brew install minisign" ;;
+        darwin) hint="install Homebrew if you don't have it, then minisign:
+      /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"
+      brew install minisign" ;;
         *)      hint="apt-get install minisign  (or your distro's package manager)" ;;
     esac
     fail "minisign is required and is not installed — install it and re-run.
@@ -454,27 +470,54 @@ else
     upstream: https://github.com/jedisct1/minisign
     Verification is mandatory; this installer will NOT run an unverified verifier."
 fi
+# END require-minisign
 
 # ---- VERIFY (the trust gate) --------------------------------------------
+# BEGIN verify-signature
 info "verifying signature"
-# 1) signature over the sums file, using the baked pubkey (inline, no key fetch)
-"$MINISIGN" -V -P "$PUBKEY" -m "$TMP/SHA256SUMS.txt" -x "$TMP/SHA256SUMS.txt.minisig" >/dev/null \
+# 1) signature over the sums file, using the baked pubkey (inline, no key fetch).
+# Capture stdout — minisign prints the SIGNED "Trusted comment:" line there, and
+# that comment is the only version-bearing field in the whole verified set (the
+# zip name and SHA256SUMS.txt are both version-independent). stderr is left
+# attached so a verification failure still shows minisign's own diagnostics.
+verify_out="$("$MINISIGN" -V -P "$PUBKEY" -m "$TMP/SHA256SUMS.txt" -x "$TMP/SHA256SUMS.txt.minisig")" \
     || fail "signature verification failed — aborting (refusing to install unverified bytes)"
 ok "minisign signature valid"
+# END verify-signature
+
+# BEGIN sha256
+# sha256 of a file, as a bare hex digest. shasum on macOS, sha256sum on stock
+# Debian/Ubuntu (which ships no perl and therefore no shasum). Both spellings
+# are pre-2016-safe: no --ignore-missing, no --check.
+sha256_of() {
+    if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+    elif command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+    else return 1; fi
+}
+# END sha256
 
 info "verifying checksum"
 # 2) the zip's checksum against the now-trusted sums file
-grep -qF "$ZIP" "$TMP/SHA256SUMS.txt" \
+# BEGIN verify-checksum
+# v4: declares needs: helpers too — the block below calls fail(), which lives
+# in the helpers module, not sha256. Under-declaring it was latent only because
+# every current template happens to splice helpers before this module.
+# Compare ONE hash directly instead of `-c --ignore-missing` over the whole
+# sums file: --ignore-missing is a 2016-era addition (Digest::SHA 5.96 /
+# coreutils 8.25) and the stock shasum on an older macOS rejects it outright
+# ("Unknown option: ignore-missing"). That non-zero exit came back through the
+# `||` as "checksum mismatch", so every install on such a host accused a
+# perfectly good zip of tampering. Picking the line by EXACT filename (awk, both
+# the "hash  name" and binary "hash *name" spellings) is also stricter than the
+# substring grep this replaces.
+want="$(awk -v f="$ZIP" '{ n = $2; sub(/^\*/, "", n); if (n == f) { print $1; exit } }' "$TMP/SHA256SUMS.txt")"
+[ -n "$want" ] \
     || fail "no checksum entry for $ZIP — release incomplete or tampered; aborting"
-if command -v shasum >/dev/null 2>&1; then
-    ( cd "$TMP" && shasum -a 256 -c --ignore-missing SHA256SUMS.txt >/dev/null ) \
-        || fail "checksum mismatch — aborting (zip tampered or download corrupted)"
-elif command -v sha256sum >/dev/null 2>&1; then
-    ( cd "$TMP" && sha256sum -c --ignore-missing SHA256SUMS.txt >/dev/null ) \
-        || fail "checksum mismatch — aborting (zip tampered or download corrupted)"
-else
-    fail "neither shasum nor sha256sum found — cannot verify; aborting"
-fi
+got="$(sha256_of "$TMP/$ZIP")" \
+    || fail "neither shasum nor sha256sum found — cannot verify; aborting"
+[ -n "$got" ] && [ "$want" = "$got" ] \
+    || fail "checksum mismatch — aborting (zip tampered or download corrupted)"
+# END verify-checksum
 ok "checksum verified"
 
 # ---- unzip + exec the verified inner installer --------------------------
