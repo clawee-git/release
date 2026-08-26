@@ -137,7 +137,12 @@
       installer, which is the trust anchor that verifies each download automatically. To check
       a download yourself:</p>
     <pre class="block">minisign -V -P "$(cat clawee-release.pub | tail -n1)" -m SHA256SUMS.txt -x SHA256SUMS.txt.minisig
-shasum -a 256 -c SHA256SUMS.txt   # or sha256sum on Linux</pre>
+f=&lt;file&gt;                                      # the file you downloaded
+want=$(awk -v f="$f" '{ n = $2; sub(/^\*/, "", n); if (n == f) { print $1; exit } }' SHA256SUMS.txt)
+got=$(shasum -a 256 "$f" | awk '{print $1}')  # sha256sum "$f" on Linux
+if   [ -z "$want" ];        then echo "NO ENTRY for $f in SHA256SUMS.txt — do not install"
+elif [ "$want" = "$got" ];  then echo "OK $f"
+else                             echo "MISMATCH for $f — do not install"; fi</pre>
     <p class="faint">A failed signature check means the bytes are untrusted — do not install them.</p>
   </section>
 
