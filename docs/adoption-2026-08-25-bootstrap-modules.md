@@ -290,8 +290,13 @@ adoption; see `task-10-report.md` for the actual output. Every **adopted**
 module (the eight above) reports `ok` — Clawee's copies match Burrowee's
 authored module text byte-for-byte, confirmed by the matching
 `tools/modules/MODULES.lock` entries. `download` and `version-resolve` are
-not part of that comparison in the sense of "must match" — they are the two
-modules Clawee does not include in its generated output at all (their
-`.sh` files still exist under `tools/modules/` for `lock-modules.sh` and
-future re-evaluation, but no `@INCLUDE:` line in Clawee's template ever
-references them).
+not part of that comparison at all: they are the two modules Clawee does not
+include in its generated output, and their `.sh` files are **deleted** from
+`tools/modules/` and dropped from the lock, exactly as `download-r2-only`
+already was. Keeping a byte-identical unused copy made the sync answer for the
+wrong thing — `download  v1 == v1  ok` describes a file that does not ship,
+and the day Burrowee bumps it the same copy reports `UPDATED` while Clawee's
+real block, the local fork in `tools/bootstrap.template.sh`, is untouched.
+Both are recorded in `tools/modules/MODULES.exclude` with the reason, which is
+what stops `sync-modules.sh` from silently copying them back in and what
+`tools/test-modules.sh`'s INCLUDED gate consults.

@@ -1,0 +1,27 @@
+# module            why this product does not carry it
+# hand-maintained — NOT rewritten by tools/lock-modules.sh
+#
+# A module named here is one this product deliberately does NOT carry: its logic
+# is a local fork inside tools/bootstrap.template.sh, or it serves a channel this
+# product does not have. One row per module: the name, then the reason in plain
+# words. Blank lines and #-comments are ignored; only the first field is read.
+#
+# Two pieces of tooling read this file, and between them they close the hole:
+#
+#   tools/sync-modules.sh  reports the module NOT CARRIED — it is never copied
+#                          in (not by the UPDATED path, not by the NEW path) and
+#                          never reported "ok".
+#   tools/test-modules.sh  exempts it from the INCLUDED gate, which otherwise
+#                          fails any module that is locked but @INCLUDEd by no
+#                          generated bootstrap.
+#
+# Without that record, a module sitting unused in tools/modules/ syncs clean
+# ("download  v1 == v1  ok") for code that does not ship: upstream fixes a real
+# defect and bumps to v2, the operator here sees "v1 -> v2 UPDATED", commits,
+# every gate passes — and the shipped bootstrap is unchanged and still carries
+# the bug. A row here is a deliberate statement that this product's copy is not
+# the code that runs.
+
+download           local fork in tools/bootstrap.template.sh — the shared module's exhausted-fallback is a grant-gated `clawee download-url` R2 lookup, which would REPLACE Clawee's no-auth downloads.clawee.org mirror fallback rather than add to it
+version-resolve    local fork in tools/bootstrap.template.sh — the shared module hardcodes Burrowee's four components and calls resolve_latest / $CONSOLE_URL / assert_version_floor, none of which exist in Clawee; adopting it is a rewrite, not a splice
+download-r2-only   Burrowee's private, console-gated relay channel only — Clawee has no gated channel

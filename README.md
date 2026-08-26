@@ -85,10 +85,23 @@ The signing public key lives in this repo and is mirrored at
 ```sh
 minisign -V -P "$(cat clawee-release.pub | tail -n1)" \
   -m SHA256SUMS.txt -x SHA256SUMS.txt.minisig
-shasum -a 256 -c --ignore-missing SHA256SUMS.txt   # or sha256sum on Linux
+f=<file>                                      # the file you downloaded
+want=$(awk -v f="$f" '{ n = $2; sub(/^\*/, "", n); if (n == f) { print $1; exit } }' SHA256SUMS.txt)
+got=$(shasum -a 256 "$f" | awk '{print $1}')  # sha256sum "$f" on Linux
+if   [ -z "$want" ];        then echo "NO ENTRY for $f in SHA256SUMS.txt — do not install"
+elif [ "$want" = "$got" ];  then echo "OK $f"
+else                             echo "MISMATCH for $f — do not install"; fi
 ```
 
 A failed signature check means the bytes are untrusted — do not install them.
+
+The checksum block compares one digest by hand on purpose. `shasum -c
+--ignore-missing` is what the installers used to run, and the stock `shasum` on
+a pre-2016 macOS rejects that option outright — which read as "tampered". Its
+obvious replacement is worse: `sha256sum -c` exits **0** on an empty or
+malformed checklist, so a mistyped filename would report success having verified
+nothing. Selecting the entry by exact name and shouting when there is none is
+what the installer's own gate does.
 
 ## Pin a version
 

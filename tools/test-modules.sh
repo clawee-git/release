@@ -15,7 +15,11 @@
 #                 under-declared dependency passes it clean today and dies on
 #                 an operator's machine the day some other template composition
 #                 splices this module without helpers ahead of it.
-# (3) GENERATOR — regenerating leaves every committed bootstrap byte-identical.
+# (3) INCLUDED  — every module in MODULES.lock is @INCLUDEd by some generated
+#                 bootstrap, or is recorded in MODULES.exclude as one this
+#                 product deliberately does not carry. A locked-but-unused
+#                 module syncs clean forever for code that does not ship.
+# (4) GENERATOR — regenerating leaves every committed bootstrap byte-identical.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -107,6 +111,45 @@ for f in "$MODDIR"/*.sh; do
     case " $needs " in
         *' helpers '*) ;;
         *) die "$f calls$calls (from the helpers module) but its '# needs:' line does not list 'helpers'" ;;
+    esac
+done
+printf '  OK\n'
+
+printf '\n=== INCLUDED: every locked module is spliced into some generated bootstrap ===\n'
+# A module locked here but @INCLUDEd by nothing does not ship, and every other
+# gate is content: LOCK matches its bytes, DEPS never looks at it, and the
+# GENERATOR diff is clean because regenerating cannot change a file the module
+# was never in. tools/sync-modules.sh then reports it "v1 == v1  ok". Upstream
+# fixes a real defect in that module and bumps to v2, an operator here takes the
+# "v1 -> v2 UPDATED" copy, all the gates pass — and the shipped bootstrap is
+# byte-for-byte the old one, bug and all. The only two honest states are
+# "included somewhere" and "recorded in MODULES.exclude as deliberately not
+# carried", so require one of them.
+EXCLUDE="$MODDIR/MODULES.exclude"
+[ -f "$EXCLUDE" ] || die "missing $EXCLUDE — the record of which modules this product deliberately does not carry"
+included=""
+for relgen in $GENERATED_REL; do
+    gen="$ROOT/$relgen"
+    [ -f "$gen" ] || continue
+    included="$included $(sed -n 's/^# BEGIN \([a-z0-9-]*\)$/\1/p' "$gen" | tr '\n' ' ')"
+done
+excluded="$(awk '/^[[:space:]]*#/ { next } NF { print $1 }' "$EXCLUDE" | tr '\n' ' ')"
+while read -r name version want; do
+    [ -n "${name:-}" ] || continue
+    case "$name" in \#*) continue ;; esac
+    case " $included " in *" $name "*) continue ;; esac
+    case " $excluded " in
+        *" $name "*) printf '  not carried: %s\n' "$name" ;;
+        *) die "'$name' is locked but no generated bootstrap @INCLUDEs it — that module does not ship.
+    Splice it into a template, or record it in $EXCLUDE with the reason." ;;
+    esac
+done < "$LOCK"
+# And the other direction: a row claiming a module is not carried, for one that
+# demonstrably is. Left uncaught, the row would silence sync-modules.sh about a
+# module this product really does ship.
+for name in $excluded; do
+    case " $included " in
+        *" $name "*) die "$EXCLUDE says '$name' is not carried, but a generated bootstrap @INCLUDEs it" ;;
     esac
 done
 printf '  OK\n'
