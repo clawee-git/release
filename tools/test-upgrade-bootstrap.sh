@@ -78,6 +78,10 @@ mkdir -p "${W}/repo/tools" "${W}/home"
 for f in bootstrap.template.sh gen-bootstraps.sh; do
     cp "${REPO_ROOT}/tools/${f}" "${W}/repo/tools/${f}"
 done
+# tools/modules/ — gen-bootstraps.sh's expand_includes reads MODDIR="$ROOT/tools/modules"
+# at render time (Task 10, shared bootstrap modules); the scratch root needs its own
+# copy or every @INCLUDE: in the template fails closed before anything is rendered.
+cp -R "${REPO_ROOT}/tools/modules" "${W}/repo/tools/modules"
 minisign -G -W -p "${W}/test.pub" -s "${W}/test.key" >/dev/null 2>&1 \
     || die "could not generate an ephemeral minisign keypair"
 CLAWEE_PUBKEY_FILE="${W}/test.pub" sh "${W}/repo/tools/gen-bootstraps.sh" >/dev/null \

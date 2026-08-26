@@ -12,10 +12,15 @@ Ten shared modules exist. Eight were adopted into Clawee's template via
 `@INCLUDE:<name>@` (expanded at generation time by `tools/gen-bootstraps.sh`,
 never at runtime — the bootstrap is a trust anchor delivered as `curl … | sh`
 and must never fetch executable logic before the minisign gate). Two —
-`download` and `version-resolve` — are recorded as **LOCAL FORK**: adopting
-either would have deleted a working fallback Clawee has today, so Clawee's
-own blocks were left in place and the `@INCLUDE:` line was never committed
-for them.
+`download` and `version-resolve` — are recorded as **LOCAL FORK** and left as
+Clawee's own blocks, with the `@INCLUDE:` line never committed for either —
+but for two different reasons, not one. `download`'s shared module would
+delete a working fallback Clawee has today. `version-resolve`'s shared module
+is not a drop-in at all: it hardcodes Burrowee's four components and calls
+three helpers (`resolve_latest`, `$CONSOLE_URL`, `assert_version_floor`) that
+exist nowhere in Clawee — adopting it would be a rewrite of the module plus
+those three helpers plus a generator bake, not a splice. See the LOCAL FORK
+detail section below for each.
 
 `tools/modules/download-r2-only.sh` was deleted before any of this: it mints
 a console R2 URL for Burrowee's private/gated `relay` channel, and Clawee has
@@ -34,7 +39,7 @@ no gated channel at all.
 | `verify-signature` | adopted, behaviour change | now captures `verify_out` — see below |
 | `verify-checksum` | adopted, behaviour change | **the fix** — replaces `shasum -c --ignore-missing` — see below |
 | `download` | **LOCAL FORK** | would delete Clawee's own `downloads.clawee.org` no-auth mirror fallback |
-| `version-resolve` | **LOCAL FORK** | would delete Clawee's `downloads.clawee.org` anti-rollback resolution step, and calls `assert_version_floor` against a `$MIN_VERSION` Clawee's generator never bakes |
+| `version-resolve` | **LOCAL FORK** | hardcodes Burrowee's 4 components and calls 3 helpers (`resolve_latest`, `$CONSOLE_URL`, `assert_version_floor`) absent from Clawee entirely — not a splice, a rewrite |
 
 ## Behaviour changes (exact lines, and why each is safe)
 
@@ -131,6 +136,73 @@ changes no control flow and produces no observable output difference (stderr
 is unaffected either way, so minisign's own diagnostics on failure are still
 shown).
 
+### 4. `require-minisign` — darwin's missing-minisign hint gains a Homebrew bootstrap line
+
+Before:
+
+```sh
+case "$OS" in
+    darwin) hint="brew install minisign" ;;
+    *)      hint="apt-get install minisign  (or your distro's package manager)" ;;
+esac
+```
+
+After:
+
+```sh
+case "$OS" in
+    darwin) hint="install Homebrew if you don't have it, then minisign:
+      /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"
+      brew install minisign" ;;
+    *)      hint="apt-get install minisign  (or your distro's package manager)" ;;
+esac
+```
+
+**Why this needed the argument spelled out, not just "additive":** the new
+`hint` text contains a `curl -fsSL … | ` — style command (piped through
+`/bin/bash -c "$(...)"`) — a shape that, printed inside an installer whose
+own header says "this installer will NOT run an unverified verifier," reads
+at a glance like exactly the kind of unverified-fetch-and-run the trust chain
+exists to prevent. That tension is real enough to need resolving explicitly
+rather than waved off as "just a string."
+
+What it actually is, resolved:
+
+- `$hint` is **only ever interpolated into a `fail "…$hint…"` call**, and
+  `fail()` is `printf '\n  ✗ %s\n\n' "$*" >&2; exit 1`. The Homebrew line is
+  printed to stderr as advisory text and the script then exits 1. Nothing in
+  `require-minisign.sh`, or anywhere else in the generated bootstrap,
+  `eval`s, sources, or execs `$hint` — it is inert data from the shell's own
+  point of view, on a path that has already decided to abort.
+- It is shown **only** when `command -v minisign` has already failed on
+  macOS — i.e. only after the installer has independently decided it cannot
+  proceed. No install, download, or verification step runs after this point;
+  the advisory text is the last thing printed before `exit 1`.
+- Running the suggested command is an action the **operator** takes
+  afterward, by hand, if they choose to. It is Homebrew's own official
+  install one-liner (`raw.githubusercontent.com/Homebrew/install`), the same
+  command Homebrew's own documentation publishes and the same trust decision
+  an operator already makes on any fresh macOS box that wants Homebrew at
+  all — this text does not ask them to trust anything new, only surfaces the
+  standard bootstrap command instead of assuming Homebrew is already present.
+  It is also the same shape of suggestion the very same message already made
+  for Linux (`apt-get install minisign` — also "go run your package manager,"
+  also not executed by this script).
+- This module (and this exact hint text) is not new to the trust chain in
+  the abstract: it is Burrowee's own `require-minisign` module, already
+  shipping unchanged in `cli/gateway/edge/agent`'s real, production outer
+  bootstraps before this task. Adopting it does not introduce a new pattern
+  to evaluate in isolation; it brings Clawee's copy in line with Burrowee's
+  existing one.
+
+**Conclusion: safe.** "This installer will NOT run an unverified verifier" is
+a claim about what the *script itself executes automatically* — it downloads
+no verifier, execs no fetched binary, and the trust chain (minisign → sha256
+→ unzip → exec) is untouched by this change. Advisory text on an abort path,
+naming a well-known official bootstrap command for the operator to run (or
+not) at their own discretion, is a different thing from that claim and does
+not weaken it.
+
 ## LOCAL FORK detail
 
 ### `download` — kept Clawee's own block
@@ -155,33 +227,61 @@ and reverted rather than committed.
 
 ### `version-resolve` — kept Clawee's own block
 
-Same shape, same reason, plus a second, sharper problem: the shared
-`version-resolve.sh` module ends every network-resolved (non-pinned) branch
-with `assert_version_floor "$TAG"`, which reads `$MIN_VERSION` — baked by
-Burrowee's `tools/gen-bootstraps.sh` from `versions/<comp>.stamp` at cut
-time. Clawee's generator has no such mechanism (no `versions/` directory, no
-per-cut stamp, no `@MIN_VERSION@` placeholder anywhere in its template).
-`assert_version_floor`'s own guard is:
+**Correction (fix round 1):** an earlier draft of this note justified this
+fork by saying Clawee has "no `versions/` directory, no per-cut stamp." That
+claim is false and has been removed. Clawee has `versions/clawee` (currently
+`0.2.14`) and `versions/claweed` (`0.2.12`), and `tools/version.sh:32-41`
+already treats each as that component's SemVer source of truth, read and
+staged at cut time (`read_semver`/`write_semver`) — exactly the kind of input
+Burrowee bakes `@MIN_VERSION@` from. Baking a `@MIN_VERSION@` placeholder from
+`versions/<comp>` into Clawee's generator would be a small, mechanical
+addition (read the file, substitute it in, same shape as the existing
+`@COMP@`/`@MODE@`/`@PUBKEY@` bakes) — not an absent mechanism. The fork is
+still correct; it just is not justified by a missing version file.
 
-```sh
-case "$MIN_VERSION" in
-    ""|*@*|*PLACEHOLDER*|*TEMP*)
-        fail "no version floor baked into this installer — refusing to accept a network-resolved version with nothing to check it against …" ;;
-esac
-```
+The actual, decisive reasons the shared module cannot be spliced in as-is:
 
-Adopting this module as-is, without also building Clawee's own version-floor
-machinery (out of scope for this task), would make `$MIN_VERSION` permanently
-empty and this `case` would fire on **every unpinned install** — a hard
-regression, not a behaviour change. Separately, Clawee's own resolver already
-does its own anti-rollback ordering: it tries the public
-`downloads.clawee.org/<comp>/latest.json` (no auth, same first-party domain)
-*before* the third-party `GH_PROXIES` mirrors specifically so that a
-GitHub-blocking on-path attacker cannot steer resolution to a stale
-third-party mirror; the shared module has no equivalent step at all (its
-console-catalog step is a different, Burrowee-console-specific answer that
-does not exist for Clawee). Recorded as LOCAL FORK; Clawee's own
-version-resolution block is left in place.
+1. **It hardcodes Burrowee's component set and aborts on Clawee's.**
+   `tools/modules/version-resolve.sh:6-11`:
+   ```sh
+   case "$COMP" in
+       cli)     PIN="${@BRAND@_CLI_VERSION:-}" ;;
+       gateway) PIN="${@BRAND@_GATEWAY_VERSION:-}" ;;
+       edge)    PIN="${@BRAND@_EDGE_VERSION:-}" ;;
+       agent)   PIN="${@BRAND@_AGENT_VERSION:-}" ;;
+       *)       fail "unknown component '$COMP' — cannot resolve its version pin" ;;
+   esac
+   ```
+   `$COMP` is `clawee` or `claweed` for every render Clawee's generator does.
+   Neither matches any of the four cases, so this is the module's first
+   statement and it fails immediately: `✗ unknown component 'clawee' —
+   cannot resolve its version pin`. Every unpinned AND pinned install (the
+   pin lookup itself lives inside this same `case`) would abort at the very
+   first line of version resolution.
+2. **It calls three things that do not exist anywhere in Clawee**:
+   `resolve_latest()` (a paginated GitHub `/releases` walker, defined inline
+   in Burrowee's `tools/bootstrap.template.sh`, never spliced as a module —
+   see its "BEGIN release-resolver" block), `$CONSOLE_URL` (Burrowee's
+   console base for the catalog fallback), and `assert_version_floor()` (the
+   "BEGIN version-floor" block, which reads `$MIN_VERSION`). None of these
+   three has a Clawee equivalent to call. Splicing the module in would still
+   fail even with `$COMP`'s case fixed — every one of these three names would
+   resolve to "command not found" / an unbound variable at runtime.
+3. Clawee's own resolver already does its own anti-rollback ordering that has
+   no shared-module equivalent: it tries the public
+   `downloads.clawee.org/<comp>/latest.json` (no auth, same first-party
+   domain) *before* the third-party `GH_PROXIES` mirrors, specifically so a
+   GitHub-blocking on-path attacker cannot steer resolution to a stale
+   third-party mirror. The shared module's console-catalog step is a
+   different, Burrowee-console-specific answer with no Clawee counterpart.
+
+Taken together: adopting this module is not a splice-and-diff the way the
+other eight were. It would require rewriting the module's component
+dispatch, writing three new helper functions Clawee has no use for anywhere
+else, and adding a `@MIN_VERSION@` bake to the generator — a real feature
+addition, not an adoption. That is out of scope for Task 10, so it is
+recorded as LOCAL FORK and Clawee's own version-resolution block is left in
+place untouched.
 
 ## Sync verdict
 

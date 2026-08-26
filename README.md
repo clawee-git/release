@@ -136,6 +136,27 @@ site/index.html             ← release.clawee.org landing page
 tools/                      ← version.sh, build.sh, gen-bootstraps.sh, release.sh,
                               prune-releases.sh, test-e2e.sh, verify-no-env.sh,
                               test-r2-mirror-fail-closed.sh, test-upgrade-bootstrap.sh
+tools/modules/               ← shared bootstrap trust-chain modules (Task 10,
+                              2026-08-25): SHARED WITH BURROWEE, spliced into
+                              tools/bootstrap.template.sh at generation time by
+                              gen-bootstraps.sh's expand_includes (never at
+                              runtime). Lock-gated: tools/modules/MODULES.lock
+                              pins each module's version + sha256, enforced by
+                              tools/test-modules.sh; see
+                              docs/adoption-2026-08-25-bootstrap-modules.md for
+                              which modules Clawee adopted vs. forked.
+tools/lock-modules.sh        ← rewrites tools/modules/MODULES.lock from the
+                              modules on disk
+tools/sync-modules.sh        ← compares tools/modules/ against another
+                              product's (e.g. Burrowee's) and copies in newer
+                              ones; tools/sync-modules.test.sh covers its four
+                              verdicts
+tools/test-modules.sh        ← the module gates: lock integrity, `# needs:`
+                              ordering, and that committed bootstraps match
+                              what gen-bootstraps.sh would (re)generate
+tools/test-checksum-verify.sh ← drives the shipped verify-checksum block
+                              against a stub pre-2016 shasum (no
+                              --ignore-missing) for both clawee and claweed
 clawee-release.pub          ← minisign signing public key (added at activation)
 ```
 
