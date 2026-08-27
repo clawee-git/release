@@ -449,26 +449,249 @@ info "downloading SHA256SUMS.txt + signature"
 dl "SHA256SUMS.txt"         "SHA256SUMS.txt"
 dl "SHA256SUMS.txt.minisig" "SHA256SUMS.txt.minisig"
 
+# BEGIN sha256
+# sha256 of a file, as a bare hex digest. shasum on macOS, sha256sum on stock
+# Debian/Ubuntu (which ships no perl and therefore no shasum). Both spellings
+# are pre-2016-safe: no --ignore-missing, no --check.
+sha256_of() {
+    if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+    elif command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+    else return 1; fi
+}
+# END sha256
+
+# ---- provide minisign (package manager, then pinned upstream) ----------
+# BEGIN install-minisign-common
+# Provides minisign when the host has none. The per-platform modules that follow
+# try the OS package manager first, then the official jedisct1/minisign release
+# archive whose SHA-256 is PINNED here. This bootstrap is the install's trust
+# root already — it is served from the release host over HTTPS and the operator
+# runs it — so a hash carried inside it makes the fetched verifier exactly as
+# trusted as the script that carries the hash. The mirror or CDN that served
+# the bytes never enters that calculation: only bytes matching the pin survive
+# minisign_fetch. A second seal, minisign_seal, then checks the archive's own
+# .minisig against upstream's release key using the binary just installed.
+#
+# BUMPING THE PIN is a deliberate, reviewed change — never "latest":
+#   1. download minisign-<v>-linux.tar.gz, minisign-<v>-macos.zip and both
+#      .minisig files from https://github.com/jedisct1/minisign/releases
+#   2. minisign -Vm <archive> -P "$MINISIGN_UPSTREAM_PUBKEY"     (each archive)
+#   3. shasum -a 256 <archive>                                    (each archive)
+#   4. update MINISIGN_VERSION and both sha256 constants, bump this module's vN,
+#      sh tools/lock-modules.sh && sh tools/gen-bootstraps.sh &&
+#      sh tools/test-modules.sh && sh tools/test-install-minisign.sh
+#      (the suite reads MINISIGN_VERSION and the pins from the generated block —
+#      nothing in it to edit)
+#   5. sync-modules.sh from the other products (they carry this module too)
+MINISIGN=""
+MINISIGN_VERSION="0.12"
+MINISIGN_LINUX_SHA256="9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73"
+MINISIGN_MACOS_SHA256="89000b19535765f9cffc65a65d64a820f433ef6db8020667f7570e06bf6aac63"
+MINISIGN_UPSTREAM_PUBKEY="RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3"
+MINISIGN_UPSTREAM_BASE="https://github.com/jedisct1/minisign/releases/download/$MINISIGN_VERSION"
+# Homebrew locations a daemon-hosted shell's bare PATH omits — the same two the
+# product's `update` verb probes.
+MINISIGN_KNOWN_PATHS="/opt/homebrew/bin/minisign /usr/local/bin/minisign"
+
+# minisign_known — print the first executable minisign at a location PATH may
+# not cover: the install destination itself (an earlier run, or the operator's
+# own copy in $PREFIX/bin), then the Homebrew locations. Nothing here is ever
+# overwritten; require-minisign uses whatever this finds.
+minisign_known() {
+    for _mk_p in "${PREFIX:-/usr/local}/bin/minisign" $MINISIGN_KNOWN_PATHS; do
+        [ -x "$_mk_p" ] && { printf '%s' "$_mk_p"; return 0; }
+    done
+    return 1
+}
+
+# minisign_dest_dir — where a fetched minisign lands: beside the product, in
+# $PREFIX/bin. The inner installer puts that directory on PATH, so the
+# product's `update` verb finds it on later runs. PREFIX is resolved by the
+# bootstrap before this point; empty means the root-only installers' /usr/local.
+minisign_dest_dir() {
+    _md="${PREFIX:-/usr/local}/bin"
+    mkdir -p "$_md" 2>/dev/null || { info "minisign: cannot create $_md" >&2; return 1; }
+    printf '%s' "$_md"
+}
+
+# minisign_fetch <name> [sha256] — download <name> into $TMP. With a pin,
+# succeed only when the sha256 matches; a mismatch is deleted and the next
+# source tried. Without a pin (the .minisig only — the seal proves it) the
+# first successful download wins. Sources: $DL_BASE (the test hook), else
+# upstream GitHub, then each GH_PROXIES mirror in the <mirror>/<full-url> form
+# the download module uses. Every source exhausted -> 1.
+minisign_fetch() {
+    _mf_name="$1"; _mf_want="${2:-}"; _mf_out="$TMP/$_mf_name"
+    if [ -n "${DL_BASE:-}" ]; then
+        _mf_srcs="$DL_BASE/$_mf_name"
+    else
+        _mf_srcs="$MINISIGN_UPSTREAM_BASE/$_mf_name"
+        for _mf_p in ${GH_PROXIES:-}; do
+            _mf_srcs="$_mf_srcs $_mf_p/$MINISIGN_UPSTREAM_BASE/$_mf_name"
+        done
+    fi
+    for _mf_src in $_mf_srcs; do
+        rm -f "$_mf_out"
+        # shellcheck disable=SC2086  # $CURL is a command plus its flags
+        $CURL -o "$_mf_out" "$_mf_src" 2>/dev/null || continue
+        [ -n "$_mf_want" ] || return 0
+        _mf_got="$(sha256_of "$_mf_out")" || break
+        [ "$_mf_got" = "$_mf_want" ] && return 0
+        info "minisign: $_mf_name from $_mf_src does not match the pinned sha256 — discarded"
+    done
+    rm -f "$_mf_out"
+    return 1
+}
+
+# minisign_install_file <src> — install <src> as minisign in the destination
+# directory and print the absolute path. Never overwrites: a file already
+# there belongs to the operator (or an earlier run) and minisign_known will
+# have reported it — so minisign_seal's removal below only ever touches a
+# file this run created.
+minisign_install_file() {
+    _mi_dir="$(minisign_dest_dir)" || return 1
+    if [ -e "$_mi_dir/minisign" ]; then
+        info "minisign: $_mi_dir/minisign already exists — not overwriting it" >&2
+        return 1
+    fi
+    install -m 0755 "$1" "$_mi_dir/minisign" 2>/dev/null \
+        || { info "minisign: cannot write $_mi_dir/minisign (not writable — re-run as root, or set PREFIX)" >&2; return 1; }
+    printf '%s/minisign' "$_mi_dir"
+}
+
+# minisign_seal <archive> <bin> — the second seal: verify the archive's own
+# upstream .minisig with the minisign just installed. Failure (including a
+# .minisig that cannot be fetched) removes <bin> and returns 1.
+minisign_seal() {
+    _ms_arc="$1"; _ms_bin="$2"; _ms_name="$(basename "$_ms_arc")"
+    if minisign_fetch "$_ms_name.minisig" \
+       && "$_ms_bin" -Vm "$_ms_arc" -x "$TMP/$_ms_name.minisig" -P "$MINISIGN_UPSTREAM_PUBKEY" >/dev/null 2>&1; then
+        return 0
+    fi
+    info "minisign: upstream signature on $_ms_name did not verify — removing $_ms_bin"
+    rm -f "$_ms_bin"
+    return 1
+}
+# END install-minisign-common
+# BEGIN install-minisign-linux
+# Linux: the package manager first — but only as root or with passwordless
+# sudo, because a user-level install must never prompt for a password inside
+# curl|sh — then the pinned static upstream build (x86_64 / aarch64, statically
+# linked, so distro and libc do not matter). Every failure here is an info
+# line and falls through; require-minisign is the one that decides.
+# MINISIGN_SKIP_PM=1 says a preflight already made the package-manager attempt.
+if [ "$OS" = linux ] && ! command -v minisign >/dev/null 2>&1 && ! minisign_known >/dev/null; then
+    _ml_sudo=""; _ml_can_pm=0
+    if [ "$(id -u)" = 0 ]; then
+        _ml_can_pm=1
+    elif sudo -n true 2>/dev/null; then
+        _ml_sudo="sudo"; _ml_can_pm=1
+    fi
+    if [ -n "${MINISIGN_SKIP_PM:-}" ]; then
+        :
+    elif [ "$_ml_can_pm" = 1 ]; then
+        info "minisign: not found — trying the package manager"
+        # shellcheck disable=SC2086  # $_ml_sudo is an optional prefix word
+        if command -v apt-get >/dev/null 2>&1; then
+            { $_ml_sudo apt-get update && $_ml_sudo apt-get install -y minisign; } >/dev/null 2>&1 || true
+        elif command -v dnf >/dev/null 2>&1; then
+            $_ml_sudo dnf install -y minisign >/dev/null 2>&1 || true
+        elif command -v yum >/dev/null 2>&1; then
+            $_ml_sudo yum install -y minisign >/dev/null 2>&1 || true
+        elif command -v apk >/dev/null 2>&1; then
+            $_ml_sudo apk add minisign >/dev/null 2>&1 || true
+        fi
+    else
+        info "minisign: not found, and no root or passwordless sudo — skipping the package manager"
+    fi
+    if command -v minisign >/dev/null 2>&1; then
+        ok "minisign installed by the package manager"
+    else
+        if [ "$_ml_can_pm" = 1 ] && [ -z "${MINISIGN_SKIP_PM:-}" ]; then
+            info "minisign: the package manager could not install it — trying the pinned upstream build"
+        else
+            info "minisign: trying the pinned upstream build"
+        fi
+        case "$ARCH" in
+            amd64) _ml_sub=x86_64 ;;
+            *)     _ml_sub=aarch64 ;;
+        esac
+        _ml_asset="minisign-$MINISIGN_VERSION-linux.tar.gz"
+        if minisign_fetch "$_ml_asset" "$MINISIGN_LINUX_SHA256" \
+           && tar xzf "$TMP/$_ml_asset" -C "$TMP" "minisign-linux/$_ml_sub/minisign" 2>/dev/null \
+           && _ml_bin="$(minisign_install_file "$TMP/minisign-linux/$_ml_sub/minisign")" \
+           && minisign_seal "$TMP/$_ml_asset" "$_ml_bin"; then
+            MINISIGN="$_ml_bin"
+            ok "minisign $MINISIGN_VERSION installed to $(dirname "$_ml_bin") (pinned upstream build)"
+        else
+            info "minisign: could not install the pinned upstream build (network, mirrors, its signature, or the destination is not writable)"
+        fi
+    fi
+fi
+# END install-minisign-linux
+# BEGIN install-minisign-darwin
+# macOS: Homebrew first when it is there (as this user, never via sudo), then
+# the pinned upstream build — which upstream ships for arm64 only, so an Intel
+# Mac without Homebrew gets a plain statement of the gap and require-minisign's
+# brew recipe. A Homebrew minisign that a daemon-hosted shell's bare PATH cannot
+# see, or one already at the install destination, is still an install:
+# minisign_known counts it as present.
+if [ "$OS" = darwin ] && ! command -v minisign >/dev/null 2>&1 && ! minisign_known >/dev/null; then
+    if [ -z "${MINISIGN_SKIP_PM:-}" ] && command -v brew >/dev/null 2>&1; then
+        info "minisign: not found — trying Homebrew"
+        brew install minisign >/dev/null 2>&1 || true
+    fi
+    if command -v minisign >/dev/null 2>&1 || minisign_known >/dev/null; then
+        ok "minisign installed by Homebrew"
+    elif [ "$ARCH" = arm64 ]; then
+        info "minisign: trying the pinned upstream build"
+        _md_asset="minisign-$MINISIGN_VERSION-macos.zip"
+        if minisign_fetch "$_md_asset" "$MINISIGN_MACOS_SHA256" \
+           && unzip -oq "$TMP/$_md_asset" minisign -d "$TMP/minisign-macos" 2>/dev/null \
+           && _md_bin="$(minisign_install_file "$TMP/minisign-macos/minisign")" \
+           && minisign_seal "$TMP/$_md_asset" "$_md_bin"; then
+            MINISIGN="$_md_bin"
+            ok "minisign $MINISIGN_VERSION installed to $(dirname "$_md_bin") (pinned upstream build)"
+        else
+            info "minisign: could not install the pinned upstream build (network, mirrors, its signature, or the destination is not writable)"
+        fi
+    else
+        info "minisign: upstream ships no Intel build — install Homebrew, then minisign"
+    fi
+fi
+# END install-minisign-darwin
+
 # ---- require minisign ---------------------------------------------------
 # BEGIN require-minisign
-# minisign is the trust root: it must already be on PATH from a trusted source
-# (your package manager). We never auto-fetch the verifier — a binary pulled
-# over the network and run unverified would itself become an unverified trust
-# root, defeating the whole signature chain. Verification is mandatory and is
-# only ever performed by a minisign the operator already trusts.
-if command -v minisign >/dev/null 2>&1; then
+# minisign is the trust root of this install. The install-minisign-* modules
+# above try to PROVIDE it: the OS package manager first, then the official
+# upstream archive whose SHA-256 is pinned in this bootstrap — the bootstrap is
+# the install's trust root already, so a hash it carries makes the fetched
+# verifier exactly as trusted as the script itself (see install-minisign-common).
+# This module only DECIDES: an executable $MINISIGN set by those modules, else
+# PATH, else a copy at the install destination or the Homebrew locations a
+# daemon-hosted shell cannot see (minisign_known), else refuse. Verification
+# is mandatory and is never skipped.
+if [ -n "$MINISIGN" ] && [ -x "$MINISIGN" ]; then
+    :
+elif command -v minisign >/dev/null 2>&1; then
     MINISIGN=minisign
 else
+    MINISIGN="$(minisign_known)" || MINISIGN=""
+fi
+if [ -z "$MINISIGN" ]; then
     case "$OS" in
         darwin) hint="install Homebrew if you don't have it, then minisign:
       /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"
       brew install minisign" ;;
-        *)      hint="apt-get install minisign  (or your distro's package manager)" ;;
+        *)      hint="the package manager and the pinned upstream download both failed —
+      check the network and the CLAWEE_GH_PROXY mirrors, or install it by hand:
+      https://github.com/jedisct1/minisign/releases/tag/$MINISIGN_VERSION" ;;
     esac
-    fail "minisign is required and is not installed — install it and re-run.
+    fail "minisign is required and could not be provided — install it and re-run.
     $hint
     upstream: https://github.com/jedisct1/minisign
-    Verification is mandatory; this installer will NOT run an unverified verifier."
+    Verification is mandatory; this installer will NOT proceed without a verifier."
 fi
 # END require-minisign
 
@@ -484,17 +707,6 @@ verify_out="$("$MINISIGN" -V -P "$PUBKEY" -m "$TMP/SHA256SUMS.txt" -x "$TMP/SHA2
     || fail "signature verification failed — aborting (refusing to install unverified bytes)"
 ok "minisign signature valid"
 # END verify-signature
-
-# BEGIN sha256
-# sha256 of a file, as a bare hex digest. shasum on macOS, sha256sum on stock
-# Debian/Ubuntu (which ships no perl and therefore no shasum). Both spellings
-# are pre-2016-safe: no --ignore-missing, no --check.
-sha256_of() {
-    if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
-    elif command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
-    else return 1; fi
-}
-# END sha256
 
 info "verifying checksum"
 # 2) the zip's checksum against the now-trusted sums file

@@ -26,6 +26,12 @@ Each installer detects your OS/arch, resolves the latest published release for
 that component, downloads the zip + `SHA256SUMS.txt` + `SHA256SUMS.txt.minisig`,
 **verifies the minisign signature against the baked public key**, checks the
 SHA-256, then unzips and runs the inner installer.
+If `minisign` is missing, the installer provides it first — through your package
+manager where the installer has root (or, for a user-level install, passwordless
+sudo), otherwise the official upstream 0.12 build whose SHA-256 is pinned inside
+the installer itself and whose own signature is then checked against upstream's
+key — and refuses to continue if neither works; it never runs an unverified
+verifier.
 
 - **clawee** lands in `$HOME/.local/bin` (override with `PREFIX`), then ensures
   `burrowee-cli` is present (installed from burrowee's public channel if missing).
