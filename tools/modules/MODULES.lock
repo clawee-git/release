@@ -1,9 +1,12 @@
 # module            version  sha256-of-authored-text
 # rewritten by tools/lock-modules.sh — do not hand-edit
 helpers            v1       e84df2c8a4bd2a4be9b0182739be87d0db8cbac2ae0ce9de9dd21741360b0595
+install-minisign-common v1       a99204f6af06b41f306b210861a39f5f481a3edfd8f129d113256034da039cb5
+install-minisign-darwin v1       99e7c93fb5b3b7fb3eb0fd8c9bcfd406463474f0238377e967ee8f8dda32a02b
+install-minisign-linux v1       91ddfdf52530426753342526f1ee043866abf4e9d4f40d39d70d44e5f21eb8e3
 platform-detect    v1       faa1cc20dd0db9371acc9ccf141ef101c4f38efa10966cf0215c33989ac74520
 pubkey-guard       v1       9abecb99290a9761892c21f9ee3c07b99653f9db1f65868cc92033eef9901906
-require-minisign   v1       ad8e2dcc19c31f92a7f880a3b3b72b0abaf6d230779bf565589414360ee385d5
+require-minisign   v2       46f8adfbaae469e8b2d0dd753893060ba375c5c71e821900bb49e346d3d8f262
 sha256             v1       1a2a41632b5f95e045ddd18ca3bc9ddcf9c17a1352658bbc0ea436a91745bf19
 tmp-workspace      v1       e5bd7ab63d84144a6447b33d8ad83a45b7533a225527be91e9a162c6e216455c
 verify-checksum    v4       ecfbe39b11760ee87dfff6badd58b689afcae674a132a1f09a05985bac763618

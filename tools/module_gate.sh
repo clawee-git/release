@@ -20,10 +20,12 @@
 #                                  DEPS-printer, INCLUDED, GENERATOR-FAILS-CLOSED,
 #                                  GENERATOR
 #   tools/test-checksum-verify.sh  the checksum gate over the verify step itself
+#   tools/test-install-minisign.sh the provide-minisign step: no sudo prompt,
+#                                  pin honoured, seal honoured, gate still closes
 #   tools/sync-modules.test.sh     sync-modules.sh's own behaviour, INCLUDING that
 #                                  it refuses to overwrite a LOCAL FORK
 #
-# The set is the same three in all three release repos, on purpose: the modules
+# The set is the same four in all three release repos, on purpose: the modules
 # are shared, so a gate that differs per repo is a gate you cannot reason about
 # from one place. Burrowee additionally excludes test-r2-fallback.sh,
 # test-e2e-relay.sh and test-upgrade-bootstrap.sh because they are red on ITS
@@ -61,7 +63,7 @@
 # pre-flight is what refuses, correctly, until the regeneration is committed.
 module_gate() {
     local suite rc log
-    for suite in test-modules.sh test-checksum-verify.sh sync-modules.test.sh; do
+    for suite in test-modules.sh test-checksum-verify.sh test-install-minisign.sh sync-modules.test.sh; do
         [ -f "${REPO_ROOT}/tools/${suite}" ] \
             || { echo "✗ module gate: ${suite} is missing from tools/" >&2; exit 1; }
         echo "→ module gate: ${suite}" >&2

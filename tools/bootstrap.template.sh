@@ -424,13 +424,18 @@ info "downloading SHA256SUMS.txt + signature"
 dl "SHA256SUMS.txt"         "SHA256SUMS.txt"
 dl "SHA256SUMS.txt.minisig" "SHA256SUMS.txt.minisig"
 
+@INCLUDE:sha256@
+
+# ---- provide minisign (package manager, then pinned upstream) ----------
+@INCLUDE:install-minisign-common@
+@INCLUDE:install-minisign-linux@
+@INCLUDE:install-minisign-darwin@
+
 # ---- require minisign ---------------------------------------------------
 @INCLUDE:require-minisign@
 
 # ---- VERIFY (the trust gate) --------------------------------------------
 @INCLUDE:verify-signature@
-
-@INCLUDE:sha256@
 
 info "verifying checksum"
 # 2) the zip's checksum against the now-trusted sums file
