@@ -32,6 +32,9 @@ sudo), otherwise the official upstream 0.12 build whose SHA-256 is pinned inside
 the installer itself and whose own signature is then checked against upstream's
 key — and refuses to continue if neither works; it never runs an unverified
 verifier.
+An uninstall never touches your package manager; if it had to fetch the pinned
+build to verify its payload, that single `minisign` file stays in the bin
+directory afterwards.
 
 - **clawee** lands in `$HOME/.local/bin` (override with `PREFIX`), then ensures
   `burrowee-cli` is present (installed from burrowee's public channel if missing).

@@ -31,7 +31,7 @@
 # test-e2e-relay.sh and test-upgrade-bootstrap.sh because they are red on ITS
 # main; here the first two do not exist and test-upgrade-bootstrap.sh passes.
 # That is not a reason to wire it — widening the set in one repo is how the
-# four drift apart. If it should be gated, gate it everywhere in one change.
+# three drift apart. If it should be gated, gate it everywhere in one change.
 #
 # Deliberately NOT wired: tools/sync-modules.sh ITSELF. It is the cross-product
 # sync tool, and it exits non-zero on a LOCAL FORK verdict BY DESIGN — a fork is
