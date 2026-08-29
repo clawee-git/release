@@ -441,7 +441,7 @@ func TestSrcDirFor(t *testing.T) {
 	}
 
 	t.Setenv("CLAWEE_SRC_CLAWEED", "")
-	const wantDefault = "/Volumes/MacintoshED/Workstation/Coding/Clawee/daemon/code/daemon"
+	const wantDefault = "/Volumes/MacintoshED/Workstation/Coding/Clawee/daemon/code/main"
 	if got := srcDirFor("claweed"); got != wantDefault {
 		t.Fatalf("srcDirFor(claweed) default = %q, want %q", got, wantDefault)
 	}

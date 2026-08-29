@@ -264,7 +264,7 @@ purge_cf_version_js() {
             || echo '⚠ CF purge failed (token lacks Cache Purge scope?) — badge follows the 4h TTL'
     " >&2 || true
 }
-DP_DIR="${DP_DIR:-${REPO_ROOT}/../../../release.dp/code/release.dp}"
+DP_DIR="${DP_DIR:-${REPO_ROOT}/../../../release.dp/code/main}"
 AGE_KEY_AGE="${DP_DIR}/clawee-release.key.age"
 AGE_IDENTITY="${AGE_IDENTITY:-${HOME}/.age/clawee-release.txt}"
 
@@ -287,8 +287,8 @@ toml_get() {
 # component source worktrees (default: each component's MAIN worktree).
 # clawee builds from the cli repo (cmd/clawee); claweed from the daemon repo.
 CC="/Volumes/MacintoshED/Workstation/Coding/Clawee"
-SRC_CLAWEE="${CLAWEE_SRC_CLAWEE:-${CC}/cli/code/cli}"
-SRC_CLAWEED="${CLAWEE_SRC_CLAWEED:-${CC}/daemon/code/daemon}"
+SRC_CLAWEE="${CLAWEE_SRC_CLAWEE:-${CC}/cli/code/main}"
+SRC_CLAWEED="${CLAWEE_SRC_CLAWEED:-${CC}/daemon/code/main}"
 
 # the canonical claweed inner-installer template (rendered per-build with the stamp)
 CLAWEED_INSTALLER_IN="${SRC_CLAWEED}/install/install.sh.in"

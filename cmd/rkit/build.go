@@ -20,7 +20,7 @@ import (
 
 type Options struct {
 	Component, OutDir, RepoDir string
-	// SrcDir is the COMPONENT source worktree (e.g. cli/code/cli) — distinct
+	// SrcDir is the COMPONENT source worktree (e.g. cli/code/main) — distinct
 	// from RepoDir, which is the release repo holding versions/, inner/, and
 	// tools/. Defaults to RepoDir when empty, so the fixture-based
 	// orchestrate tests (which double one dir as both) keep working
@@ -127,9 +127,9 @@ func srcDirFor(comp string) string {
 	}
 	switch comp {
 	case "clawee":
-		return env("CLAWEE_SRC_CLAWEE", "/Volumes/MacintoshED/Workstation/Coding/Clawee/cli/code/cli")
+		return env("CLAWEE_SRC_CLAWEE", "/Volumes/MacintoshED/Workstation/Coding/Clawee/cli/code/main")
 	case "claweed":
-		return env("CLAWEE_SRC_CLAWEED", "/Volumes/MacintoshED/Workstation/Coding/Clawee/daemon/code/daemon")
+		return env("CLAWEE_SRC_CLAWEED", "/Volumes/MacintoshED/Workstation/Coding/Clawee/daemon/code/main")
 	}
 	return ""
 }

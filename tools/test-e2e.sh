@@ -39,8 +39,8 @@ command -v "${GO_BIN}" >/dev/null 2>&1 || GO_BIN=/opt/homebrew/bin/go
 export GO_BIN
 
 # component source dirs — build from main checkout --------------------------------
-export CLAWEE_SRC_CLAWEE="${CLAWEE_SRC_CLAWEE:-/Volumes/MacintoshED/Workstation/Coding/Clawee/cli/code/cli}"
-export CLAWEE_SRC_CLAWEED="${CLAWEE_SRC_CLAWEED:-/Volumes/MacintoshED/Workstation/Coding/Clawee/daemon/code/daemon}"
+export CLAWEE_SRC_CLAWEE="${CLAWEE_SRC_CLAWEE:-/Volumes/MacintoshED/Workstation/Coding/Clawee/cli/code/main}"
+export CLAWEE_SRC_CLAWEED="${CLAWEE_SRC_CLAWEED:-/Volumes/MacintoshED/Workstation/Coding/Clawee/daemon/code/main}"
 
 WHAT="${1:-all}"
 case "${WHAT}" in

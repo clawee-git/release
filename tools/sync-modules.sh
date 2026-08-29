@@ -2,7 +2,7 @@
 # tools/sync-modules.sh — compare this repo's tools/modules against another
 # product's and copy in the ones that are newer.
 #
-#     sh tools/sync-modules.sh ../../../Clawee/release/code/release
+#     sh tools/sync-modules.sh ../../../Clawee/release/code/main
 #     sh tools/sync-modules.sh --repo <local-root> <remote-root>   # for tests
 #
 # Verdicts: UPDATED (remote newer — copied), ok (same version, same bytes),
