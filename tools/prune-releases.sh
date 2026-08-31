@@ -7,15 +7,18 @@
 #   tools/prune-releases.sh --execute  # actually delete
 #
 # Env (optional):
-#   KEEP                    newest versions to retain per component (default 3)
+#   KEEP                    newest versions to retain per component (default 10 on
+#                           stable, 1 on beta)
+#   CHANNEL                 stable|beta (default stable)
 #   COMPONENTS              space-separated set (default "clawee claweed")
 #   CLAWEE_RELEASE_REPO     GitHub repo (default clawee-git/release)
 #   CLAWEE_DOWNLOADS_BASE   R2 mirror base consulted before each delete (default
 #                           https://downloads.clawee.org; set empty to skip the check)
 #
-# Per component it lists "<comp>/v*" release tags, version-sorts them with
-# `sort -V` (so v0.1.12 > v0.1.9), keeps the highest KEEP, and deletes the rest
-# via `gh release delete --cleanup-tag` (removes the Release AND the tag). gh
+# Per component it lists "<comp>/v*" release tags matching the selected
+# CHANNEL's stamp shape, version-sorts them with `sort -V` (so v0.1.12 >
+# v0.1.9), keeps the highest KEEP, and deletes the rest via
+# `gh release delete --cleanup-tag` (removes the Release AND the tag). gh
 # runs through ghp so the per-repo clawee-git token is used.
 #
 # Safety: a tag NOT mirrored to downloads.clawee.org is skipped (never deleted)
@@ -28,7 +31,18 @@ set -euo pipefail
 export PATH="/usr/bin:/bin:/opt/homebrew/bin:${HOME}/.claude/bin:${PATH}"
 
 REPO="${CLAWEE_RELEASE_REPO:-clawee-git/release}"
-KEEP="${KEEP:-3}"
+CHANNEL="${CHANNEL:-stable}"
+case "${CHANNEL}" in
+  stable|beta) ;;
+  *) echo "✗ CHANNEL must be stable or beta (got '${CHANNEL}')" >&2; exit 2 ;;
+esac
+# Beta is disposable — a cycle is opened, cut, promoted and superseded, and
+# nothing on it is worth carrying history for.
+if [ "${CHANNEL}" = beta ]; then
+  KEEP="${KEEP:-1}"
+else
+  KEEP="${KEEP:-10}"
+fi
 COMPONENTS="${COMPONENTS:-clawee claweed}"
 
 # R2 mirror base — before deleting a release, its tag must still be served
@@ -48,7 +62,7 @@ GHP="$(command -v ghp || echo "${HOME}/bin/ghp")"
 [ -x "$GHP" ] || { echo "✗ ghp not found at ${GHP}" >&2; exit 1; }
 
 mode="DRY-RUN"; [ "$EXECUTE" = 1 ] && mode="EXECUTE"
-echo "repo=${REPO}  keep=${KEEP}  components=[${COMPONENTS}]  mode=${mode}"
+echo "repo=${REPO}  channel=${CHANNEL}  keep=${KEEP}  components=[${COMPONENTS}]  mode=${mode}"
 echo
 
 # One API pass; --paginate walks every page so nothing is missed past page 1.
@@ -57,7 +71,15 @@ tags="$("$GHP" api "repos/${REPO}/releases" --paginate --jq '.[].tag_name')"
 planned=0
 failed=0
 for comp in ${COMPONENTS}; do
-  sorted="$(printf '%s\n' "${tags}" | grep -E "^${comp}/v" | sort -V || true)"
+  # Anchored per channel. A tag matching NEITHER shape belongs to neither
+  # channel: it is ignored here exactly as it is everywhere else, rather than
+  # being swept into whichever count happens to accept a bare "<comp>/v" prefix.
+  if [ "${CHANNEL}" = beta ]; then
+    pattern="^${comp}/v[0-9]+\.[0-9]+\.[0-9]+\.beta\.[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9a-f]{8}\$"
+  else
+    pattern="^${comp}/v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9a-f]{8}\$"
+  fi
+  sorted="$(printf '%s\n' "${tags}" | grep -E "${pattern}" | sort -V || true)"
   if [ -z "${sorted}" ]; then
     echo "[${comp}] no releases"
     continue
