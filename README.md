@@ -191,8 +191,7 @@ nothing here could enforce that â€” the canonical file lives in a private repo â
 and it had silently fallen 600+ lines behind, still documenting a setuid tier
 that no longer exists. Read the canonical file, or a built zip.
 
-- `clawee-git/release` (PUBLIC). Trunk: `main`. gh.account: `clawee-git`.
-- Call gh via `~/bin/ghp`, never bare `gh`.
+- `clawee-git/release` (PUBLIC). Trunk: `main`.
 
 ## Status
 
