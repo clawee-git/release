@@ -36,6 +36,21 @@ exit 0
 STUBEOF
 chmod +x "${STUB}/ghp"
 
+# Safety: prune-releases.sh exports
+#   PATH="/usr/bin:/bin:/opt/homebrew/bin:${HOME}/.claude/bin:${PATH}"
+# which runs AHEAD of whatever PATH run() prepends the stub dir onto — so a
+# real `ghp` sitting in any of those four fixed directories would resolve
+# before ${STUB}/ghp, and this test would then fire real `ghp api` /
+# `ghp release delete --execute` calls against the actual clawee-git/release
+# repo, driven by the fabricated tag list above. Compute the SAME effective
+# PATH the script computes and refuse to run unless it resolves to the stub.
+effective_path="/usr/bin:/bin:/opt/homebrew/bin:${HOME}/.claude/bin:${STUB}:${PATH}"
+resolved="$(PATH="${effective_path}" command -v ghp || true)"
+if [ "${resolved}" != "${STUB}/ghp" ]; then
+    echo "✗ unsafe: ghp resolves to '${resolved:-<not found>}', not the stub — refusing to run" >&2
+    exit 1
+fi
+
 # CLAWEE_DOWNLOADS_BASE= (empty) disables the R2-presence guard entirely, per
 # the script's own documentation — no curl stub needed (and a stub would be
 # dead code anyway: the script prepends /usr/bin:/bin:/opt/homebrew/bin to
