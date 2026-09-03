@@ -9,6 +9,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -27,10 +28,30 @@ type Client struct {
 	doer        Doer
 }
 
-// New builds a Client. doer nil → a 30s http.Client.
+// New builds a Client. doer nil → an http.Client with per-phase timeouts.
 func New(accountID, bucket, accessKeyID, secret string, doer Doer) *Client {
 	if doer == nil {
-		doer = &http.Client{Timeout: 30 * time.Second}
+		// No blanket Client.Timeout: it bounds the WHOLE exchange, body upload
+		// included, so a multi-MB PUT on a slow uplink fails as "Client.Timeout
+		// exceeded while awaiting headers" while the transfer is still making
+		// progress. The old 30s needed ~380 KB/s sustained to mirror one ~11 MB
+		// zip; a degraded uplink stalled a cut mid-distribute (claweed v0.2.21,
+		// 2026-09-03) and left the GitHub release published with the R2 catalog
+		// un-updated. Bound the phases that can actually wedge and let a slow
+		// upload take the time it needs.
+		doer = &http.Client{
+			Transport: &http.Transport{
+				Proxy: http.ProxyFromEnvironment,
+				DialContext: (&net.Dialer{
+					Timeout:   30 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				TLSHandshakeTimeout:   30 * time.Second,
+				ResponseHeaderTimeout: 10 * time.Minute,
+				IdleConnTimeout:       90 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+			},
+		}
 	}
 	return &Client{
 		endpoint:    "https://" + accountID + ".r2.cloudflarestorage.com",
