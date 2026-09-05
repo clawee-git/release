@@ -36,8 +36,22 @@
 # with no migrations/upgrade.sh is a RUNTIME refusal naming the component and
 # the version just installed — a message an operator can act on.
 #
-# DO NOT EDIT generated copies (clawee/install.sh, clawee/upgrade.sh) by hand —
-# they are produced from tools/bootstrap.template.sh by tools/gen-bootstraps.sh.
+# TWO CHANNELS, THE SAME TEMPLATE. stable is substituted at render time and
+# decides which channel manifest this file resolves — nothing else about it
+# differs, because the trust gate must not have two implementations:
+#
+#   clawee/install.sh        stable  ->  <comp>/latest.json
+#   clawee/beta.install.sh   beta    ->  <comp>/beta/latest.json
+#
+# The beta twins are rendered UNCONDITIONALLY. Whether a beta exists is what
+# its manifest answers, at install time, on the host doing the installing; a
+# render-time belief about it in this repo would be a second answer that
+# nothing keeps in step. A twin whose channel is serving nothing refuses at
+# runtime, naming the channel.
+#
+# DO NOT EDIT generated copies (clawee/install.sh, clawee/upgrade.sh,
+# clawee/beta.install.sh, clawee/beta.upgrade.sh) by hand — they are produced
+# from tools/bootstrap.template.sh by tools/gen-bootstraps.sh.
 #
 # Arguments (upgrade.sh only; install.sh takes none and REJECTS any):
 #   <line>                   the MIGRATION line to force, e.g. 0.2.0 — "assume
@@ -62,6 +76,9 @@
 #   CLAWEE_UNINSTALL=1      clawee only — remove the installed bin
 #   CLAWEE_RELEASE_REPO     GitHub repo serving releases (default clawee-git/release)
 #   CLAWEE_DL_BASE          (test hook) download assets from this base instead of GitHub
+#   CLAWEE_GH_API_BASE      (test hook) the GitHub API origin; the tag-list fallback
+#                           is aimed here so a suite can make GitHub reachable or
+#                           not without touching the real one
 #   CLAWEE_GH_PROXY         Space-separated list of GitHub HTTP mirrors, tried in order
 #                           ONLY when github.com / api.github.com are unreachable
 #                           (default: gh-proxy.org cdn.gh-proxy.org v6.gh-proxy.org
@@ -71,13 +88,12 @@
 #                           operator-controlled downloads mirror (see below).
 #   CLAWEE_DOWNLOADS_BASE   Operator-controlled public R2 mirror base (default
 #                           https://downloads.clawee.org; set empty to disable).
-#                           Serves <comp>/<stamp>/<file> + <comp>/latest.json.
-#                           When GitHub is unreachable, VERSION RESOLUTION prefers
-#                           its latest.json BEFORE the third-party gh-proxy mirrors
-#                           (anti-rollback: a stale/hostile mirror could otherwise
-#                           pin fresh installs to an older, genuinely-signed
-#                           release). Byte DOWNLOADS still use it last-resort;
-#                           bytes from any source are minisign + sha256 verified.
+#                           Serves <comp>/<stamp>/<file>, <comp>/latest.json and
+#                           <comp>/beta/<stamp>/<file>, <comp>/beta/latest.json.
+#                           VERSION RESOLUTION READS ITS MANIFEST FIRST — see the
+#                           resolution section. Byte DOWNLOADS still use it
+#                           last-resort; bytes from any source are minisign +
+#                           sha256 verified.
 #
 # claweed note: the claweed inner installer is the canonical sudo-minimal daemon
 # installer. It escalates with sudo only for the steps that genuinely need root
@@ -95,10 +111,23 @@ COMP="clawee"
 # read from the environment: the mode is a property of the URL the operator
 # curl'd, and a runtime override would make one file behave as the other.
 MODE="upgrade"
+# "stable" or "beta". Baked for the same reason MODE is: the channel is a
+# property of the URL the operator curl'd, and a host that could be moved
+# between channels by an environment variable is a host whose channel nobody
+# can state (release-management.md §9 — a host never changes channel).
+CHANNEL="stable"
 PUBKEY="RWTuO+iTqEyo52tDnuRxx1IsrARInzZbBSfgbj4r5jZusvksN2VHuY3E"
 REPO="${CLAWEE_RELEASE_REPO:-clawee-git/release}"
 PREFIX="${PREFIX:-$HOME/.local}"
 DL_BASE="${CLAWEE_DL_BASE:-}"           # test hook (undocumented to users)
+GH_API_BASE="${CLAWEE_GH_API_BASE:-https://api.github.com}"  # test hook
+# TEST_HOOKS is set when EITHER undocumented hook is in play. It is what the
+# relaxed-TLS decision and the third-party-mirror skip both read, so "the
+# relaxed mode only ever talks to a base the test named" stays true by
+# construction rather than by two conditions that have to agree.
+TEST_HOOKS=""
+[ -n "$DL_BASE" ] && TEST_HOOKS=1
+[ -n "${CLAWEE_GH_API_BASE:-}" ] && TEST_HOOKS=1
 # GitHub HTTP mirrors, tried in order ONLY as a fallback when github.com /
 # api.github.com are unreachable (e.g. networks that block or throttle GitHub).
 # Each is tried as <mirror>/<original-https-github-url> until one succeeds; the
@@ -119,21 +148,30 @@ GH_PROXIES="${CLAWEE_GH_PROXY-https://gh-proxy.org https://cdn.gh-proxy.org http
 # test hook) is set.
 DOWNLOADS_BASE="${CLAWEE_DOWNLOADS_BASE-https://downloads.clawee.org}"
 
-# Production downloads are pinned to HTTPS/TLS1.2 (--proto =https). The
-# CLAWEE_DL_BASE test hook points at a local plain-HTTP server, so when it is
-# set we drop the TLS-only flags (they'd reject http://). That relaxed mode
-# stays locked to the test base BY CONSTRUCTION (no separate guard check):
-# whenever DL_BASE is set, every dl() fetch uses $BASE=$DL_BASE and the
-# gh-proxy / downloads-mirror fallbacks (resolution AND download) are skipped.
+# Production downloads are pinned to HTTPS/TLS1.2 (--proto =https) and to https
+# on every REDIRECT too (--proto-redir =https). Both are spelled because which
+# one carries the guarantee depends on the host's curl: current curl (8.7
+# measured) already restricts redirects to the --proto set, while older
+# releases defaulted --proto-redir to permit http. We follow redirects
+# everywhere (-L) — GitHub's asset URLs redirect by design — so on such a host
+# the https pinning stopped at the first request. Bytes are minisign + sha256
+# verified regardless, so this was never an install-anything hole; it was a
+# "who can read and rewrite the download" one.
+#
+# The test hooks point at a local plain-HTTP server, so when either is set we
+# drop the TLS-only flags (they'd reject http://). That relaxed mode stays
+# locked to bases the test named BY CONSTRUCTION: every dl() fetch uses
+# $BASE=$DL_BASE, the tag list is read from $GH_API_BASE, and the third-party
+# gh-proxy mirrors — the only hosts nobody in the test named — are skipped.
 #
 # --speed-limit/--speed-time abort a STALLED transfer (< ~4 KB/s for 20s) instead
 # of hanging until --max-time. This matters for the gh-proxy mirror loop: a mirror
 # that streams a few MB then stalls is abandoned in ~20s so the NEXT mirror is
 # tried, rather than the install appearing stuck for the full 5-minute max-time.
-if [ -n "$DL_BASE" ]; then
+if [ -n "$TEST_HOOKS" ]; then
     CURL="curl -fsSL --connect-timeout 15 --max-time 300 --speed-limit 4096 --speed-time 20"
 else
-    CURL="curl -fsSL --proto =https --tlsv1.2 --connect-timeout 15 --max-time 300 --speed-limit 4096 --speed-time 20"
+    CURL="curl -fsSL --proto =https --proto-redir =https --tlsv1.2 --connect-timeout 15 --max-time 300 --speed-limit 4096 --speed-time 20"
 fi
 
 # ---- helpers ------------------------------------------------------------
@@ -156,7 +194,40 @@ latest_tag() {
     else
         grep -E '^[[:space:]]*"tag_name"[[:space:]]*:' \
             | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/'
-    fi | grep -E "^${COMP}/v" | sort -V | tail -n1
+    fi | grep -E "^${COMP}/v" | channel_tags | sort -V | tail -n1
+}
+
+# channel_tags — keep only the tags belonging to $CHANNEL, reading stdin. A beta
+# stamp carries a ".beta." segment and a stable one does not, which is the same
+# exclusivity the catalog validates on the way in. Without this the beta twin's
+# GitHub fallback would resolve the newest STABLE tag and install it as a beta.
+channel_tags() {
+    if [ "$CHANNEL" = beta ]; then
+        grep -F ".beta."
+    else
+        grep -vF ".beta."
+    fi
+}
+
+# manifest_path — the channel manifest's path under the downloads base. The
+# channel is a PATH SEGMENT, matching what the publisher writes; never a pattern
+# matched out of a stamp.
+manifest_path() {
+    if [ "$CHANNEL" = beta ]; then
+        printf '%s/beta/latest.json' "$COMP"
+    else
+        printf '%s/latest.json' "$COMP"
+    fi
+}
+
+# channel_prefix — the per-stamp key prefix on the downloads mirror, the twin of
+# manifest_path.
+channel_prefix() {
+    if [ "$CHANNEL" = beta ]; then
+        printf '%s/beta' "$COMP"
+    else
+        printf '%s' "$COMP"
+    fi
 }
 
 # Extract the "stamp" field from a downloads.clawee.org <comp>/latest.json body
@@ -335,43 +406,104 @@ if [ -n "$PIN" ]; then
     TAG="$PIN"
     info "using pinned version: $TAG"
 else
-    info "resolving latest ${COMP} release"
-    api="https://api.github.com/repos/${REPO}/releases?per_page=100"
-    # shellcheck disable=SC2086  # $CURL is an intentional space-split command string (flags + binary); POSIX sh has no arrays.
-    body="$($CURL "$api" 2>/dev/null)" || true
-    TAG="$(printf '%s' "$body" | latest_tag)" || true
-    # GitHub API unreachable/empty — resolve "latest" from the OPERATOR-CONTROLLED
-    # R2 mirror's latest.json FIRST (no auth). Anti-rollback: which TAG is "latest"
-    # decides which (genuinely-signed) release gets installed, so an on-path
-    # attacker who blocks GitHub must not be able to steer resolution to a
-    # stale/hostile third-party gh-proxy mirror serving an old /releases JSON and
-    # freeze fresh installs on an older release. downloads.clawee.org is TLS to a
-    # clawee-owned domain and its catalog is written by release.sh at cut time.
-    # Skipped under the DL_BASE test hook and when the mirror is disabled (empty).
-    if [ -z "$TAG" ] && [ -z "$DL_BASE" ] && [ -n "$DOWNLOADS_BASE" ]; then
-        info "GitHub API unreachable — trying $DOWNLOADS_BASE/$COMP/latest.json"
+    info "resolving latest ${COMP} release on the ${CHANNEL} channel"
+    # Declared before the first source is tried: every step below is guarded on
+    # "$TAG" being empty, and under `set -u` an unset one aborts at the second
+    # step rather than falling through to it.
+    TAG=""
+    # ---- 1. THE CHANNEL MANIFEST, FIRST -------------------------------------
+    # The manifest is the publisher's own answer to "what is this channel
+    # serving": promote writes it LAST, as the go-live, so a build with a
+    # manifest entry is a build an operator approved and a build without one is
+    # not reachable by design.
+    #
+    # It used to be consulted only when GitHub was unreachable, which made the
+    # GitHub tag list the real authority — and the tag list is not channel-aware
+    # and not promote-aware. A staged-then-abandoned cut never has a tag today,
+    # but the ordering was still wrong in the way that matters: the tag list
+    # answers "what was published", the manifest answers "what should be
+    # installed", and only the second is a decision anyone made.
+    #
+    # GitHub is the FALLBACK for exactly one situation — the manifest host is
+    # unreachable — and the third-party mirrors after it, unchanged.
+    #
+    # MANIFEST_FALLBACK is what gates steps 2 and 3, and the distinction it
+    # draws is the whole correctness of this block: "the manifest host did not
+    # answer" is a reason to look elsewhere, "the manifest says this channel
+    # serves nothing" is an ANSWER. Discarding curl's status collapsed the two
+    # — a 404 fell through to the tag list exactly like a dead host — and the
+    # tag list records everything ever published, YANKED BUILDS INCLUDED. Yank
+    # removes the manifest entry when no public row remains, and deliberately
+    # leaves the GitHub release in place, so the collapsed case reinstalled the
+    # build that had just been withdrawn; a beta twin reinstalled the previous
+    # cycle's beta after the cycle closed.
+    MANIFEST_FALLBACK=""
+    if [ -z "$DOWNLOADS_BASE" ]; then
+        # No manifest is configured at all, so there is nothing that could have
+        # answered and the tag list is all there is.
+        MANIFEST_FALLBACK=1
+    else
+        _mf="$DOWNLOADS_BASE/$(manifest_path)"
+        info "reading the ${CHANNEL} manifest: $_mf"
+        _rc=0
         # shellcheck disable=SC2086  # intentional word-split of $CURL flags
-        lj="$($CURL "$DOWNLOADS_BASE/$COMP/latest.json" 2>/dev/null)" || true
+        lj="$($CURL "$_mf" 2>/dev/null)" || _rc=$?
+        case "$_rc" in
+            0) ;;
+            # The connection-class exits, and ONLY these, mean "the host did
+            # not answer": 5/6 could not resolve, 7 could not connect, 28 timed
+            # out, 35 TLS handshake, 52 empty reply, 56 receive failure. Every
+            # other status — 22 above all, which under curl -f is any HTTP 4xx
+            # or 5xx — means the host DID answer, and what it answered is that
+            # this channel is serving nothing.
+            5|6|7|28|35|52|56)
+                info "the manifest host did not answer (curl $_rc) — falling back"
+                MANIFEST_FALLBACK=1 ;;
+            *)
+                info "the ${CHANNEL} manifest is not there (curl $_rc): this channel is serving nothing" ;;
+        esac
         st="$(printf '%s' "$lj" | latest_stamp)" || true
-        # Require a real v… stamp before trusting it (bytes are still verified below).
+        # Require a real v… stamp, and require it to BELONG to this channel:
+        # a stable stamp in the beta manifest (or the reverse) is a publisher
+        # bug, and installing it anyway would put a host on a channel it never
+        # asked for. Bytes are still verified below either way.
         case "$st" in
-            v*) TAG="$COMP/$st"; info "downloads mirror: $TAG" ;;
+            v*)
+                if printf '%s' "$st" | channel_tags >/dev/null 2>&1; then
+                    TAG="$COMP/$st"
+                    info "manifest: $TAG"
+                else
+                    info "the ${CHANNEL} manifest names '$st', which is not a ${CHANNEL} stamp — ignoring it"
+                fi ;;
         esac
     fi
-    # Still unresolved — last resort: the third-party gh-proxy mirrors (no auth).
-    # These only decide the tag when GitHub AND the downloads mirror are both
-    # unreachable; the bytes they serve are minisign + sha256 verified either way.
-    # Skipped under the DL_BASE test hook and when mirrors are disabled (empty).
-    if [ -z "$TAG" ] && [ -z "$DL_BASE" ] && [ -n "$GH_PROXIES" ]; then
+    # ---- 2. THE GITHUB TAG LIST, only when the manifest host did not answer --
+    if [ -z "$TAG" ] && [ -n "$MANIFEST_FALLBACK" ] \
+        && { [ -z "$DL_BASE" ] || [ -n "${CLAWEE_GH_API_BASE:-}" ]; }; then
+        info "manifest unavailable — falling back to the ${REPO} release list"
+        api="${GH_API_BASE}/repos/${REPO}/releases?per_page=100"
+        # shellcheck disable=SC2086  # $CURL is an intentional space-split command string (flags + binary); POSIX sh has no arrays.
+        body="$($CURL "$api" 2>/dev/null)" || true
+        TAG="$(printf '%s' "$body" | latest_tag)" || true
+    fi
+    # ---- 3. The third-party gh-proxy mirrors, last --------------------------
+    # These only decide the tag when the manifest AND GitHub are both
+    # unreachable; the bytes they serve are minisign + sha256 verified either
+    # way. Skipped under the DL_BASE test hook and when mirrors are disabled.
+    if [ -z "$TAG" ] && [ -n "$MANIFEST_FALLBACK" ] && [ -z "$TEST_HOOKS" ] && [ -n "$GH_PROXIES" ]; then
+        api="${GH_API_BASE}/repos/${REPO}/releases?per_page=100"
         for _proxy in $GH_PROXIES; do
-            info "GitHub API + downloads mirror unreachable — retrying via mirror $_proxy"
+            info "manifest + GitHub API unreachable — retrying via mirror $_proxy"
             # shellcheck disable=SC2086  # intentional word-split of $CURL flags
             body="$($CURL "$_proxy/$api" 2>/dev/null)" || true
             TAG="$(printf '%s' "$body" | latest_tag)" || true
             if [ -n "$TAG" ]; then info "mirror resolved: $TAG"; break; fi
         done
     fi
-    [ -n "$TAG" ] || fail "no published release found for ${COMP} on ${REPO} (GitHub, ${DOWNLOADS_BASE:-the R2 mirror}, and the gh-proxy mirrors [$GH_PROXIES] were all unreachable)"
+    if [ -z "$TAG" ] && [ -n "$MANIFEST_FALLBACK" ]; then
+        fail "nothing is published for ${COMP} on the ${CHANNEL} channel: the manifest host did not answer (${DOWNLOADS_BASE:-disabled}), and neither the ${REPO} release list nor the gh-proxy mirrors [${GH_PROXIES:-disabled}] named a ${CHANNEL} release."
+    fi
+    [ -n "$TAG" ] || fail "nothing is published for ${COMP} on the ${CHANNEL} channel: ${DOWNLOADS_BASE}/$(manifest_path) names no release. That is the expected state when a ${CHANNEL} cycle is closed, or when the only build this channel had was YANKED. The ${REPO} release list is deliberately NOT consulted here: it records every tag ever published, withdrawn builds included, so falling back to it would reinstall exactly what was just taken down."
     info "latest: $TAG"
 fi
 
@@ -401,10 +533,11 @@ ZIP="clawee-${COMP}-${OS}-${ARCH}.zip"
 # mirror-only base with the tag's slash percent-encoded (%2F) so the tag stays
 # one segment. Direct GitHub ($BASE) keeps the literal slash (it 404s on %2F).
 MIRROR_BASE="https://github.com/${REPO}/releases/download/$(printf '%s' "${TAG}" | sed 's#/#%2F#g')"
-# Public R2 mirror per-stamp base: downloads.clawee.org/<comp>/<stamp>. The tag
-# is <comp>/<stamp>; strip the comp/ prefix to recover the stamp path segment.
+# Public R2 mirror per-stamp base: <base>/<comp>[/beta]/<stamp> — the same
+# channel layout the manifest is published under. The tag is <comp>/<stamp>;
+# strip the comp/ prefix to recover the stamp path segment.
 STAMP="${TAG#"$COMP/"}"
-DOWNLOADS_FILE_BASE="$DOWNLOADS_BASE/$COMP/$STAMP"
+DOWNLOADS_FILE_BASE="$DOWNLOADS_BASE/$(channel_prefix)/$STAMP"
 
 dl() {
     # dl <remote-name> <local-name>  (local goes under $TMP)
@@ -420,7 +553,7 @@ dl() {
         return 0
     fi
     # Each full mirror URL is printed so a stalled download is diagnosable from output.
-    if [ -z "$DL_BASE" ] && [ -n "$GH_PROXIES" ]; then
+    if [ -z "$TEST_HOOKS" ] && [ -n "$GH_PROXIES" ]; then
         for _proxy in $GH_PROXIES; do
             info "primary failed; trying mirror: $_proxy/$MIRROR_BASE/$1"
             # shellcheck disable=SC2086  # intentional word-split of $CURL flags
@@ -433,7 +566,7 @@ dl() {
     # Last resort: the public R2 mirror (downloads.clawee.org/<comp>/<stamp>/).
     # Untrusted — the minisign + sha256 verification below is unchanged, so it
     # cannot inject tampered bytes. Skipped under the DL_BASE test hook / disabled.
-    if [ -z "$DL_BASE" ] && [ -n "$DOWNLOADS_BASE" ]; then
+    if [ -z "$TEST_HOOKS" ] && [ -n "$DOWNLOADS_BASE" ]; then
         info "mirrors failed; trying downloads mirror: $DOWNLOADS_FILE_BASE/$1"
         # shellcheck disable=SC2086  # intentional word-split of $CURL flags
         if $CURL -o "$TMP/$2" "$DOWNLOADS_FILE_BASE/$1" 2>/dev/null; then

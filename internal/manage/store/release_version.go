@@ -1,0 +1,468 @@
+package store
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/clawee-git/release/internal/manage/catalog"
+)
+
+// ReleaseVersion is one cut, as the catalog records it (release-management.md
+// §2). One row per (component, channel, stamp).
+type ReleaseVersion struct {
+	ID        int64
+	Component string
+	Channel   string
+	Version   string // human semver, e.g. 0.2.28
+	Stamp     string // the full cut stamp
+	// ArtifactsJSON is the register payload's artifacts array VERBATIM. The
+	// store never parses it: the object keys in it are the cut's contract with
+	// the staging bucket, and a store that re-derived them could disagree with
+	// where the bytes actually are.
+	ArtifactsJSON string
+	SumsKey       string
+	MinisigKey    string
+	State         string
+	IsCurrent     bool
+	CreatedAt     time.Time
+	PromotedAt    time.Time // zero until promoted
+	YankedAt      time.Time // zero until yanked
+}
+
+// Stage inserts a new row in state `staged`. The caller supplies CreatedAt.
+//
+// Returns ErrAlreadyExists when (component, channel, stamp) is already
+// catalogued — a re-run of the cut's distribute step, not a new release — and
+// ErrBadValue for a component or channel outside the vocabulary, or a stamp
+// that contradicts the claimed channel.
+func (s *Store) Stage(rv ReleaseVersion) (int64, error) {
+	if !catalog.ValidComponent(rv.Component) {
+		return 0, fmt.Errorf("%w: component %q", ErrBadValue, rv.Component)
+	}
+	if !catalog.ValidChannel(rv.Channel) {
+		return 0, fmt.Errorf("%w: channel %q", ErrBadValue, rv.Channel)
+	}
+	if !catalog.StampMatchesChannel(rv.Stamp, rv.Channel) {
+		return 0, fmt.Errorf("%w: stamp %q is not a %s stamp", ErrBadValue, rv.Stamp, rv.Channel)
+	}
+	res, err := s.db.Exec(`
+		INSERT INTO release_versions
+			(component, channel, version, stamp, artifacts_json, sums_key, minisig_key,
+			 state, is_current, created_at, promoted_at, yanked_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, 0)`,
+		rv.Component, rv.Channel, rv.Version, rv.Stamp, rv.ArtifactsJSON,
+		rv.SumsKey, rv.MinisigKey, catalog.StateStaged, rv.CreatedAt.Unix())
+	if err != nil {
+		if isUniqueViolation(err) {
+			return 0, fmt.Errorf("%w: %s %s on %s", ErrAlreadyExists, rv.Component, rv.Stamp, rv.Channel)
+		}
+		return 0, fmt.Errorf("store: stage %s %s: %w", rv.Component, rv.Stamp, err)
+	}
+	return res.LastInsertId()
+}
+
+// Promote flips id to `public`, sets is_current, and clears the previous
+// current row for the same (component, channel) — in ONE transaction, with the
+// clear happening first, because the partial unique index refuses two current
+// rows and the whole point of the transaction is that there is never a moment
+// with none.
+//
+// It refuses a row that is not `staged`: promote is the go-live, and a public,
+// yanked or expired row reaching it again means something upstream lost track
+// of the row's state.
+//
+// It does NOT touch any bucket. Everything remote is batch B's, and this
+// method is deliberately the LAST step of that sequence (verify → copy →
+// GitHub → manifest → flip), so a failure anywhere before it leaves the row
+// `staged` and the public surface untouched.
+func (s *Store) Promote(id int64, at time.Time) error {
+	return s.tx(func(tx *sql.Tx) error {
+		var component, channel, state string
+		err := tx.QueryRow(`SELECT component, channel, state FROM release_versions WHERE id = ?`, id).
+			Scan(&component, &channel, &state)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: release row %d", ErrNotFound, id)
+		}
+		if err != nil {
+			return fmt.Errorf("store: promote %d: %w", id, err)
+		}
+		if state != catalog.StateStaged {
+			return fmt.Errorf("%w: row %d is %s, only a staged row can be promoted", ErrBadState, id, state)
+		}
+		if _, err := tx.Exec(`
+			UPDATE release_versions SET is_current = 0
+			WHERE component = ? AND channel = ? AND is_current = 1`, component, channel); err != nil {
+			return fmt.Errorf("store: promote %d: clear previous current: %w", id, err)
+		}
+		if _, err := tx.Exec(`
+			UPDATE release_versions SET state = ?, is_current = 1, promoted_at = ?
+			WHERE id = ?`, catalog.StatePublic, at.Unix(), id); err != nil {
+			return fmt.Errorf("store: promote %d: %w", id, err)
+		}
+		return nil
+	})
+}
+
+// NewestPublicExcept returns the newest `public` row for (component, channel)
+// other than exclude, or nil when there is none.
+//
+// It is the ONE selector for "what should this channel serve instead": yank
+// asks it, and passes the answer back into Yank. Deriving it twice — once to
+// write the manifest and once inside the flip — is how the manifest and the
+// catalog end up naming different builds.
+func (s *Store) NewestPublicExcept(component, channel string, exclude int64) (*ReleaseVersion, error) {
+	rows, err := queryVersions(s.db, `
+		SELECT `+versionCols+` FROM release_versions
+		WHERE component = ? AND channel = ? AND state = ? AND id != ?
+		ORDER BY created_at DESC, id DESC LIMIT 1`,
+		component, channel, catalog.StatePublic, exclude)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	return &rows[0], nil
+}
+
+// Yank marks id `yanked`, clears its is_current, and moves is_current onto
+// successorID — all in ONE transaction.
+//
+// Handing the successor over rather than picking it here is deliberate: the
+// caller has already written the channel manifest naming that exact row, and
+// the catalog must end up agreeing with the manifest rather than with a second
+// query that could answer differently. Passing 0 means "there is no successor"
+// — the caller removed the manifest entry.
+//
+// The successor MUST become current. Before this, yank cleared is_current and
+// set it on nothing, so the channel had a manifest naming a build the catalog
+// did not mark as current. Retention then read the catalog, saw no current row
+// to protect, and expired and pruned the very build the manifest was serving.
+// The partial unique index guarantees the swap lands on exactly one row.
+func (s *Store) Yank(id, successorID int64, at time.Time) error {
+	return s.tx(func(tx *sql.Tx) error {
+		var component, channel, state string
+		err := tx.QueryRow(`SELECT component, channel, state FROM release_versions WHERE id = ?`, id).
+			Scan(&component, &channel, &state)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: release row %d", ErrNotFound, id)
+		}
+		if err != nil {
+			return fmt.Errorf("store: yank %d: %w", id, err)
+		}
+		if state != catalog.StatePublic {
+			return fmt.Errorf("%w: row %d is %s, only a public row can be yanked", ErrBadState, id, state)
+		}
+		// Clear first: the partial unique index refuses two current rows, and
+		// the whole point of one transaction is that there is never a moment
+		// with two.
+		if _, err := tx.Exec(`
+			UPDATE release_versions SET state = ?, is_current = 0, yanked_at = ?
+			WHERE id = ?`, catalog.StateYanked, at.Unix(), id); err != nil {
+			return fmt.Errorf("store: yank %d: %w", id, err)
+		}
+		if successorID == 0 {
+			return nil
+		}
+		if successorID == id {
+			return fmt.Errorf("%w: row %d cannot succeed itself", ErrBadValue, id)
+		}
+		var sComponent, sChannel, sState string
+		err = tx.QueryRow(`SELECT component, channel, state FROM release_versions WHERE id = ?`, successorID).
+			Scan(&sComponent, &sChannel, &sState)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: successor row %d", ErrNotFound, successorID)
+		}
+		if err != nil {
+			return fmt.Errorf("store: yank %d: read successor: %w", id, err)
+		}
+		// The successor has to be a row this channel could actually serve.
+		// Anything else would put is_current on a build the manifest does not
+		// name, which is the same disagreement from the other direction.
+		if sComponent != component || sChannel != channel {
+			return fmt.Errorf("%w: successor row %d is %s/%s, not %s/%s",
+				ErrBadValue, successorID, sComponent, sChannel, component, channel)
+		}
+		if sState != catalog.StatePublic {
+			return fmt.Errorf("%w: successor row %d is %s, not public", ErrBadState, successorID, sState)
+		}
+		if _, err := tx.Exec(`UPDATE release_versions SET is_current = 1 WHERE id = ?`, successorID); err != nil {
+			return fmt.Errorf("store: yank %d: promote successor %d: %w", id, successorID, err)
+		}
+		return nil
+	})
+}
+
+// ExpireOldVersions runs retention for one (component, channel): it orders that
+// channel's promoted rows newest first, keeps `keep` of them, and marks the
+// rest `expired`. It returns the rows it newly expired so the caller can prune
+// their bytes.
+//
+// Three scoping rules, each of which was a real defect somewhere:
+//
+//   - Per CHANNEL. A component's beta rows never count toward its stable
+//     keep-window; unscoped, a busy channel pushes the other channel's rows
+//     out of their own window.
+//   - The CURRENT row is never expired, however old it is
+//     (release-management.md §2). The manifest names it.
+//   - `staged` rows are not counted and not expired. The guideline keeps every
+//     staged row: a staged row is the only thing an invite can point at, and
+//     it is the row an operator has not decided about yet.
+//   - `yanked` rows do not count toward the window AT ALL, and are always
+//     expired. A withdrawn build must never hold a retention slot ahead of one
+//     the channel is serving: with a keep of 1, a single yank used up the slot
+//     and pushed the successor — the build the manifest names — out of it.
+//     Nothing serves a yanked row, so keeping its bytes is the opposite of why
+//     it was yanked.
+func (s *Store) ExpireOldVersions(component, channel string, keep int, at time.Time) ([]ReleaseVersion, error) {
+	if !catalog.ValidComponent(component) || !catalog.ValidChannel(channel) {
+		return nil, fmt.Errorf("%w: %s/%s", ErrBadValue, component, channel)
+	}
+	if keep < 1 {
+		return nil, fmt.Errorf("store: retention keep must be >= 1, got %d", keep)
+	}
+	var expired []ReleaseVersion
+	err := s.tx(func(tx *sql.Tx) error {
+		candidates, e := queryVersions(tx, `
+			SELECT `+versionCols+` FROM release_versions
+			WHERE component = ? AND channel = ? AND state IN (?, ?)
+			ORDER BY created_at DESC, id DESC`,
+			component, channel, catalog.StatePublic, catalog.StateYanked)
+		if e != nil {
+			return e
+		}
+		for _, rv := range planExpiry(candidates, keep) {
+			if _, e := tx.Exec(`UPDATE release_versions SET state = ? WHERE id = ?`,
+				catalog.StateExpired, rv.ID); e != nil {
+				return fmt.Errorf("store: expire %d: %w", rv.ID, e)
+			}
+			rv.State = catalog.StateExpired
+			expired = append(expired, rv)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return expired, nil
+}
+
+// planExpiry is THE keep rule, and the only statement of it. ExpireOldVersions
+// applies it; PlanExpiry reports it without touching anything. A dry run that
+// re-implemented the rule would eventually disagree with the pass it claims to
+// preview, and the disagreement would only ever be discovered by an operator
+// who trusted the preview.
+//
+// candidates must be the channel's public and yanked rows, newest first.
+func planExpiry(candidates []ReleaseVersion, keep int) []ReleaseVersion {
+	var expire []ReleaseVersion
+	kept := 0
+	for _, rv := range candidates {
+		if rv.IsCurrent {
+			// Never expired, and never counted against the window either: the
+			// current row is not one of the N most recent releases, it is the
+			// one the channel serves.
+			continue
+		}
+		// A yanked row skips the window entirely and falls through to be
+		// expired: it holds no slot, because a withdrawn build outranking a
+		// serving one is exactly the bug that guard exists for.
+		if rv.State == catalog.StatePublic && kept < keep {
+			kept++
+			continue
+		}
+		expire = append(expire, rv)
+	}
+	return expire
+}
+
+// PlanExpiry reports which rows a retention pass WOULD expire, changing
+// nothing. It is what `retain --dry-run` prints.
+func (s *Store) PlanExpiry(component, channel string, keep int) (expire, retain []ReleaseVersion, err error) {
+	if !catalog.ValidComponent(component) || !catalog.ValidChannel(channel) {
+		return nil, nil, fmt.Errorf("%w: %s/%s", ErrBadValue, component, channel)
+	}
+	if keep < 1 {
+		return nil, nil, fmt.Errorf("store: retention keep must be >= 1, got %d", keep)
+	}
+	candidates, err := queryVersions(s.db, `
+		SELECT `+versionCols+` FROM release_versions
+		WHERE component = ? AND channel = ? AND state IN (?, ?)
+		ORDER BY created_at DESC, id DESC`,
+		component, channel, catalog.StatePublic, catalog.StateYanked)
+	if err != nil {
+		return nil, nil, err
+	}
+	expire = planExpiry(candidates, keep)
+	doomed := make(map[int64]bool, len(expire))
+	for _, rv := range expire {
+		doomed[rv.ID] = true
+	}
+	for _, rv := range candidates {
+		if !doomed[rv.ID] {
+			retain = append(retain, rv)
+		}
+	}
+	return expire, retain, nil
+}
+
+// CurrentPublic returns the one public, is_current row for (component,
+// channel), or ErrNotFound.
+func (s *Store) CurrentPublic(component, channel string) (*ReleaseVersion, error) {
+	rows, err := queryVersions(s.db, `
+		SELECT `+versionCols+` FROM release_versions
+		WHERE component = ? AND channel = ? AND state = ? AND is_current = 1`,
+		component, channel, catalog.StatePublic)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("%w: no current %s release on %s", ErrNotFound, component, channel)
+	}
+	return &rows[0], nil
+}
+
+// Unpromoted returns the newest `staged` row for (component, channel), or
+// ErrNotFound. It is the row the manage card offers promote and mint on.
+func (s *Store) Unpromoted(component, channel string) (*ReleaseVersion, error) {
+	rows, err := queryVersions(s.db, `
+		SELECT `+versionCols+` FROM release_versions
+		WHERE component = ? AND channel = ? AND state = ?
+		ORDER BY created_at DESC, id DESC LIMIT 1`,
+		component, channel, catalog.StateStaged)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("%w: no staged %s release on %s", ErrNotFound, component, channel)
+	}
+	return &rows[0], nil
+}
+
+// ListByComponent returns every row for (component, channel), all states,
+// newest first. It backs the history page.
+func (s *Store) ListByComponent(component, channel string) ([]ReleaseVersion, error) {
+	return queryVersions(s.db, `
+		SELECT `+versionCols+` FROM release_versions
+		WHERE component = ? AND channel = ?
+		ORDER BY created_at DESC, id DESC`, component, channel)
+}
+
+// Get returns one row by id, or ErrNotFound.
+func (s *Store) Get(id int64) (*ReleaseVersion, error) {
+	rows, err := queryVersions(s.db, `SELECT `+versionCols+` FROM release_versions WHERE id = ?`, id)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("%w: release row %d", ErrNotFound, id)
+	}
+	return &rows[0], nil
+}
+
+// versionCols is the column list every ReleaseVersion query selects, in the
+// order scanVersion reads them. One string, one scan function: a column added
+// to one and not the other is a compile-time-invisible mis-scan, and this is
+// the cheapest way to make them impossible to write down separately.
+const versionCols = `id, component, channel, version, stamp, artifacts_json,
+	sums_key, minisig_key, state, is_current, created_at, promoted_at, yanked_at`
+
+// querier is the shared surface of *sql.DB and *sql.Tx, so the same read runs
+// inside a transaction or outside one.
+type querier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+func queryVersions(q querier, query string, args ...any) ([]ReleaseVersion, error) {
+	rows, err := q.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: query release rows: %w", err)
+	}
+	defer rows.Close()
+	var out []ReleaseVersion
+	for rows.Next() {
+		var rv ReleaseVersion
+		var created, promoted, yanked int64
+		if err := rows.Scan(&rv.ID, &rv.Component, &rv.Channel, &rv.Version, &rv.Stamp,
+			&rv.ArtifactsJSON, &rv.SumsKey, &rv.MinisigKey, &rv.State, &rv.IsCurrent,
+			&created, &promoted, &yanked); err != nil {
+			return nil, fmt.Errorf("store: scan release row: %w", err)
+		}
+		rv.CreatedAt = time.Unix(created, 0).UTC()
+		if promoted != 0 {
+			rv.PromotedAt = time.Unix(promoted, 0).UTC()
+		}
+		if yanked != 0 {
+			rv.YankedAt = time.Unix(yanked, 0).UTC()
+		}
+		out = append(out, rv)
+	}
+	return out, rows.Err()
+}
+
+// tx runs fn in a transaction, rolling back on error.
+func (s *Store) tx(fn func(*sql.Tx) error) error {
+	t, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin: %w", err)
+	}
+	if err := fn(t); err != nil {
+		t.Rollback()
+		return err
+	}
+	return t.Commit()
+}
+
+// isUniqueViolation recognises a UNIQUE constraint failure without depending
+// on the driver's error type. The driver's own error struct is not part of its
+// documented surface and its numeric codes moved between releases; the message
+// prefix SQLite itself emits has not.
+func isUniqueViolation(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
+
+// ByVersion resolves the newest row for (component, channel, version).
+//
+// Newest rather than "the one", because `version` is the human semver and a
+// re-cut of the same semver is a second row with a different stamp. The invite
+// mint addresses a build by the version an operator reads off the page, so it
+// gets the most recent one — and the mint records the row ID, so what was
+// minted stays unambiguous afterwards.
+func (s *Store) ByVersion(component, channel, version string) (*ReleaseVersion, error) {
+	rows, err := queryVersions(s.db, `
+		SELECT `+versionCols+` FROM release_versions
+		WHERE component = ? AND channel = ? AND version = ?
+		ORDER BY created_at DESC, id DESC LIMIT 1`, component, channel, version)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("%w: %s %s on %s", ErrNotFound, component, version, channel)
+	}
+	return &rows[0], nil
+}
+
+// PublicHistory returns the rows a PUBLIC page may render for (component,
+// channel), newest first: `public`, `yanked` and `expired`, and never
+// `staged`.
+//
+// It exists as its own method rather than as a filter the caller applies,
+// because "the public surface cannot show a staged row" then holds by
+// construction. ListByComponent returns every state and backs the operator's
+// history page; a public handler that reached for it and forgot the filter
+// would publish the stamp of a build nobody approved — and the mistake would
+// look exactly like working code.
+func (s *Store) PublicHistory(component, channel string) ([]ReleaseVersion, error) {
+	if !catalog.ValidComponent(component) || !catalog.ValidChannel(channel) {
+		return nil, fmt.Errorf("%w: %s/%s", ErrBadValue, component, channel)
+	}
+	return queryVersions(s.db, `
+		SELECT `+versionCols+` FROM release_versions
+		WHERE component = ? AND channel = ? AND state IN (?, ?, ?)
+		ORDER BY created_at DESC, id DESC`,
+		component, channel,
+		catalog.StatePublic, catalog.StateYanked, catalog.StateExpired)
+}

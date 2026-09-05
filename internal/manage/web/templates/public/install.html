@@ -1,0 +1,47 @@
+{{define "content"}}
+  <section>
+    <h2>Install</h2>
+    <p class="muted">Each installer detects your OS and architecture, verifies the download
+      end-to-end (minisign signature → SHA-256 → unzip), then runs the inner installer.
+      There is no dispatcher — the binaries are invoked directly.</p>
+
+    {{range .Components}}
+    <h3>{{.Label}}</h3>
+    {{if .Stable}}<span class="badge"><b>{{.Stable.Version}}</b> stable · promoted {{.Stable.PromotedAt}}</span>{{else}}<span class="badge">stable: nothing promoted yet</span>{{end}}
+    {{if .Beta}}<span class="badge beta"><b>{{.Beta.Version}}</b> beta · promoted {{.Beta.PromotedAt}}</span>{{end}}
+
+    <span class="install">
+      <button class="copy" type="button">copy</button>
+      <span class="label">{{.Name}} — stable</span>
+      <code>{{.StableCommand}}</code>
+    </span>
+
+    {{if .Beta}}
+    <span class="install">
+      <button class="copy" type="button">copy</button>
+      <span class="label">{{.Name}} — beta ({{.Beta.Version}})</span>
+      <code>{{.BetaCommand}}</code>
+    </span>
+    {{end}}
+
+    {{if .IsDaemon}}
+    <p class="faint"><strong>Run it as your user, never with sudo.</strong> claweed escalates with
+      <code>sudo</code> for four steps of its own: the root-owned daemon binaries, the root-owned
+      spawn policy files, the system boot unit, and — <strong>on macOS only</strong> — a sudoers
+      drop-in at <code>/etc/sudoers.d/clawee-powermetrics</code> granting the user who runs the
+      installer <strong>passwordless sudo</strong> for one fixed read-only command,
+      <code>powermetrics --samplers thermal -n 1</code>. That is a standing NOPASSWD rule; delete
+      the file to revoke it, and claweed simply reports <code>thermal=unknown</code>. Running the
+      whole installer under sudo instead installs the daemon against root's home rather than
+      yours. Without any sudo path the installer stops at the first step and installs nothing. It
+      cross-installs <code>burrowee-gateway</code>, and installs <strong>no setuid binary</strong>.</p>
+    {{else}}
+    <p class="faint">clawee lands in <code>$HOME/.local/bin</code> and ensures
+      <code>burrowee-cli</code> is present.</p>
+    {{end}}
+    {{end}}
+
+    <p class="muted">Every version this channel has ever served, with its per-platform
+      downloads and checksums, is on the <a href="/downloads">downloads</a> page.</p>
+  </section>
+{{end}}

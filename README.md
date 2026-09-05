@@ -22,6 +22,54 @@ curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/clawee/install.
 curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/claweed/install.sh | sh
 ```
 
+While a beta cycle is open, each component also serves a **beta twin** —
+`<comp>/beta.install.sh`, resolving the beta channel manifest instead of the
+stable one. The site offers that line **only while a beta is actually
+promoted**, because a beta command that outlives its cycle installs the last
+beta forever after it graduated.
+
+### Beta twin
+
+A beta build is a **twin**, not a replacement. It installs beside a stable
+install and shares nothing with it but your identity:
+
+|  | stable | beta |
+|---|---|---|
+| client | `clawee`, `clawee-updater` | `claweeb`, `claweeb-updater` |
+| daemon | `claweed`, `claweed-updater` | `claweedb`, `claweedb-updater` |
+| client config | `~/.clawee/config.json` | `~/.clawee/config.beta.json` |
+| client data | `~/.clawee/data` | `~/.clawee/beta/data` |
+| system root | `/usr/local/clawee` | `/usr/local/clawee/beta` |
+| launchd label | `org.clawee.claweed` | `org.clawee.beta.claweed` |
+| systemd unit | `claweed.service` | `claweed-beta.service` |
+
+What IS shared: your account and your devices. `~/.clawee` is one directory
+because it is one identity — the beta client talks to the same gateway as the
+same you.
+
+**A beta twin never overwrites stable.** Both installers place files under the
+names above and nowhere else, so a beta install on a gateway leaves the running
+stable daemon, its unit, its config root and its socket exactly as they were;
+`tools/test-e2e-twins.sh` installs one after the other into a sandbox and
+checksums every stable file across the second install.
+
+**Neither one changes channel.** The channel is burned into each binary at link
+time (`-X main.channel`, parsed by `core/channel`), never read from a flag or an
+environment variable, and `claweeb-updater` resolves only beta stamps — it reads
+`<comp>/beta/latest.json`, and its GitHub tag fallback filters on the `.beta.`
+segment, so it can neither move you onto stable nor be moved there. Graduating
+is not a flip: the stable line adopts the patch the cycle reached, and you
+uninstall the twin.
+
+Remove a twin the way you installed it — re-run the beta installer with
+`CLAWEE_UNINSTALL=1` set, which removes only the beta names.
+
+`https://release.clawee.org` is the manage service's public face, rendered from
+the promoted catalog: `/` (install), `/downloads` (per-platform zips, checksums
+and signatures per promoted release, both channels), `/verify`, `/platforms` and
+`/docs`. Nothing `staged` appears on any of them — a staged cut is a build no
+operator has approved.
+
 Each installer detects your OS/arch, resolves the latest published release for
 that component, downloads the zip + `SHA256SUMS.txt` + `SHA256SUMS.txt.minisig`,
 **verifies the minisign signature against the baked public key**, checks the
@@ -143,21 +191,81 @@ Windows is not supported.
 This is the public face of the channel. Built binaries for the private
 component repos (`clawee-git/cli`, `clawee-git/daemon`) are published as
 **GitHub Release assets on this repo** (the component sources are private and
-can't be `curl`'d anonymously). The static bootstrap scripts are mirrored to
-`release.clawee.org` (nginx + Cloudflare).
+can't be `curl`'d anonymously). `release.clawee.org` (nginx + Cloudflare) is the
+manage service's public face; the bootstraps, the signing pubkey and the version
+JSONP stay static files beside it, put there by `clawee-release-manage
+publish-static` when the **kit** changes — not on every cut, because they embed
+no version.
+
+### A cut does not publish
+
+Cutting a release and making it downloadable are **two separate acts**, and
+only the first is automated:
 
 ```
-clawee/    claweed/        ← per-component outer bootstrap (install.sh + upgrade.sh, generated)
-inner/clawee/install.sh     ← clawee's inner installer, repo-committed (ships
-                              verbatim inside each verified clawee zip). claweed
-                              has no committed copy: its inner installer is
-                              rendered at build time from the daemon repo's
-                              install/install.sh.in
-versions/<comp>             ← per-component SemVer source of truth
-site/index.html             ← release.clawee.org landing page
+tools/release.sh <comp>
+  stamp → build → SHA256SUMS.txt → minisign
+    → upload to the PRIVATE staging bucket at <comp>/<channel>/<stamp>/
+    → register a `staged` catalog row with the manage service
+    → regenerate the bootstraps + a "[RELEASED: <comp>] … (staged)" marker commit
+```
+
+That is the whole chain. A cut creates **no** release tag, **no** GitHub
+Release, writes nothing to the public bucket, updates no `latest.json` and
+copies nothing to the static host — so nothing anyone can download changes
+when a release is cut.
+
+**Promote** is the second act, taken by an operator in the manage service once
+they have tested the staged build. It copies the same verified bytes to the
+public surface, creates the GitHub Release, writes the channel manifest and
+flips the row `public`. Promote is a copy, not a rebuild: the bytes an operator
+tested are the bytes that go live, which is why a cut signs and notarizes in
+full even though nothing is published yet.
+
+`--channel stable|beta` files the row. It defaults to `beta` when the component
+source is on a beta branch and `stable` otherwise; asking for `--channel
+stable` from a beta branch is refused rather than filing beta bytes as stable.
+
+A cut refuses **before** uploading when the manage URL is unconfigured, and
+fails **after** uploading when the service refuses the registration — staged
+bytes with no catalog row are a stranded artifact nobody can find or promote.
+The two configuration keys it needs (`<staging bucket>`, `<manage URL>`) live
+in the sealed config; see `AGENTS.md`.
+
+```
+clawee/    claweed/        ← per-component outer bootstraps, generated: install.sh
+                              + upgrade.sh (stable) and their beta.* twins, plus
+                              version.js + beta.version.js (the site's badge JSONP)
+inner/clawee/install.sh.in  ← clawee's inner installer TEMPLATE, repo-committed;
+                              the cut fills its channel names in and ships the
+                              result as install.sh inside each verified clawee
+                              zip. claweed has no committed copy: its inner
+                              installer is rendered at build time from the daemon
+                              repo's install/install.sh.in
+versions/<comp>             ← per-component SemVer source of truth (stable)
+versions/<comp>.beta.stamp  ← the beta line, present only while a cycle is open
+cmd/channel-names/          ← prints core/channel's name table for one channel
+                              and target OS; the single source for every
+                              channel-bound spelling in the shell scripts
+internal/manage/web/templates/public/
+                            ← release.clawee.org's pages, rendered from the
+                              promoted catalog (there is no static index.html
+                              any more)
 tools/                      ← version.sh, build.sh, gen-bootstraps.sh, release.sh,
                               prune-releases.sh, test-e2e.sh, verify-no-env.sh,
-                              test-r2-mirror-fail-closed.sh, test-upgrade-bootstrap.sh
+                              test-stage-fail-closed.sh, test-cut-no-publish.sh,
+                              test-upgrade-bootstrap.sh, test-beta-cut.sh,
+                              test-e2e-twins.sh
+tools/r2-mirror/             ← uploads a dist/<stamp>/ to a bucket. --prefix puts
+                              the channel in the key, --no-manifest withholds
+                              latest.json: the cut uses both, promote uses
+                              neither
+cmd/clawee-release-register/ ← registers the `staged` catalog row (nonce → sign
+                              with the release key → POST). internal/register/
+                              holds the payload, the key reader and the client
+tools/test-cut-no-publish.sh ← proves the cut publishes nothing: a static scan
+                              for publish verbs plus a run of the stage half
+                              under a stubbed PATH that logs every command
 tools/modules/               ← shared bootstrap trust-chain modules (Task 10,
                               2026-08-25): SHARED WITH BURROWEE, spliced into
                               tools/bootstrap.template.sh at generation time by

@@ -1,0 +1,25 @@
+{{define "content"}}
+<h2>{{.Component}} · {{.Channel}}</h2>
+<nav class="tabs">
+  {{range .Channels}}<a href="/manage/releases/{{$.Component}}?channel={{.}}"{{if eq . $.Channel}} aria-current="page"{{end}}>{{.}}</a>{{end}}
+</nav>
+{{if .Versions}}
+<table>
+  <thead><tr><th>stamp</th><th>version</th><th>state</th><th>cut</th><th>promoted</th></tr></thead>
+  <tbody>
+  {{range .Versions}}
+    <tr class="state-{{.State}}" id="row-{{.ID}}">
+      <td class="stamp">{{.Stamp}}{{if .IsCurrent}} <span class="state">current</span>{{end}}</td>
+      <td>{{.Version}}</td>
+      <td><span class="state">{{.State}}</span></td>
+      <td>{{.CreatedAt}}</td>
+      <td>{{if .PromotedAt}}{{.PromotedAt}}{{else}}<span class="dim">—</span>{{end}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="dim">No {{.Channel}} rows for {{.Component}} yet.</p>
+{{end}}
+<p><a href="/manage?channel={{.Channel}}">back</a></p>
+{{end}}

@@ -13,8 +13,8 @@
 #     dash tools/test-checksum-verify.sh        # and this one, always
 #
 # (1) STATIC   — no bootstrap, template or generated, may name --ignore-missing,
-#     and the advice a human READS — site/index.html, the release notes in
-#     tools/release.sh — must verify one file by exact name rather than run
+#     and the advice a human READS — the site's /verify page, now a template in
+#     the manage service — must verify one file by exact name rather than run
 #     `-c` over the whole sums file, which fails on an intact download.
 # (2) BEHAVIOR — the shipped block, extracted verbatim from clawee/install.sh, is
 #     driven against a stub `shasum` that models the old one: good zip verifies,
@@ -50,8 +50,21 @@ printf '  OK: no --ignore-missing\n'
 # so the obvious repair reports success having verified nothing. Both surfaces
 # must select the entry by exact name and shout when there is none, as the
 # installer's own gate does.
+# tools/release.sh USED TO BE IN THIS LIST, because it wrote the GitHub release
+# notes and the recipe was in that heredoc. A cut no longer creates a GitHub
+# Release at all — the notes are written at PROMOTE — so release.sh carries no
+# operator-facing verify advice for this to check, and listing it would only
+# assert that a file it no longer writes still says something.
+#
+# WHEN PROMOTE LANDS, ADD ITS NOTES WRITER TO THIS LIST. The advice is not
+# retired, it moved, and a surface nothing gates is exactly how the download
+# page went on printing the wrong recipe for two months after the READMEs were
+# fixed.
 say "STATIC: operator-facing verify advice selects one file by name, not -c over the sums file"
-for advice in "$REPO_ROOT/site/index.html" "$REPO_ROOT/tools/release.sh"; do
+# site/index.html USED TO BE THE ADVICE. The static page is gone: the site is
+# rendered by the manage service now, so the recipe lives in the template that
+# renders /verify and that is what this gate reads.
+for advice in "$REPO_ROOT/internal/manage/web/templates/public/verify.html"; do
     rel="${advice#"$REPO_ROOT"/}"
     [ -f "$advice" ] || { printf '  (no %s — skipped)\n' "$rel"; continue; }
     # Command-shaped hits only: quote, entity and tag boundaries end the match,

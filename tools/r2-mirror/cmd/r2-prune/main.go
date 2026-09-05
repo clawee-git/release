@@ -28,8 +28,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"clawee-release-r2-mirror/prune"
-	"clawee-release-r2-mirror/r2"
+	"github.com/clawee-git/release/internal/r2"
+	"github.com/clawee-git/release/tools/r2-mirror/prune"
 )
 
 // components is the full set r2-mirror publishes, and so the full set retention
