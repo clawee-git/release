@@ -192,15 +192,29 @@ loopback because the service belongs behind the host's TLS proxy
 clawee-release-manage admin add <name> --data-dir <DATA_DIR>
 clawee-release-manage admin list --data-dir <DATA_DIR>
 
+# remove an account: its sessions and CSRF tokens cascade away with it.
+# There is no re-enrolment path — resetting someone's second factor means
+# removing the account and adding it again.
+clawee-release-manage admin remove <name> --data-dir <DATA_DIR>
+
 # run the service
 clawee-release-manage serve --data-dir <DATA_DIR> --base-url https://<MANAGE_HOST> \
     --r2-account <R2_ACCOUNT> --r2-creds <R2_CREDS> \
     --staging-bucket <STAGING_BUCKET> --public-bucket <PUBLIC_BUCKET> \
     --github-repo <ORG>/<REPO> --github-token-file <GH_TOKEN_FILE>
 
-# the nightly retention net (a timer runs this; --dry-run reports and changes nothing)
+# the nightly retention net (a timer runs this)
 clawee-release-manage retain --data-dir <DATA_DIR> <the same store flags>
+
+# what a real pass WOULD expire. Touches neither the buckets nor the catalog,
+# so it is safe — and useful — before the stores are wired.
+clawee-release-manage retain --data-dir <DATA_DIR> --dry-run
 ```
+
+**The real `retain` pass REFUSES without a public store and a GitHub
+publisher.** Expiring a row is one-way — a later pass only ever sees rows it
+expires itself — so marking rows it cannot prune would orphan their bytes
+permanently. Use `--dry-run` until the stores are wired.
 
 Placeholders only, here and everywhere else in this repo's markdown: the real
 account, buckets, host and token path live in the sealed `release.dp` config
@@ -208,7 +222,8 @@ account, buckets, host and token path live in the sealed `release.dp` config
 
 | Flag | What it names |
 |---|---|
-| `--data-dir` | the catalog (`catalog.db`) and the service secret key (`secret.key`, 0600). **No default, never read from the environment** |
+| `--data-dir` | the catalog (`catalog.db`) and, by default, the service secret key. **No default, never read from the environment** |
+| `--secret-key` | the key that seals enrolled TOTP secrets; defaults to `secret.key` inside `--data-dir`. Created 0600 on first run, and refused at any mode another user can read or through a symlink. It is **not** in the catalog on purpose: a copy of the database alone is inert. Replacing it invalidates every enrolled second factor |
 | `--base-url` | the public URL; also decides whether cookies are marked `Secure` |
 | `--listen` | default `127.0.0.1:8787` — loopback, because the service belongs behind the host's TLS proxy (`ops/nginx/`) |
 | `--r2-account`, `--r2-creds` | the Cloudflare account and the file holding `access_key_id` / `secret_access_key` |

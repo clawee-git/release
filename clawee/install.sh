@@ -128,8 +128,8 @@ DOWNLOADS_BASE="${CLAWEE_DOWNLOADS_BASE-https://downloads.clawee.org}"
 # the https pinning stopped at the first request. Bytes are minisign + sha256
 # verified regardless, so this was never an install-anything hole; it was a
 # "who can read and rewrite the download" one.
-# The
-# CLAWEE_DL_BASE test hook points at a local plain-HTTP server, so when it is
+#
+# The CLAWEE_DL_BASE test hook points at a local plain-HTTP server, so when it is
 # set we drop the TLS-only flags (they'd reject http://). That relaxed mode
 # stays locked to the test base BY CONSTRUCTION (no separate guard check):
 # whenever DL_BASE is set, every dl() fetch uses $BASE=$DL_BASE and the

@@ -40,11 +40,19 @@ type Sealer struct {
 // a Sealer over it.
 //
 // path is a FLAG-STEERED root, so it is validated here, at its own writer
-// (privilege.md): absolute, lexically clean, a regular file, opened with
-// O_NOFOLLOW so no component of the final element is a symlink into somewhere
-// else, and refused outright when its mode lets anyone but the owner read it.
-// A key file the service will happily read at mode 0644 is a key file that has
-// already leaked.
+// (privilege.md).
+//
+// The checks that actually GATE anything are the open and the mode: O_NOFOLLOW
+// refuses a symlinked key file rather than following it somewhere the mode
+// check would not describe, the file must be regular, and any mode letting
+// group or other read it is refused outright — a key the service will happily
+// read at 0644 is a key that has already leaked.
+//
+// The absolute and lexically-clean checks are a belt on top of that, and both
+// CLI paths reach this through filepath.Abs, so neither fires in practice
+// today. They are kept for the caller that does not: a relative or ".."-laden
+// path resolves against a working directory this function does not control,
+// and refusing it is cheaper than reasoning about where it landed.
 func LoadSealer(path string) (*Sealer, error) {
 	if !filepath.IsAbs(path) {
 		return nil, fmt.Errorf("secret key path %q must be absolute", path)
