@@ -310,3 +310,12 @@ func TestTheFilesystemIsASeam(t *testing.T) {
 	wantStatus(t, run(t, d), "data-dir", StatusFail)
 	wantStatus(t, run(t, d), "secret-key", StatusFail)
 }
+
+// R2's S3 endpoint answers an unsigned GET with 400 before it looks at the
+// bucket; that is a refusal, and the doctor must read it as one rather than
+// failing every R2 deployment as "inconclusive".
+func TestDoctorStagingPrivateReads400AsARefusal(t *testing.T) {
+	d := wired(t)
+	d.AnonGet = func(context.Context, string, string) (int, error) { return 400, nil }
+	wantStatus(t, run(t, d), "staging-private", StatusOK)
+}
