@@ -141,8 +141,16 @@ type Deps struct {
 	// checks are testable without a fixture that a umask can change under.
 	Stat     func(string) (fs.FileInfo, error)
 	ReadFile func(string) ([]byte, error)
-	// UID is the account the service runs as, for the ownership checks.
+	// UID is the account the SERVICE runs as — not the account running this
+	// command. The two differ in exactly the cases that matter: under `sudo`
+	// a correctly owned data dir would fail against the invoking uid, and as
+	// root against a root-owned tree the check would pass while saying
+	// nothing. The caller resolves the service user and puts its uid here.
 	UID int
+	// UIDLabel names that account in the report, so a pass says WHICH uid it
+	// compared against. A check whose subject is invisible is a check an
+	// operator cannot tell apart from a vacuous one.
+	UIDLabel string
 }
 
 // Run executes every check IN ORDER and returns the report. The order is the
@@ -157,6 +165,9 @@ func Run(ctx context.Context, d Deps) Report {
 	}
 	if d.ReadFile == nil {
 		d.ReadFile = os.ReadFile
+	}
+	if d.UIDLabel == "" {
+		d.UIDLabel = fmt.Sprintf("uid %d", d.UID)
 	}
 	var r Report
 	for _, check := range []func(context.Context, Deps) Result{
@@ -186,7 +197,7 @@ func skip(name, format string, a ...any) Result {
 	return Result{Name: name, Status: StatusSkipped, Detail: fmt.Sprintf(format, a...)}
 }
 
-// checkCatalog opens the catalog and compares the ledger against the rungs
+// checkCatalog reads the ledger and compares the ledger against the rungs
 // this binary carries. A host whose ledger is SHORTER than the binary is one
 // where a migration has not run; a host whose ledger is LONGER is running an
 // older binary than the catalog was migrated by, which is the direction that
@@ -196,9 +207,13 @@ func checkCatalog(_ context.Context, d Deps) Result {
 	if d.Catalog == nil {
 		return skip(name, "no catalog opener wired")
 	}
+	// The opener behind this seam is READ-ONLY and does not migrate. Through
+	// the ordinary one, the branch below could never fire: Open applies the
+	// pending rungs before returning, so a doctor wired to it fixed the state
+	// it was asked to report and created a catalog for a mistyped data dir.
 	applied, err := d.Catalog()
 	if err != nil {
-		return fail(name, "cannot open the catalog: %v", err)
+		return fail(name, "cannot read the catalog: %v", err)
 	}
 	switch {
 	case len(applied) < d.WantMigrations:
@@ -229,10 +244,10 @@ func checkDataDir(_ context.Context, d Deps) Result {
 	if perm := info.Mode().Perm(); perm&0o077 != 0 {
 		return fail(name, "%s is mode %04o; it holds the catalog, so anything readable by group or other is a copy of every sealed second factor", d.DataDir, perm)
 	}
-	if err := ownedBy(info, d.UID); err != nil {
+	if err := ownedBy(info, d.UID, d.UIDLabel); err != nil {
 		return fail(name, "%s %v", d.DataDir, err)
 	}
-	return ok(name, "%s mode %04o, owned by uid %d", d.DataDir, info.Mode().Perm(), d.UID)
+	return ok(name, "%s mode %04o, owned by %s", d.DataDir, info.Mode().Perm(), d.UIDLabel)
 }
 
 // checkSecretKey is the stricter twin: the key that seals the TOTP secrets is
@@ -257,22 +272,22 @@ func checkSecretKey(_ context.Context, d Deps) Result {
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		return fail(name, "%s is mode %04o, want 0600; the service refuses to start at any mode another user can read", d.SecretKeyPath, perm)
 	}
-	if err := ownedBy(info, d.UID); err != nil {
+	if err := ownedBy(info, d.UID, d.UIDLabel); err != nil {
 		return fail(name, "%s %v", d.SecretKeyPath, err)
 	}
-	return ok(name, "%s mode 0600, owned by uid %d", d.SecretKeyPath, d.UID)
+	return ok(name, "%s mode 0600, owned by %s", d.SecretKeyPath, d.UIDLabel)
 }
 
 // ownedBy compares the file's owner with the account the service runs as.
 // It reports "unknown" rather than failing where the platform does not carry
 // a uid: a check that cannot be made is not a check that failed.
-func ownedBy(info fs.FileInfo, uid int) error {
+func ownedBy(info fs.FileInfo, uid int, label string) error {
 	st, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
 		return nil
 	}
 	if int(st.Uid) != uid {
-		return fmt.Errorf("is owned by uid %d, but the service runs as uid %d", st.Uid, uid)
+		return fmt.Errorf("is owned by uid %d, but the service runs as %s", st.Uid, label)
 	}
 	return nil
 }
