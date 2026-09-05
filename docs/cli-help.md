@@ -76,6 +76,30 @@ Commands:
                   [--dry-run]                    print the plan and copy nothing
                   [--root <dir>]                 the release kit checkout dir holding the generated
                                                  files (required)
+  doctor                                         check this deployment: the catalog, the roots, the
+                                                 signing key, the buckets and the token
+                  [--check-write]                also require that the GitHub token's permissions
+                                                 would allow publishing a release; nothing is
+                                                 created either way
+                  [--data-dir <dir>]             the dir holding the catalog and the service secret
+                                                 key (required)
+                  [--github-repo <owner/repo>]   owner/repo to publish releases to
+                  [--github-token-file <path>]   path to a file holding the GitHub token
+                  [--json]                       print the report as JSON instead of one line per
+                                                 check
+                  [--kit-root <dir>]             a release kit checkout dir on this host; the
+                                                 signing key is compared against its pubkey and
+                                                 bootstraps
+                  [--public-base-url <url>]      the public url the public bucket is served at, e.g.
+                                                 https://downloads.example.org; the download page
+                                                 links into its channel layout
+                  [--public-bucket <bucket>]     the public bucket promote copies into
+                  [--r2-account <account>]       the Cloudflare account id the buckets live in
+                  [--r2-creds <path>]            path to the file holding access_key_id and
+                                                 secret_access_key
+                  [--secret-key <path>]          path to the service secret key; defaults to
+                                                 secret.key inside --data-dir
+                  [--staging-bucket <bucket>]    the PRIVATE staging bucket a cut uploads to
   ops                                            the deployment artefacts — rendered here, installed
                                                  by the operator
     render                                       write the systemd units, the retention timer and
@@ -274,6 +298,39 @@ Commands:
                   [--dry-run]                 print the plan and copy nothing
                   [--root <dir>]              the release kit checkout dir holding the generated
                                               files (required)
+```
+
+### `clawee-release-manage doctor`
+
+check this deployment: the catalog, the roots, the signing key, the buckets and the token
+
+```
+clawee-release-manage doctor — check this deployment: the catalog, the roots, the signing key, the buckets and the token
+
+Usage:
+  clawee-release-manage doctor [flags]
+
+Commands:
+  doctor                                check this deployment: the catalog, the roots, the signing
+                                        key, the buckets and the token
+          [--check-write]               also require that the GitHub token's permissions would allow
+                                        publishing a release; nothing is created either way
+          [--data-dir <dir>]            the dir holding the catalog and the service secret key
+                                        (required)
+          [--github-repo <owner/repo>]  owner/repo to publish releases to
+          [--github-token-file <path>]  path to a file holding the GitHub token
+          [--json]                      print the report as JSON instead of one line per check
+          [--kit-root <dir>]            a release kit checkout dir on this host; the signing key is
+                                        compared against its pubkey and bootstraps
+          [--public-base-url <url>]     the public url the public bucket is served at, e.g.
+                                        https://downloads.example.org; the download page links into
+                                        its channel layout
+          [--public-bucket <bucket>]    the public bucket promote copies into
+          [--r2-account <account>]      the Cloudflare account id the buckets live in
+          [--r2-creds <path>]           path to the file holding access_key_id and secret_access_key
+          [--secret-key <path>]         path to the service secret key; defaults to secret.key
+                                        inside --data-dir
+          [--staging-bucket <bucket>]   the PRIVATE staging bucket a cut uploads to
 ```
 
 ### `clawee-release-manage ops`

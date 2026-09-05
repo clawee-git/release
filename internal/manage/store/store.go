@@ -276,6 +276,12 @@ func (s *Store) applyMigration(m migration) error {
 	return tx.Commit()
 }
 
+// LatestMigration is how many rungs this binary carries. `doctor` compares it
+// against the ledger: a catalog with FEWER rungs has a migration outstanding,
+// and one with MORE was migrated by a newer build than the one running, which
+// is the direction that silently drops what a newer schema fills.
+func LatestMigration() int { return len(migrations) }
+
 // AppliedMigrations returns the ledger, oldest first. The `version` verb
 // prints it, so an operator can tell which rungs a host has run without
 // opening the database.

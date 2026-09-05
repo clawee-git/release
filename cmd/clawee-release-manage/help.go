@@ -89,6 +89,10 @@ var root = &node{
 			summary: "copy the kit's generated static files to the release host — run when the KIT changes, not per cut",
 		},
 		{
+			name:    "doctor",
+			summary: "check this deployment: the catalog, the roots, the signing key, the buckets and the token",
+		},
+		{
 			name:    "ops",
 			summary: "the deployment artefacts — rendered here, installed by the operator",
 			children: []*node{

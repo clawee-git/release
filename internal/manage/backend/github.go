@@ -238,3 +238,49 @@ func redact(rawURL string) string {
 	}
 	return "<unparseable url>"
 }
+
+// RepoInfo is what a health check can learn about the release repository
+// WITHOUT writing to it: that the token reads it, and whether the token's
+// permissions would let it publish a release.
+type RepoInfo struct {
+	FullName string
+	// CanPublishReleases is read from the repo's `permissions` block. A
+	// classic token that can push can publish a release; a fine-grained token
+	// that has been granted only Contents:read reports false here, which is
+	// exactly the configuration that otherwise fails in the MIDDLE of a
+	// promote, after the bytes are copied and before the listing exists.
+	CanPublishReleases bool
+}
+
+// ReadRepo fetches the repository metadata.
+//
+// It is deliberately the only read-only GitHub call in this package, and it
+// creates NOTHING. The obvious way to answer "can this token publish?" is to
+// create a draft release and delete it, and that would be a publication
+// nobody approved followed by a second write to hide the first.
+func (c *GitHubClient) ReadRepo(ctx context.Context) (RepoInfo, error) {
+	resp, raw, err := c.do(ctx, http.MethodGet,
+		fmt.Sprintf("%s/repos/%s/%s", c.APIBase, c.Owner, c.Repo), "", nil)
+	if err != nil {
+		return RepoInfo{}, err
+	}
+	if resp.StatusCode/100 != 2 {
+		return RepoInfo{}, fmt.Errorf("github: read %s/%s: status %d: %s", c.Owner, c.Repo, resp.StatusCode, raw)
+	}
+	var out struct {
+		FullName    string `json:"full_name"`
+		Permissions struct {
+			Admin    bool `json:"admin"`
+			Maintain bool `json:"maintain"`
+			Push     bool `json:"push"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return RepoInfo{}, fmt.Errorf("github: read %s/%s: unreadable response", c.Owner, c.Repo)
+	}
+	if out.FullName == "" {
+		out.FullName = c.Owner + "/" + c.Repo
+	}
+	p := out.Permissions
+	return RepoInfo{FullName: out.FullName, CanPublishReleases: p.Push || p.Maintain || p.Admin}, nil
+}

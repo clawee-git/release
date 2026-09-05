@@ -155,3 +155,55 @@ func TestNilHTTPFallbackIsTheGuardedClient(t *testing.T) {
 		t.Fatalf("the fallback did not apply the guard: %v", err)
 	}
 }
+
+// ReadRepo is the doctor's only GitHub call, and the one thing that must be
+// true of it is that it WRITES NOTHING: the tempting way to answer "can this
+// token publish?" is to create a draft release and delete it, which is a
+// publication nobody approved followed by a second write to hide the first.
+func TestReadRepoReportsPermissionsAndCreatesNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		body       string
+		wantPublic bool
+	}{
+		{"push", `{"full_name":"o/r","permissions":{"push":true}}`, true},
+		{"admin only", `{"full_name":"o/r","permissions":{"admin":true}}`, true},
+		{"read only", `{"full_name":"o/r","permissions":{"pull":true}}`, false},
+		{"no permissions block", `{"full_name":"o/r"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var methods []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				methods = append(methods, r.Method+" "+r.URL.Path)
+				fmt.Fprint(w, tc.body)
+			}))
+			defer srv.Close()
+
+			c := NewGitHubClient("o", "r", "token", &Guard{AllowPrivate: true})
+			c.APIBase = srv.URL
+			info, err := c.ReadRepo(context.Background())
+			if err != nil {
+				t.Fatalf("ReadRepo: %v", err)
+			}
+			if info.FullName != "o/r" || info.CanPublishReleases != tc.wantPublic {
+				t.Errorf("ReadRepo = %+v, want CanPublishReleases=%v", info, tc.wantPublic)
+			}
+			if len(methods) != 1 || !strings.HasPrefix(methods[0], "GET ") {
+				t.Errorf("ReadRepo made %v; it must read and nothing else", methods)
+			}
+		})
+	}
+}
+
+func TestReadRepoFailsOnAnUnreadableRepo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := NewGitHubClient("o", "r", "token", &Guard{AllowPrivate: true})
+	c.APIBase = srv.URL
+	if _, err := c.ReadRepo(context.Background()); err == nil {
+		t.Fatal("ReadRepo accepted a 404")
+	}
+}
