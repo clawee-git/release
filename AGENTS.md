@@ -140,6 +140,7 @@ runtime.
 ```
 clawee-release-manage serve --data-dir <dir> --base-url https://<host> [--listen 127.0.0.1:8787]
 clawee-release-manage admin add|list|remove <name> --data-dir <dir>
+clawee-release-manage publish-static --root <kit> --dest <[user@host:]dir> [--dry-run]
 clawee-release-manage version [--data-dir <dir>]
 clawee-release-manage docs > docs/cli-help.md
 ```
@@ -154,7 +155,8 @@ in the same change as any surface move (`~/.agents/guidelines/cli-help.md`).
 | `internal/manage/totp` | RFC 6238, pinned to the official vectors. Ported from the console's `internal/console/totp` |
 | `internal/manage/auth` | password (argon2id), sealed TOTP secrets, sessions, CSRF, login rate limiting |
 | `internal/manage/intake` | the nonce and register endpoints; verifies against the baked `clawee-release.pub` |
-| `internal/manage/web` | routing split, read API, pages |
+| `internal/manage/web` | routing split, read API, operator pages, and the PUBLIC pages (`internal/manage/web/public.go`) |
+| `internal/staticsurface` | the one list of files the host still serves as static bytes — read by `publish-static` and by the site's link check |
 
 **Ported from, not imported:** the surface follows
 `Burrowee/console/code/main/internal/console/` — `release/channel.go`,
@@ -229,12 +231,61 @@ account, buckets, host and token path live in the sealed `release.dp` config
 | `--r2-account`, `--r2-creds` | the Cloudflare account and the file holding `access_key_id` / `secret_access_key` |
 | `--staging-bucket` | the PRIVATE bucket a cut uploads to. Read, presign, and one write (the invite script) |
 | `--public-bucket` | what installers read. Refused if it equals the staging bucket |
-| `--github-repo`, `--github-token-file` | the release listing; **promote fails closed without them** |
+| `--github-repo`, `--github-token-file` | the release listing; **promote fails closed without them**. The repo half also gives the download page its GitHub release links |
+| `--public-base-url` | the URL the public bucket is served at. The download page links into its channel layout; without it the page renders with no download links rather than with guessed ones |
 
 **Every seam is optional and a missing one refuses with a 503 naming the gap**,
 so the service can be brought up in stages — catalog first, then invites, then
 promote. A *half*-configured store is an error, not a silently disabled one.
 The startup log prints which seams are live.
+
+### The public surface
+
+`release.clawee.org` is this service. `/` (install), `/downloads`, `/verify`,
+`/platforms` and `/docs` are server-rendered from the promoted catalog and the
+channel manifests — there is no static `index.html` any more, and no cut copies
+one. The page a visitor reads and the version an installer resolves therefore
+cannot disagree.
+
+**Every public handler reads the catalog through `CurrentPublic` or
+`PublicHistory`, and neither can return a `staged` row.** That is the property
+the split exists for, enforced by the store's method set rather than by a filter
+each handler remembers: `ListByComponent` returns every state and backs the
+OPERATOR's history page, so a public handler that reached for it and forgot the
+filter would look exactly like working code. A test seeds staged rows on both
+channels and asserts their stamps, versions and artifact names appear nowhere.
+
+The beta install line and the beta download tab carry content only while that
+component has a beta `is_current`. A beta command that outlives its cycle
+installs the last beta forever after it graduated.
+
+What is still static, and why: the bootstraps (`<comp>/install.sh`,
+`<comp>/upgrade.sh` and their `beta.*` twins), the signing pubkey, and the
+per-channel badge JSONP. They embed no version — the bootstraps resolve one at
+install time — and a static file cannot be affected by whether the service is
+up. `internal/staticsurface` is the one list of them; `publish-static` copies
+exactly that list and the site's link check will not let a page link outside it.
+
+### `publish-static`
+
+```sh
+clawee-release-manage publish-static --root <KIT_CHECKOUT> --dest <RELEASE_HOST>:<STATIC_DIR> --dry-run
+clawee-release-manage publish-static --root <KIT_CHECKOUT> --dest <RELEASE_HOST>:<STATIC_DIR>
+```
+
+This was five `scp` lines inside `tools/release.sh`, running on every cut. Both
+facts were wrong: serving a file is a publication and a cut publishes nothing,
+and the files it copied embed no version, so it was a round trip to write bytes
+that had not changed on the one host where an accidental write is visible to
+everyone.
+
+**Run it when the KIT changes** — a new bootstrap template, a regenerated badge,
+a rotated signing key — not per release. It checks the whole set before copying
+anything (a partial publish leaves some bootstraps new and some old, and each
+still verifies its own download, so nothing downstream notices), refuses a kit
+missing a generated file while naming the generator that produces it, and
+`--dry-run` prints the plan. The host and the static dir come from the sealed
+`release.dp` config; nothing about them is in this binary.
 
 ### What promote does, in order
 

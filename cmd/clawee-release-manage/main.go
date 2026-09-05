@@ -32,13 +32,14 @@ type handler func(e *env, n *node, args []string) error
 // the lockstep test can walk, and the test is what makes "every tree node has
 // a handler and every handler is in the tree" a fact rather than a habit.
 var dispatch = map[string]handler{
-	"serve":        runServe,
-	"retain":       runRetain,
-	"admin add":    runAdminAdd,
-	"admin list":   runAdminList,
-	"admin remove": runAdminRemove,
-	"version":      runVersion,
-	"docs":         runDocs,
+	"serve":          runServe,
+	"retain":         runRetain,
+	"publish-static": runPublishStatic,
+	"admin add":      runAdminAdd,
+	"admin list":     runAdminList,
+	"admin remove":   runAdminRemove,
+	"version":        runVersion,
+	"docs":           runDocs,
 }
 
 func main() {

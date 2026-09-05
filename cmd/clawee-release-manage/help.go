@@ -85,6 +85,10 @@ var root = &node{
 			summary: "run retention over every component and channel — the nightly net",
 		},
 		{
+			name:    "publish-static",
+			summary: "copy the kit's generated static files to the release host — run when the KIT changes, not per cut",
+		},
+		{
 			name:    "version",
 			summary: "print the build stamp, and the applied migrations when a data dir is named",
 		},

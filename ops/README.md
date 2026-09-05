@@ -2,13 +2,14 @@
 
 Operator activation notes for the public install channel. **Every step below is
 OPERATOR-ACTIVATION** — none runs as part of CI or the release script; do them
-once by hand on the host, then `tools/release.sh` keeps the static surface in
-sync on each release.
+once by hand on the host. After that the vhost proxies the site's pages to
+`clawee-release-manage`, and `clawee-release-manage publish-static` refreshes
+the static half when the kit changes — no release step writes here.
 
 Host: `nsm.renative.com` (the same box that fronts the console / umbree /
 burree / `release.burrowee.com`). Static surface:
-`/ebs_storage/apps/release.clawee.org/static` (matches `STATIC_DIR` in
-`tools/release.sh`). Edge: Cloudflare, **Full (strict)** mode.
+`/ebs_storage/apps/release.clawee.org/static` (the `--dest` `publish-static` is
+run with). Edge: Cloudflare, **Full (strict)** mode.
 
 The nginx vhost is `ops/nginx/release.clawee.org.conf`.
 
@@ -59,15 +60,33 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ## 5. First publish — OPERATOR
 
-Run the release orchestrator from a workstation; it builds, signs, creates the
-GitHub releases, and `scp`s the static surface (`index.html`,
-`clawee-release.pub`, `<comp>/install.sh`) into `STATIC_DIR`. See
-`tools/release.sh` for required env (`RELEASE_HOST`, `STATIC_DIR`, signing key).
+Two separate acts, and only the second touches this host's disk.
+
+**The static surface** — the bootstraps, their beta twins, the signing pubkey
+and the per-channel badge JSONP — is published from a kit checkout with
+
+```sh
+clawee-release-manage publish-static --root <KIT_CHECKOUT> --dest <RELEASE_HOST>:<STATIC_DIR> --dry-run
+clawee-release-manage publish-static --root <KIT_CHECKOUT> --dest <RELEASE_HOST>:<STATIC_DIR>
+```
+
+Run it **when the kit changes**, not per release: those files embed no version.
+
+**Releases** are cut with `tools/release.sh`, which stages privately and
+registers a `staged` catalog row — it copies nothing here and publishes
+nothing. Going live is `promote`, in the manage service.
+
+The site's pages are no longer files: `/`, `/downloads`, `/verify`,
+`/platforms` and `/docs` are rendered by `clawee-release-manage` from the
+promoted catalog, so this vhost proxies them (see the nginx conf) and there is
+no `index.html` to copy.
 
 ## 6. Smoke test
 
 ```sh
-curl -fsSI https://release.clawee.org/                              # 200, text/html
+curl -fsSI https://release.clawee.org/                              # 200, text/html (proxied)
+curl -fsSI https://release.clawee.org/downloads                     # 200, text/html (proxied)
+curl -fsSI https://release.clawee.org/clawee/beta.install.sh        # 200, text/x-shellscript
 curl -fsSI https://release.clawee.org/clawee/install.sh             # 200, text/x-shellscript
 curl -fsSI https://release.clawee.org/claweed/install.sh            # 200, text/x-shellscript
 curl -fsSI https://release.clawee.org/clawee-release.pub            # 200, text/plain
