@@ -240,7 +240,17 @@ still being handed to every installer.
 current row, and runs at the end of every promote plus from `retain`. Pruning is
 best effort: the catalog is the source of truth and bytes are reconciled to it.
 
-### Known gap
+### Known gaps
+
+**Staging-store retention is not implemented.** The guideline
+(`~/.agents/guidelines/release-management.md` §7) asks for the staging store to
+be kept to the same counts plus every `staged` row; this service prunes the
+public surface and GitHub only. The divergence is deliberate and visible in the
+seam: `backend.Staging` exposes no `Delete`, so promote cannot damage what a
+cut staged no matter how it is wired. Adding staging retention means adding
+that capability, and it should arrive as its own narrower seam with its own
+tests rather than by widening this one. Until then the staging bucket grows
+without bound and is pruned by hand or by a bucket lifecycle rule.
 
 `RecordLoginFailure` **warns and continues** when the catalog write fails, so a
 database that has become unwritable would stop counting login attempts while

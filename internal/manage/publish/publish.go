@@ -25,7 +25,6 @@ import (
 	"log/slog"
 	"net/http"
 	"path"
-	"time"
 
 	"github.com/clawee-git/release/internal/manage/backend"
 	"github.com/clawee-git/release/internal/manage/catalog"
@@ -194,6 +193,17 @@ func Promote(ctx context.Context, d Deps, rowID int64, w io.Writer) (err error) 
 	// EVERY file before the manifest is written. A public prefix carrying
 	// three of four platforms and a manifest naming all four is a release that
 	// is broken for one architecture and looks fine.
+	//
+	// The copy is SERVER-SIDE, which means the bytes it moves are re-read from
+	// staging rather than pushed from the ones just hashed — a window, in
+	// principle, between verifying and copying. It is unreachable here, and by
+	// construction rather than by luck: the staging bucket has exactly one
+	// writer (a cut, uploading a stamp that does not exist yet), the Staging
+	// seam deliberately exposes no Delete, and a stamp is unique per
+	// (component, channel) in the catalog — so nothing in this system can
+	// replace an object under a key that promote is reading. If staging ever
+	// gains a second writer, this becomes a real window and the copy has to
+	// become an upload of the verified bytes we already hold.
 	base := manifest.PublicBase(row.Component, row.Channel, row.Stamp)
 	var zipNames []string
 	copyOrder := append(keysOf(artifacts), row.SumsKey, row.MinisigKey)
@@ -376,5 +386,3 @@ func newestPublicExcept(s *store.Store, component, channel string, exclude int64
 	}
 	return nil, nil
 }
-
-var _ = time.Time{}
