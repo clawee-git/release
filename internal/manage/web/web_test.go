@@ -1089,3 +1089,59 @@ func TestPromoteButtonOnThePageStreamsAReadableLog(t *testing.T) {
 		t.Fatal("the manifest survived the yank of the only public row")
 	}
 }
+
+// The invites listing must honour its {channel} segment. Ignoring it made the
+// beta and stable URLs answer identically, so a reader of the beta page
+// believed they were looking at beta mints.
+func TestInviteListingsAreDisjointPerChannel(t *testing.T) {
+	f := newFixture(t)
+	c := f.client()
+	csrf := f.login(c)
+	f.stageWithArtifacts(catalog.ComponentCLI, catalog.ChannelBeta, betaStamp, f.now)
+	f.stageWithArtifacts(catalog.ComponentCLI, catalog.ChannelStable, stableStamp, f.now)
+
+	mint := func(channel string) string {
+		resp, body := f.postJSON(c, "/api/v1/manage/releases/"+channel+"/install-url",
+			`{"component":"clawee","version":"0.3.0"}`, csrf)
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("mint on %s: HTTP %d %s", channel, resp.StatusCode, body)
+		}
+		var got struct {
+			URL string `json:"url"`
+		}
+		json.Unmarshal([]byte(body), &got)
+		return got.URL
+	}
+	betaURL := mint(catalog.ChannelBeta)
+	stableURL := mint(catalog.ChannelStable)
+	if betaURL == stableURL {
+		t.Fatal("two mints produced one URL")
+	}
+
+	for _, c2 := range []struct{ channel, want, notWant, stamp string }{
+		{catalog.ChannelBeta, betaURL, stableURL, betaStamp},
+		{catalog.ChannelStable, stableURL, betaURL, stableStamp},
+	} {
+		resp, body := f.get(c, "/api/v1/manage/releases/"+c2.channel+"/invites")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: HTTP %d %s", c2.channel, resp.StatusCode, body)
+		}
+		if !strings.Contains(body, c2.want) {
+			t.Errorf("%s listing is missing its own invite:\n%s", c2.channel, body)
+		}
+		if strings.Contains(body, c2.notWant) {
+			t.Errorf("%s listing carries the other channel's invite:\n%s", c2.channel, body)
+		}
+		if !strings.Contains(body, c2.stamp) {
+			t.Errorf("%s listing does not name the row's stamp:\n%s", c2.channel, body)
+		}
+		if !strings.Contains(body, `"channel":"`+c2.channel+`"`) {
+			t.Errorf("%s listing does not echo its channel:\n%s", c2.channel, body)
+		}
+	}
+
+	resp, body := f.get(c, "/api/v1/manage/releases/nightly/invites")
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, "unknown channel") {
+		t.Fatalf("unknown channel: HTTP %d %s", resp.StatusCode, body)
+	}
+}

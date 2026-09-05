@@ -67,9 +67,22 @@ func (s *Server) handleInstallURL(w http.ResponseWriter, r *http.Request, sess *
 	writeJSON(w, http.StatusCreated, res)
 }
 
-// handleInvitesAPI lists the audit trail.
+// handleInvitesAPI lists the audit trail for one channel.
 // GET /api/v1/manage/releases/{channel}/invites
+//
+// The channel segment is HONOURED, not decoration. An invites listing that
+// ignored it would answer the beta and stable URLs identically, which is worse
+// than having one URL: a reader of the beta page would believe they were
+// looking at beta mints. An invite has no channel of its own — it inherits the
+// one of the row it installs — so the filter joins through that row.
 func (s *Server) handleInvitesAPI(w http.ResponseWriter, r *http.Request, _ *store.Session) {
+	channel := r.PathValue("channel")
+	if !catalog.ValidChannel(channel) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("unknown channel %q; the channels are %s", channel, strings.Join(catalog.Channels, ", ")),
+		})
+		return
+	}
 	invites, err := s.Store.ListInvites()
 	if err != nil {
 		s.apiError(w, r, err)
@@ -92,8 +105,21 @@ func (s *Server) handleInvitesAPI(w http.ResponseWriter, r *http.Request, _ *sto
 	}
 	out := make([]row, 0, len(invites))
 	for _, inv := range invites {
+		// The release row is resolved FIRST because it is what decides
+		// membership. An invite whose row has gone is skipped rather than
+		// listed channel-less: a row in a channel listing that belongs to no
+		// channel is a row the reader cannot act on.
+		rel, err := s.Store.Get(inv.RowID)
+		if err != nil {
+			s.Log.Warn("invite listing: release row is gone", "invite", inv.ID, "row", inv.RowID)
+			continue
+		}
+		if rel.Channel != channel {
+			continue
+		}
 		item := row{
 			ID: inv.ID, RowID: inv.RowID, MintedBy: inv.MintedBy,
+			Component: rel.Component, Stamp: rel.Stamp,
 			CreatedAt: inv.CreatedAt.Format(timeFormat),
 			ExpiresAt: inv.ExpiresAt.Format(timeFormat),
 			Live:      inv.Live(now),
@@ -101,12 +127,9 @@ func (s *Server) handleInvitesAPI(w http.ResponseWriter, r *http.Request, _ *sto
 		if item.Live {
 			item.Command = invite.Command(inv.URL)
 		}
-		if rel, err := s.Store.Get(inv.RowID); err == nil {
-			item.Component, item.Stamp = rel.Component, rel.Stamp
-		}
 		out = append(out, item)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"invites": out})
+	writeJSON(w, http.StatusOK, map[string]any{"channel": channel, "invites": out})
 }
 
 // handleMintPage is the page-form twin: POST /manage/releases/{id}/mint.
