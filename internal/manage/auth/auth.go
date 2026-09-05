@@ -145,7 +145,7 @@ type Enrolment struct {
 // gate in Session checks MFAOK.
 func (s *Service) StartLogin(w http.ResponseWriter, r *http.Request, name, password string) (*Enrolment, string, error) {
 	now := s.Now()
-	key := ClientIP(r) + "\x00" + name
+	key := passwordKey(ClientIP(r), name)
 	if !s.limiter.allow(key, now) {
 		return nil, "", ErrRateLimited
 	}
@@ -171,6 +171,8 @@ func (s *Service) StartLogin(w http.ResponseWriter, r *http.Request, name, passw
 		s.limiter.fail(key, now)
 		return nil, "", ErrBadCredentials
 	}
+	// Clears the PASSWORD stage only. The second factor's counter is a
+	// different key and is untouched here — see the comment on totpKey.
 	s.limiter.succeed(key)
 
 	var enrolment *Enrolment
@@ -224,7 +226,7 @@ func (s *Service) CompleteTOTP(r *http.Request, code string) error {
 	if err != nil {
 		return err
 	}
-	key := ClientIP(r) + "\x00" + sess.Admin
+	key := totpKey(ClientIP(r), sess.Admin)
 	if !s.limiter.allow(key, now) {
 		return ErrRateLimited
 	}
@@ -386,6 +388,27 @@ func ClientIP(r *http.Request) string {
 	}
 	return host
 }
+
+// The two login stages have SEPARATE rate-limit keys, and only a correct code
+// clears the second one.
+//
+// Sharing one key was a real hole: a correct password called succeed(), which
+// deletes the failure record, so an attacker who already had the password could
+// run "password → five wrong codes → password again" forever and guess the
+// second factor five at a time, at a cost of one argon2id per five guesses.
+// The password stage cannot be allowed to vouch for the stage it is supposed to
+// be gated by.
+//
+// Consequences of the split, both intended:
+//   - A correct password never resets the code counter. Once an account's code
+//     counter is tripped from an IP, that IP waits out the window even with the
+//     right password.
+//   - The code counter is keyed by the ADMIN the session belongs to, not by the
+//     name typed at the password form, so it cannot be diluted by varying the
+//     spelling of the account name.
+func passwordKey(ip, name string) string { return "pw\x00" + ip + "\x00" + name }
+
+func totpKey(ip, admin string) string { return "totp\x00" + ip + "\x00" + admin }
 
 // randomToken mints a 256-bit URL-safe token for session ids and CSRF tokens.
 func randomToken() (string, error) {
