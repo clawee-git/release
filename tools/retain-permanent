@@ -1,0 +1,11 @@
+# Permanent releases — never pruned from R2 or GitHub.
+#
+# One tag per line, as published: <comp>/<stamp>
+# A bare stamp also matches. Blank lines and `#` comments are ignored.
+#
+# These are kept IN ADDITION to the newest 3 stable / 1 beta. An empty
+# file (the default) pins nothing.
+#
+# Examples:
+#   clawee/v0.1.0.2026.01.01.deadbeef
+#   claweed/v0.2.0.2026.06.01.abcd1234

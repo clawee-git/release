@@ -78,6 +78,22 @@ GO_BIN="${GO_BIN:-go}"
 command -v "${GO_BIN}" >/dev/null 2>&1 || GO_BIN=/opt/homebrew/bin/go
 export GO_BIN
 
+# apply_retention COMP CHANNEL — GitHub first, then R2. Order is load-bearing:
+# prune-releases.sh skips tags not still on downloads.clawee.org.
+# `|| true`: a retention failure must not fail a publish whose artifacts
+# are already public. env -u KEEP so a leftover KEEP=1 cannot shrink the window.
+apply_retention() {
+    local comp="$1" channel="$2"
+    echo
+    echo "→ retention (applying ${channel}):"
+    env -u KEEP CHANNEL="${channel}" COMPONENTS="${comp}" \
+        bash "${REPO_ROOT}/tools/prune-releases.sh" --execute || true
+    if [ -z "${SKIP_R2:-}" ]; then
+        ( cd "${REPO_ROOT}/tools/r2-mirror" && "${GO_BIN}" run ./cmd/r2-prune \
+            --comp "${comp}" --channel "${channel}" --execute ) || true
+    fi
+}
+
 # shellcheck source=tools/vulncheck.sh
 source "${REPO_ROOT}/tools/vulncheck.sh"
 # shellcheck source=tools/module_gate.sh
@@ -858,6 +874,8 @@ NOTES
     git add "versions/${comp}" "${comp}/install.sh" "${comp}/upgrade.sh" "${comp}/version.js"
     git commit -m "[RELEASED: ${comp}] $(date -u +%Y-%m-%d) ${stamp}"
 
+    apply_retention "${comp}" stable
+
     echo "✓ released ${tag}"
     echo "  Release: https://github.com/${RELEASE_REPO}/releases/tag/${tag}"
 }
@@ -996,6 +1014,8 @@ NOTES
     # (4) marker commit.
     git add "versions/${comp}" "${comp}/install.sh" "${comp}/upgrade.sh" "${comp}/version.js"
     git commit -m "[RELEASED: ${comp}] $(date -u +%Y-%m-%d) ${stamp}"
+
+    apply_retention "${comp}" stable
 
     echo "✓ distributed ${tag}"
     echo "  Release: https://github.com/${RELEASE_REPO}/releases/tag/${tag}"

@@ -7,8 +7,9 @@
 //
 // Usage:
 //
-//	r2-prune [--comp clawee|claweed|all] [--keep 10] [--execute]
+//	r2-prune [--comp clawee|claweed|all] [--channel stable|beta] [--keep N] [--execute]
 //	         [--dir ~/.clawee/release] [--account id] [--bucket name] [--creds path]
+//	         [--protect tools/retain-permanent]
 //
 // Dry-run by default: it prints the planned deletions and removes nothing.
 // --execute performs them. Account id and bucket come from <dir>/config.toml
@@ -50,12 +51,20 @@ func run() error {
 	bucket := flag.String("bucket", "", "R2 bucket name (default: r2_bucket from <dir>/config.toml)")
 	creds := flag.String("creds", "", "path to the r2.key TOML (default: <dir>/r2.key)")
 	comp := flag.String("comp", "all", "component: clawee | claweed | all")
-	keep := flag.Int("keep", prune.DefaultKeep, "stamps to retain per component")
+	channel := flag.String("channel", "stable", "release channel: stable | beta")
+	keep := flag.Int("keep", 0, "stamps to retain per component (default: 3 on stable, 1 on beta)")
+	protectPath := flag.String("protect", "", "permanent pin list (default: tools/retain-permanent or ../retain-permanent)")
 	execute := flag.Bool("execute", false, "actually delete (default: dry-run)")
 	flag.Parse()
 
 	if flag.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q (this command takes flags only)", flag.Arg(0))
+	}
+	if *channel != "stable" && *channel != "beta" {
+		return fmt.Errorf("unknown channel %q (want stable | beta)", *channel)
+	}
+	if *keep == 0 {
+		*keep = prune.DefaultKeep(*channel)
 	}
 
 	comps := components
@@ -88,6 +97,19 @@ func run() error {
 		return err
 	}
 
+	if *protectPath == "" {
+		for _, p := range []string{"tools/retain-permanent", "../retain-permanent"} {
+			if st, err := os.Stat(p); err == nil && !st.IsDir() {
+				*protectPath = p
+				break
+			}
+		}
+	}
+	protect, err := prune.LoadProtectFile(*protectPath)
+	if err != nil {
+		return err
+	}
+
 	client := r2.New(*account, *bucket, accessKeyID, secret, nil)
 	ctx := context.Background()
 
@@ -95,11 +117,11 @@ func run() error {
 	if *execute {
 		mode = "EXECUTE"
 	}
-	fmt.Printf("bucket=%s  keep=%d  components=[%s]  mode=%s\n\n", *bucket, *keep, strings.Join(comps, " "), mode)
+	fmt.Printf("bucket=%s  channel=%s  keep=%d  components=[%s]  mode=%s\n\n", *bucket, *channel, *keep, strings.Join(comps, " "), mode)
 
 	total := 0
 	for _, c := range comps {
-		n, err := prune.Prune(ctx, client, c, *keep, *execute, os.Stdout)
+		n, err := prune.PruneProtect(ctx, client, c, *channel, *keep, *execute, os.Stdout, protect)
 		total += n
 		if err != nil {
 			return fmt.Errorf("prune %s: %w", c, err)
@@ -108,7 +130,7 @@ func run() error {
 
 	fmt.Println()
 	if *execute {
-		fmt.Printf("✓ done — removed %d object(s); kept newest %d stamp(s) per component.\n", total, *keep)
+		fmt.Printf("✓ done — removed %d object(s); kept newest %d %s stamp(s) per component.\n", total, *keep, *channel)
 	} else {
 		fmt.Printf("DRY-RUN: %d object(s) would be removed. Re-run with --execute to apply.\n", total)
 	}

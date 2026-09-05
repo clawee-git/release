@@ -7,8 +7,9 @@
 #   tools/prune-releases.sh --execute  # actually delete
 #
 # Env (optional):
-#   KEEP                    newest versions to retain per component (default 10 on
-#                           stable, 1 on beta)
+#   KEEP                    newest versions to retain per component (default 3 on
+#                           stable, 1 on beta). tools/retain-permanent pins are
+#                           kept in addition.
 #   CHANNEL                 stable|beta (default stable)
 #   COMPONENTS              space-separated set (default "clawee claweed")
 #   CLAWEE_RELEASE_REPO     GitHub repo (default clawee-git/release)
@@ -30,6 +31,7 @@ set -euo pipefail
 # grep/sort/sed/tr + gh/ghp resolve.
 export PATH="/usr/bin:/bin:/opt/homebrew/bin:${HOME}/.claude/bin:${PATH}"
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${CLAWEE_RELEASE_REPO:-clawee-git/release}"
 CHANNEL="${CHANNEL:-stable}"
 case "${CHANNEL}" in
@@ -41,9 +43,26 @@ esac
 if [ "${CHANNEL}" = beta ]; then
   KEEP="${KEEP:-1}"
 else
-  KEEP="${KEEP:-10}"
+  KEEP="${KEEP:-3}"
 fi
 COMPONENTS="${COMPONENTS:-clawee claweed}"
+PERMANENT_FILE="${HERE}/retain-permanent"
+
+is_permanent() {
+  local tag="$1" stamp="${1##*/}" line
+  [ -r "${PERMANENT_FILE}" ] || return 1
+  while IFS= read -r line || [ -n "${line}" ]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    case "${line}" in
+      ''|'#'*) continue ;;
+    esac
+    if [ "${line}" = "${tag}" ] || [ "${line}" = "${stamp}" ]; then
+      return 0
+    fi
+  done < "${PERMANENT_FILE}"
+  return 1
+}
 
 # R2 mirror base — before deleting a release, its tag must still be served
 # here or the delete is skipped (see the Safety note above). Empty disables.
@@ -98,9 +117,17 @@ for comp in ${COMPONENTS}; do
     [ -n "${tag}" ] || continue
     # Never delete a release the R2 mirror doesn't serve: GitHub is the only
     # remaining source for it, and pinned installs of the tag would break.
+    if is_permanent "${tag}"; then
+      echo "  keep permanent ${tag}"
+      continue
+    fi
     if [ -n "${DOWNLOADS_BASE}" ]; then
       stamp="${tag#"${comp}"/}"
-      if ! curl -fsSL --max-time 15 -o /dev/null "${DOWNLOADS_BASE}/${comp}/${stamp}/SHA256SUMS.txt" 2>/dev/null; then
+      sums_url="${DOWNLOADS_BASE}/${comp}/${stamp}/SHA256SUMS.txt"
+      if [ "${CHANNEL}" = beta ]; then
+        sums_url="${DOWNLOADS_BASE}/${comp}/beta/${stamp}/SHA256SUMS.txt"
+      fi
+      if ! curl -fsSL --max-time 15 -o /dev/null "${sums_url}" 2>/dev/null; then
         echo "  ! skip ${tag} — not on ${DOWNLOADS_BASE} (deleting would break pinned installs; mirror it first)"
         continue
       fi
