@@ -11,10 +11,10 @@
 #   SRC_DIR       the component's source worktree (cd target)
 #   TARGETOS      GOOS  (darwin | linux)
 #   TARGETARCH    GOARCH (arm64 | amd64)
-#   STAMP         version string baked via -X main.version=…
+#   STAMP         version string baked via -X main.version=… (plus -X main.channel=stable)
 #   OUT_DIR       output directory for the built binaries (created if absent)
 #
-# ldflags: always `-X main.version=$STAMP`.
+# ldflags: always `-X main.version=$STAMP -X main.channel=stable`.
 #
 # darwin signing (only when TARGETOS=darwin AND the build host is darwin):
 #   - default          → ad-hoc (`codesign --sign - --force`); macOS refuses to
@@ -66,7 +66,13 @@ case "${COMP}" in
     *)        echo "✗ unknown COMP: ${COMP}" >&2; exit 2 ;;
 esac
 
-LDFLAGS="-X main.version=${STAMP}"
+# -X main.channel=stable is not optional: the cli's binaries parse it at
+# startup and refuse an empty value, so a build without it cannot start. main
+# is the stable cut origin (dev's channel-aware rework derives this from the
+# source branch and supersedes it on sync-back). A package with no
+# main.channel symbol drops the flag silently. Keep in step with
+# internal/relconfig.Bins.
+LDFLAGS="-X main.version=${STAMP} -X main.channel=stable"
 
 mkdir -p "${OUT_DIR}"
 HOST_OS="$(uname -s)"
