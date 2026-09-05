@@ -214,17 +214,61 @@ func (s *Store) CSRFValid(token, sessionID string, now time.Time) (bool, error) 
 	return now.Before(time.Unix(expires, 0).UTC()), nil
 }
 
+// RecordLoginFailure appends one failed attempt for key.
+func (s *Store) RecordLoginFailure(key string, at time.Time) error {
+	if _, err := s.db.Exec(`INSERT INTO login_failures (key, at) VALUES (?, ?)`, key, at.Unix()); err != nil {
+		return fmt.Errorf("store: record login failure: %w", err)
+	}
+	return nil
+}
+
+// LoginFailures counts the attempts for key at or after since.
+func (s *Store) LoginFailures(key string, since time.Time) (int, error) {
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM login_failures WHERE key = ? AND at > ?`,
+		key, since.Unix()).Scan(&n); err != nil {
+		return 0, fmt.Errorf("store: count login failures: %w", err)
+	}
+	return n, nil
+}
+
+// ClearLoginFailures forgets key's attempts. Only a success on the SAME stage
+// calls this: a correct password must never clear the second factor's counter
+// (see internal/manage/auth).
+func (s *Store) ClearLoginFailures(key string) error {
+	if _, err := s.db.Exec(`DELETE FROM login_failures WHERE key = ?`, key); err != nil {
+		return fmt.Errorf("store: clear login failures: %w", err)
+	}
+	return nil
+}
+
+// loginFailureRetention is how long a failure row is kept. It is far longer
+// than any rate-limit window — the rows are cheap, and keeping them past the
+// window means an operator can still see a brute-force run in the table after
+// the limit has aged out.
+const loginFailureRetention = 30 * 24 * time.Hour
+
 // PurgeExpired drops sessions, CSRF tokens and nonces that are past their
-// expiry. Used nonces are kept: a replay must stay distinguishable from an
-// unknown nonce in the logs.
+// expiry, spent nonces and login-failure rows past their retention.
+//
+// An UNUSED expired nonce goes immediately, but a SPENT one is kept for a
+// month first: a replay must stay distinguishable from an unknown nonce in the
+// logs while anyone might still be reading them. Keeping it forever was the
+// other mistake — the table only ever grew.
 func (s *Store) PurgeExpired(now time.Time) error {
 	ts := now.Unix()
-	for _, q := range []string{
-		`DELETE FROM sessions WHERE expires_at <= ?`,
-		`DELETE FROM csrf WHERE expires_at <= ?`,
-		`DELETE FROM nonces WHERE expires_at <= ? AND used_at = 0`,
+	stale := now.Add(-loginFailureRetention).Unix()
+	for _, q := range []struct {
+		sql string
+		arg int64
+	}{
+		{`DELETE FROM sessions WHERE expires_at <= ?`, ts},
+		{`DELETE FROM csrf WHERE expires_at <= ?`, ts},
+		{`DELETE FROM nonces WHERE expires_at <= ? AND used_at = 0`, ts},
+		{`DELETE FROM nonces WHERE used_at != 0 AND used_at <= ?`, stale},
+		{`DELETE FROM login_failures WHERE at <= ?`, stale},
 	} {
-		if _, err := s.db.Exec(q, ts); err != nil {
+		if _, err := s.db.Exec(q.sql, q.arg); err != nil {
 			return fmt.Errorf("store: purge expired: %w", err)
 		}
 	}

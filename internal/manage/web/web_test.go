@@ -55,7 +55,7 @@ func newFixture(t *testing.T) *fixture {
 	f := &fixture{t: t, st: st, sealer: sealer, now: time.Now().UTC().Truncate(time.Second)}
 	// secure=false: httptest speaks http, and a Secure cookie would never be
 	// sent back — the same reason the real service derives it from --base-url.
-	f.auth = auth.New(st, sealer, false, func() time.Time { return f.now })
+	f.auth = auth.New(st, sealer, false, func() time.Time { return f.now }, slog.New(slog.DiscardHandler))
 	in, err := intake.New(st, "https://release.example.invalid", func() time.Time { return f.now }, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("intake.New: %v", err)

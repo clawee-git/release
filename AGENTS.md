@@ -168,6 +168,15 @@ is validated at its own writer — absolute, clean, `O_NOFOLLOW`, refused at any
 mode another user can read. It seals enrolled TOTP secrets, so a copy of the
 catalog file alone is inert.
 
+Login attempts are rate-limited per **(stage, client IP, account)** and the
+counters live in the catalog (`login_failures`), not in process memory — an
+unpersisted limit is one a restart erases, so a guessing run resumes across a
+deploy. The two stages are counted **separately** and only a correct code
+clears the code counter: a password must never vouch for the factor it is gated
+by. `ClientIP` reads `RemoteAddr` and never `X-Forwarded-For`, so behind the
+host's proxy the limit is effectively per-account; a deployment that needs
+per-client limits must answer the trusted-proxy question explicitly.
+
 Cookies are marked `Secure` iff `--base-url` is https; `--listen` defaults to
 loopback because the service belongs behind the host's TLS proxy
 (`ops/nginx/`).

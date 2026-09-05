@@ -220,6 +220,22 @@ var migrations = []migration{
 			`CREATE INDEX invites_expiry ON invites (expires_at)`,
 		},
 	},
+	{
+		version: 2,
+		name:    "persisted login failure counters",
+		stmts: []string{
+			// The login rate limit lives here rather than in process memory:
+			// unpersisted, a restart cleared every counter, so a brute-force
+			// run could be resumed by whatever made the service restart. One
+			// row per failed attempt, swept by PurgeExpired.
+			`CREATE TABLE login_failures (
+				id      INTEGER PRIMARY KEY AUTOINCREMENT,
+				key     TEXT    NOT NULL,
+				at      INTEGER NOT NULL
+			)`,
+			`CREATE INDEX login_failures_key ON login_failures (key, at)`,
+		},
+	},
 }
 
 // migrate applies every rung above the recorded high water mark.

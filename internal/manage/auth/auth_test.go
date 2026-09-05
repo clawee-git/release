@@ -2,6 +2,7 @@ package auth
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -36,7 +37,7 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatalf("LoadSealer: %v", err)
 	}
 	f := &fixture{st: st, now: base}
-	f.svc = New(st, sealer, false, func() time.Time { return f.now })
+	f.svc = New(st, sealer, false, func() time.Time { return f.now }, slog.New(slog.DiscardHandler))
 	return f
 }
 
@@ -375,5 +376,30 @@ func TestTheTwoLoginStagesAreLimitedSeparately(t *testing.T) {
 	// not locked out of the form that tells them so.
 	if _, _, err := f.login(t, "ada", goodPassword); err != nil {
 		t.Fatalf("the code counter locked the password stage: %v", err)
+	}
+}
+
+// The rate limit survives a restart. Unpersisted, an attacker who could
+// provoke a crash — or who simply waited for a deploy — resumed a guessing run
+// with a clean counter.
+func TestRateLimitSurvivesARestart(t *testing.T) {
+	f := newFixture(t)
+	if err := f.svc.AddAdmin("ada", goodPassword); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < loginMaxFailures; i++ {
+		f.login(t, "ada", "nope-nope-nope")
+	}
+	if _, _, err := f.login(t, "ada", goodPassword); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("before the restart: err = %v, want ErrRateLimited", err)
+	}
+
+	// A brand-new Service over the SAME catalog is what a restart looks like.
+	restarted := New(f.st, f.svc.Sealer, false, func() time.Time { return f.now }, slog.New(slog.DiscardHandler))
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/manage/login", nil)
+	r.RemoteAddr = "192.0.2.10:5555"
+	if _, _, err := restarted.StartLogin(w, r, "ada", goodPassword); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("after the restart: err = %v, want ErrRateLimited — the counter was in memory", err)
 	}
 }

@@ -88,7 +88,7 @@ func runServe(e *env, n *node, args []string) error {
 			"base_url", o.baseURL)
 	}
 
-	authSvc := auth.New(st, sealer, secure, nil)
+	authSvc := auth.New(st, sealer, secure, nil, log)
 	in, err := intake.New(st, o.baseURL, nil, log)
 	if err != nil {
 		return err

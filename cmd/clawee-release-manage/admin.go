@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -190,5 +191,5 @@ func openAuth(dataDir string) (*auth.Service, func(), error) {
 	}
 	// secure=false: this path never sets a cookie. The service's own value is
 	// derived from --base-url's scheme, where it matters.
-	return auth.New(st, sealer, false, nil), func() { st.Close() }, nil
+	return auth.New(st, sealer, false, nil, slog.New(slog.DiscardHandler)), func() { st.Close() }, nil
 }

@@ -166,6 +166,10 @@ func TestPurgeExpiredKeepsUsedNonces(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if err := s.RecordLoginFailure("pw\x00192.0.2.1\x00ada", base); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := s.PurgeExpired(base.Add(time.Hour)); err != nil {
 		t.Fatalf("PurgeExpired: %v", err)
 	}
@@ -179,5 +183,54 @@ func TestPurgeExpiredKeepsUsedNonces(t *testing.T) {
 	}
 	if err := s.ConsumeNonce("spent", base); !errors.Is(err, ErrBadState) {
 		t.Fatalf("spent nonce: err = %v, want ErrBadState (already used), not ErrNotFound", err)
+	}
+
+	// A spent nonce is kept for the retention window and swept after it: the
+	// table only ever grew while they were kept forever.
+	if err := s.PurgeExpired(base.Add(loginFailureRetention + time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ConsumeNonce("spent", base); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a spent nonce survived its retention window: err = %v", err)
+	}
+}
+
+func TestLoginFailureCounters(t *testing.T) {
+	s := open(t)
+	const key = "totp\x00192.0.2.1\x00ada"
+	for i := 0; i < 3; i++ {
+		if err := s.RecordLoginFailure(key, base.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := s.LoginFailures(key, base.Add(-time.Hour))
+	if err != nil || n != 3 {
+		t.Fatalf("LoginFailures = %d, %v; want 3", n, err)
+	}
+	// The window is what ages attempts out, not a sweep: counting from a later
+	// instant must forget the older rows even before PurgeExpired runs.
+	if n, _ = s.LoginFailures(key, base.Add(time.Minute)); n != 1 {
+		t.Fatalf("windowed count = %d, want 1", n)
+	}
+	// Another key is untouched.
+	if n, _ = s.LoginFailures("pw\x00192.0.2.1\x00ada", base.Add(-time.Hour)); n != 0 {
+		t.Fatalf("a different stage's key counted %d attempts", n)
+	}
+	if err := s.ClearLoginFailures(key); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ = s.LoginFailures(key, base.Add(-time.Hour)); n != 0 {
+		t.Fatalf("after clearing: %d", n)
+	}
+
+	// Rows past the retention window are swept.
+	if err := s.RecordLoginFailure(key, base); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PurgeExpired(base.Add(loginFailureRetention + time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ = s.LoginFailures(key, base.Add(-time.Hour)); n != 0 {
+		t.Fatalf("a stale failure row survived the purge: %d", n)
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -66,16 +67,22 @@ type Service struct {
 	// scheme rather than hard-coded: a Secure cookie is never sent over the
 	// http loopback a test or a first local run uses, so hard-coding true
 	// makes the service unusable exactly where it is first tried.
-	Secure  bool
-	limiter *limiter
+	Secure bool
+	// Log carries the rate limiter's warnings. A limiter that stopped counting
+	// silently would be no limiter at all.
+	Log *slog.Logger
 }
 
-// New builds the service. now may be nil, meaning time.Now.
-func New(st *store.Store, sealer *Sealer, secure bool, now func() time.Time) *Service {
+// New builds the service. now may be nil, meaning time.Now; log may be nil,
+// meaning the default logger.
+func New(st *store.Store, sealer *Sealer, secure bool, now func() time.Time, log *slog.Logger) *Service {
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{Store: st, Sealer: sealer, Now: now, Secure: secure, limiter: newLimiter()}
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Service{Store: st, Sealer: sealer, Now: now, Secure: secure, Log: log}
 }
 
 // AddAdmin provisions an account. It is the CLI's entry point; there is no
@@ -146,7 +153,7 @@ type Enrolment struct {
 func (s *Service) StartLogin(w http.ResponseWriter, r *http.Request, name, password string) (*Enrolment, string, error) {
 	now := s.Now()
 	key := passwordKey(ClientIP(r), name)
-	if !s.limiter.allow(key, now) {
+	if !s.allow(key, now) {
 		return nil, "", ErrRateLimited
 	}
 
@@ -158,7 +165,7 @@ func (s *Service) StartLogin(w http.ResponseWriter, r *http.Request, name, passw
 			// milliseconds argon2id costs — a timing oracle that enumerates
 			// the admin list.
 			_, _ = HashPassword("unknown-account-timing-equaliser")
-			s.limiter.fail(key, now)
+			s.fail(key, now)
 			return nil, "", ErrBadCredentials
 		}
 		return nil, "", err
@@ -168,12 +175,12 @@ func (s *Service) StartLogin(w http.ResponseWriter, r *http.Request, name, passw
 		return nil, "", err
 	}
 	if !ok {
-		s.limiter.fail(key, now)
+		s.fail(key, now)
 		return nil, "", ErrBadCredentials
 	}
 	// Clears the PASSWORD stage only. The second factor's counter is a
 	// different key and is untouched here — see the comment on totpKey.
-	s.limiter.succeed(key)
+	s.succeed(key)
 
 	var enrolment *Enrolment
 	if !admin.Enrolled() {
@@ -227,7 +234,7 @@ func (s *Service) CompleteTOTP(r *http.Request, code string) error {
 		return err
 	}
 	key := totpKey(ClientIP(r), sess.Admin)
-	if !s.limiter.allow(key, now) {
+	if !s.allow(key, now) {
 		return ErrRateLimited
 	}
 	admin, err := s.Store.Admin(sess.Admin)
@@ -243,7 +250,7 @@ func (s *Service) CompleteTOTP(r *http.Request, code string) error {
 	}
 	step, ok := totp.Verify(string(secret), strings.TrimSpace(code), now, admin.TOTPLastStep)
 	if !ok {
-		s.limiter.fail(key, now)
+		s.fail(key, now)
 		return ErrBadCode
 	}
 	// Advance the watermark BEFORE marking the session, so a crash between the
@@ -251,7 +258,7 @@ func (s *Service) CompleteTOTP(r *http.Request, code string) error {
 	if err := s.Store.SetTOTPStep(sess.Admin, step); err != nil {
 		return err
 	}
-	s.limiter.succeed(key)
+	s.succeed(key)
 	return s.Store.MarkSessionMFA(sess.ID)
 }
 
