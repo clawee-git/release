@@ -20,8 +20,8 @@ import (
 	"strings"
 
 	"github.com/clawee-git/release/internal/manage/catalog"
-	"github.com/clawee-git/release/internal/manage/store"
 	"github.com/clawee-git/release/internal/manage/intake"
+	"github.com/clawee-git/release/internal/manage/store"
 )
 
 // ReleaseNotes renders the body of the GitHub release for row.

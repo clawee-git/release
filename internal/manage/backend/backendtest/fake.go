@@ -206,14 +206,14 @@ func (p *Public) List(ctx context.Context, prefix string) ([]string, error) {
 // GitHub is a fake release publisher.
 type GitHub struct {
 	*Recorder
-	Releases map[string]backend.Release
-	Assets   map[string][]string
-	Bodies   map[string]string
+	Releases   map[string]backend.Release
+	Assets     map[string][]string
+	Bodies     map[string]string
 	Prerelease map[string]bool
 	// FailCreate / FailUpload / FailDelete fail for a tag or asset name
 	// containing the substring.
 	FailCreate, FailUpload, FailDelete string
-	nextID                            int64
+	nextID                             int64
 }
 
 // NewGitHub builds a fake publisher sharing rec.

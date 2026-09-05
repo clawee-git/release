@@ -57,11 +57,11 @@ const (
 type latestManifest = manifest.Latest
 
 type config struct {
-	account  string
-	bucket   string
-	stageDir string
-	comp     string
-	version  string
+	account    string
+	bucket     string
+	stageDir   string
+	comp       string
+	version    string
 	stamp      string
 	prefix     string
 	noManifest bool

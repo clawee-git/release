@@ -175,8 +175,8 @@ func TestRefusalsCarryTheLevelAbovePageOnStderr(t *testing.T) {
 			wantPage: toolName + " admin <verb> [flags]", wantNotIn: "print the whole command surface",
 		},
 		{
-			name: "stray positional → the leaf's page",
-			args: []string{"admin", "list", "--data-dir", "/tmp/x", "extra"},
+			name:     "stray positional → the leaf's page",
+			args:     []string{"admin", "list", "--data-dir", "/tmp/x", "extra"},
 			wantIn:   `unexpected argument "extra"`,
 			wantPage: toolName + " admin list",
 		},

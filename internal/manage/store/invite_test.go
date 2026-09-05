@@ -22,7 +22,7 @@ func TestInviteRecordAndLiveness(t *testing.T) {
 		t.Fatalf("ListInvites = %v, %v", list, err)
 	}
 	inv := list[0]
-	if !inv.Live(base.Add(47*time.Hour)) {
+	if !inv.Live(base.Add(47 * time.Hour)) {
 		t.Fatal("a link 47h into its 48h window reports dead")
 	}
 	if inv.Live(base.Add(48 * time.Hour)) {

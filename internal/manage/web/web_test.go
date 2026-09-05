@@ -32,10 +32,10 @@ const (
 )
 
 type fixture struct {
-	t      *testing.T
-	st     *store.Store
-	auth   *auth.Service
-	sealer *auth.Sealer
+	t       *testing.T
+	st      *store.Store
+	auth    *auth.Service
+	sealer  *auth.Sealer
 	server  *httptest.Server
 	now     time.Time
 	rec     *backendtest.Recorder

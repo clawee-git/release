@@ -183,7 +183,6 @@ func (l *lineWriter) flush() {
 	}
 }
 
-
 // retain is the retention pass promote runs at the end. A method rather than a
 // closure so the "no public store" case is answered in exactly one place.
 func (s *Server) retain(ctx context.Context, component, channel string) []publish.Event {
