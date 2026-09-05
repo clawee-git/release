@@ -397,6 +397,45 @@ func TestRenderedScriptRejectsArguments(t *testing.T) {
 	}
 }
 
+// renderWithPubkey renders the invite script for the fixture's row against an
+// arbitrary public key. Mint always bakes the RELEASE key, which no test can
+// hold the private half of; this goes through the same pure renderer with the
+// test-only key so the verification chain can be exercised for real.
+func (f *fixture) renderWithPubkey(t *testing.T, pubkey string) string {
+	t.Helper()
+	var artifacts []register.Artifact
+	if err := json.Unmarshal([]byte(f.row.ArtifactsJSON), &artifacts); err != nil {
+		t.Fatal(err)
+	}
+	d := scriptData{
+		Component: f.row.Component, Version: f.row.Version,
+		ExpiresAt: base.Add(TTL).Format("2006-01-02 15:04 UTC"), Pubkey: pubkey,
+	}
+	for _, a := range artifacts {
+		url, err := f.staging.Presign(a.Key, TTL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.Platforms = append(d.Platforms, platformScript{
+			Platform: strings.ReplaceAll(a.Platform, "/", "-"),
+			File:     filepath.Base(a.Key),
+			URL:      url,
+		})
+	}
+	var err error
+	if d.SumsURL, err = f.staging.Presign(f.row.SumsKey, TTL); err != nil {
+		t.Fatal(err)
+	}
+	if d.MinisigURL, err = f.staging.Presign(f.row.MinisigKey, TTL); err != nil {
+		t.Fatal(err)
+	}
+	script, err := renderScript(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return script
+}
+
 func scriptKeyOf(t *testing.T, f *fixture) string {
 	t.Helper()
 	for _, c := range f.rec.Calls() {
