@@ -35,25 +35,39 @@
 #     --apple         Developer-ID signing + notarization only — the conscious
 #                     sign-without-CVE-gate exception
 #     --vulncheck     the CVE gate only
-#     --dry-run       build, sign and checksum into dist/ and stop: no tag, no
-#                     GitHub Release, no upload, no marker commit, and the
-#                     version bump is reverted — the launcher also skips its
-#                     push path entirely
+#     --dry-run       build, sign and checksum into dist/ and stop: no upload,
+#                     no catalog row, no marker commit, and the version bump is
+#                     reverted — the launcher also skips its push path entirely.
+#                     It still PRINTS the staging keys and the register payload,
+#                     so a dry-run shows exactly what a real cut would record.
+#     --channel stable|beta
+#                     the channel the catalog row is filed under. Defaults to
+#                     beta when the component source is on a beta branch and
+#                     stable otherwise; --channel stable from a beta branch is
+#                     refused rather than filing beta bytes as stable.
 #     --bump-minor    move the minor instead of the default patch
 #     --bump-major    move the major
-#     --no-r2         skip the downloads.clawee.org R2 mirror (it is also
-#                     auto-skipped when unconfigured; GitHub Releases stay the
-#                     primary, authoritative channel)
+#
+# --no-r2 IS GONE. It existed when R2 was a mirror behind GitHub Releases and
+# skipping it still left a reachable release. A cut now publishes nowhere
+# public: the upload to the private staging bucket is the only thing it
+# produces, so skipping it would mean cutting nothing at all. An unconfigured
+# staging bucket or manage URL is a refusal, not a skip.
 #
 # Leaving FLAGS empty is not "defaults", it is a trap. With neither --apple nor
 # --vulncheck set, release.sh asks whether to cut a public release — and stdin IS
 # a terminal in an opened .command, so an unattended run blocks on a prompt
 # nobody is watching until someone closes the window. Answer it with anything but
-# y, or let an empty answer through, and the cut publishes an AD-HOC signed,
-# un-CVE-gated build to the PUBLIC channel, which is the worse of the two
-# outcomes. Say what you want.
+# y, or let an empty answer through, and the cut STAGES an AD-HOC signed,
+# un-CVE-gated build — and because promote is a copy, not a rebuild, that is the
+# build an operator would go live with. Say what you want.
 #
-# Republishing an already-staged dist/<stamp>/ is NOT a launcher path:
+# A CUT NO LONGER PUBLISHES. It uploads to the private staging bucket and
+# registers a `staged` catalog row; the release tag, the GitHub Release, the
+# public bucket and latest.json all belong to promote, an operator act in the
+# manage service. The marker commit therefore reads "… (staged)".
+#
+# Re-staging an already-built dist/<stamp>/ is NOT a launcher path:
 #
 #     bash tools/release.sh --distribute-only <comp> <stamp>
 #

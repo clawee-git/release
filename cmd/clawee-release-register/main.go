@@ -50,7 +50,7 @@ func run() error {
 
 	for _, f := range []struct{ name, val string }{
 		{"comp", *comp}, {"channel", *channel}, {"version", *version},
-		{"stamp", *stamp}, {"stage-dir", *stageDir}, {"key", *keyPath},
+		{"stamp", *stamp}, {"stage-dir", *stageDir},
 	} {
 		if f.val == "" {
 			return fmt.Errorf("missing required flag --%s", f.name)
@@ -85,8 +85,15 @@ func run() error {
 		return nil
 	}
 
+	// --key and --manage-url are required only past the dry-run: a dry-run
+	// exists to be runnable without the sealed config and without decrypting
+	// the signing key, which is the whole point of being able to inspect the
+	// payload before a cut.
 	if *manageURL == "" {
 		return fmt.Errorf("missing required flag --manage-url")
+	}
+	if *keyPath == "" {
+		return fmt.Errorf("missing required flag --key")
 	}
 	key, err := register.LoadSigningKey(*keyPath)
 	if err != nil {

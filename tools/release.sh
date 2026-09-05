@@ -2,13 +2,19 @@
 # release.sh — cut a signed Clawee component release (clawee | claweed).
 #
 # Usage:
-#   bash tools/release.sh <clawee|claweed|all> [--apple] [--vulncheck|--public] [--dry-run] [--bump-minor|--bump-major]
-#   bash tools/release.sh --distribute-only <clawee|claweed> <stamp> [--dry-run]
+#   bash tools/release.sh <clawee|claweed|all> [--channel stable|beta] [--apple] [--vulncheck|--public] [--dry-run] [--bump-minor|--bump-major]
+#   bash tools/release.sh --distribute-only <clawee|claweed> <stamp> [--channel stable|beta] [--dry-run]
 #
-# --distribute-only publishes an already-staged dist/<stamp>/ (produced by
-#   `rkit build`, which now owns steps 1-4 below: stamp/build/sum/sign) WITHOUT
+# A CUT DOES NOT PUBLISH. It uploads to the PRIVATE staging bucket and records
+#   a `staged` catalog row with the manage service; going live is a separate,
+#   operator-only act (promote). There is no release tag, no GitHub Release, no
+#   public-bucket write, no latest.json and no scp anywhere in this script.
+#   See ~/.agents/guidelines/release-management.md.
+#
+# --distribute-only stages an already-built dist/<stamp>/ (produced by
+#   `rkit build`, which owns steps 1-4 below: stamp/build/sum/sign) WITHOUT
 #   building, signing, notarizing, or bumping a version — it runs only the
-#   publish half (steps 5-7). See distribute_only() further down.
+#   stage half (steps 5-7). See distribute_only() further down.
 #
 # --apple: Developer ID sign the darwin binaries (modernech-sign, Modernech LLC)
 #   + notarize each darwin zip before publishing. WITHOUT it darwin bins are
@@ -34,13 +40,22 @@
 #   3. Writes a sorted SHA256SUMS.txt over the four zips.
 #   4. Signs SHA256SUMS.txt with minisign (real key from release.dp, or the TEST
 #      key on --dry-run).
-#   5. (non-dry-run) git-tags <comp>/<stamp> + publishes a GitHub Release.
-#   6. (non-dry-run) regenerates the bootstraps and scp's the static surface to
-#      the release host.
-#   7. (non-dry-run) records a [RELEASED: <comp>] marker commit.
+#   5. (non-dry-run) uploads the artifacts to the PRIVATE staging bucket under
+#      <comp>/<channel>/<stamp>/ — no manifest, so nothing public changes.
+#   6. (non-dry-run) registers the `staged` catalog row with the manage service
+#      (nonce -> sign with the release key -> POST) and reports the row's URL.
+#   7. (non-dry-run) regenerates the bootstraps (they embed no version) and
+#      records a [RELEASED: <comp>] … (staged) marker commit.
 #
-# On --dry-run only steps 1-4 run, and the version bump is REVERTED — the tree is
-# left exactly as it was, just with throwaway artifacts under dist/<stamp>/.
+# On --dry-run steps 1-4 run for real, steps 5-6 run in THEIR dry-run modes
+# (printing the staging keys and the register payload, touching nothing), and
+# the version bump is REVERTED — the tree is left exactly as it was, just with
+# throwaway artifacts under dist/<stamp>/.
+#
+# --channel stable|beta selects the staging prefix and the catalog row's
+#   channel. It defaults to beta when the component source is on a beta branch
+#   and stable otherwise; asking for --channel stable from a beta branch is
+#   refused rather than quietly mislabelling the row.
 #
 # claweed inner installer: rendered at build time from the daemon repo's CANONICAL
 # install/install.sh.in (the sudo-minimal installer), substituting the stamp. The
@@ -48,26 +63,24 @@
 # template, version-stamped, so the served installer can't drift from source.
 #
 # Env (all optional — sane defaults below):
-#   RELEASE_HOST           ssh alias for the nginx static host (default nsm.renative.com)
-#   STATIC_DIR             absolute static dir on that host
 #   DP_DIR                 path to the release.dp secrets repo
 #   SIGN_KEY               minisign secret key file (overrides the default resolution)
 #   AGE_IDENTITY           age identity file used to decrypt the real signing key
 #                          (default ~/.age/clawee-release.txt — created at activation)
 #   CLAWEE_SRC_CLAWEE      clawee component source worktree (default: cli main worktree)
 #   CLAWEE_SRC_CLAWEED     claweed component source worktree (default: daemon main worktree)
-#   CLAWEE_RELEASE_REPO    GitHub repo for releases (default clawee-git/release)
 #   CLAWEE_RELEASE_YES     skip the interactive minor/major bump confirm
-#   CLAWEE_R2_CONFIG       path to the R2 config TOML (r2_account_id/r2_bucket)
-#                          (default ~/.clawee/release/config.toml)
-#   CLAWEE_R2_BUCKET       override the R2 mirror bucket (default: r2_bucket from
-#                          the R2 config, else clawee-downloads)
+#   CLAWEE_R2_CONFIG       path to the R2 config TOML (r2_account_id, staging_bucket,
+#                          manage_url) (default ~/.clawee/release/config.toml)
+#   CLAWEE_R2_STAGING_BUCKET  override the PRIVATE staging bucket (default:
+#                          staging_bucket from the R2 config). There is no
+#                          fallback default: staging into a guessed bucket is
+#                          either a failure or a public write.
+#   CLAWEE_MANAGE_URL      override the manage service base URL (default:
+#                          manage_url from the R2 config)
 #   CLAWEE_R2_CREDS        path to the R2 S3 creds TOML
 #                          (default ~/.clawee/release/r2.key — clawee's own copy of
 #                          the token whose content is shared with burrowee)
-#   CLAWEE_SKIP_R2=1 / --no-r2  skip the downloads.clawee.org R2 mirror entirely
-#                          (the R2 mirror is also auto-skipped when unconfigured —
-#                          GitHub Releases stay the primary, authoritative channel)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -93,7 +106,7 @@ if [ "${1:-}" = "--distribute-only" ]; then
     shift
     DIST_COMP="${1:-}"; DIST_STAMP="${2:-}"
     [ -n "${DIST_COMP}" ] && [ -n "${DIST_STAMP}" ] \
-        || { echo "✗ usage: release.sh --distribute-only <clawee|claweed> <stamp> [--dry-run]" >&2; exit 2; }
+        || { echo "✗ usage: release.sh --distribute-only <clawee|claweed> <stamp> [--channel stable|beta] [--dry-run]" >&2; exit 2; }
     shift 2
 fi
 
@@ -187,8 +200,21 @@ load_apple_account() {
 
 APPLE_SIGN=""
 VULNCHECK=""
-SKIP_R2="${CLAWEE_SKIP_R2:-}"
+# CHANNEL empty means "derive from the component source branch" (resolve_channel
+# below). An explicit --channel is a claim about what is being cut, which is why
+# an explicit `stable` from a beta branch is refused rather than honoured.
+CHANNEL=""
+CHANNEL_EXPLICIT=0
+_want_channel=0
 for arg in "$@"; do
+    if [ "${_want_channel}" = 1 ]; then
+        CHANNEL="${arg}"; CHANNEL_EXPLICIT=1; _want_channel=0
+        case "${CHANNEL}" in
+            stable|beta) ;;
+            *) echo "✗ --channel must be stable or beta (got '${CHANNEL}')" >&2; exit 2 ;;
+        esac
+        continue
+    fi
     # --distribute-only publishes an already-staged dist/ — it takes no
     # build/sign/notarize/bump flags (those already ran in `rkit build`).
     # Accepting them would silently set unused vars and imply behavior
@@ -196,8 +222,9 @@ for arg in "$@"; do
     if [ "${DISTRIBUTE_ONLY}" = 1 ]; then
         case "${arg}" in
             --dry-run) DRY_RUN=1 ;;
+            --channel) _want_channel=1 ;;
             -h|--help) awk 'NR==1{next} !/^#/{exit} {sub(/^# ?/,""); print}' "$0"; exit 0 ;;
-            *) echo "✗ --distribute-only accepts only --dry-run (got '${arg}')" >&2; exit 2 ;;
+            *) echo "✗ --distribute-only accepts only --channel and --dry-run (got '${arg}')" >&2; exit 2 ;;
         esac
         continue
     fi
@@ -210,15 +237,16 @@ for arg in "$@"; do
         --dry-run)            DRY_RUN=1 ;;
         --bump-minor)         BUMP_KIND="minor" ;;
         --bump-major)         BUMP_KIND="major" ;;
-        --no-r2)              SKIP_R2=1 ;;
+        --channel)            _want_channel=1 ;;
         # Print the whole header comment (line 2 → the first non-# line), so
         # added doc lines are never silently truncated by a hardcoded range.
         -h|--help)            awk 'NR==1{next} !/^#/{exit} {sub(/^# ?/,""); print}' "$0"; exit 0 ;;
         *) echo "✗ unknown argument: ${arg}" >&2; exit 2 ;;
     esac
 done
+[ "${_want_channel}" = 0 ] || { echo "✗ --channel needs a value (stable | beta)" >&2; exit 2; }
 if [ "${DISTRIBUTE_ONLY}" != 1 ]; then
-    [ -n "${WHAT}" ] || { echo "✗ usage: release.sh <clawee|claweed|all> [--apple] [--vulncheck|--public] [--dry-run] [--no-r2] [--bump-minor|--bump-major]" >&2; exit 2; }
+    [ -n "${WHAT}" ] || { echo "✗ usage: release.sh <clawee|claweed|all> [--channel stable|beta] [--apple] [--vulncheck|--public] [--dry-run] [--bump-minor|--bump-major]" >&2; exit 2; }
     # When neither signing nor the CVE gate was requested and we're interactive,
     # offer the --public path (both). Non-TTY or a "no" answer → dev/testing.
     # --distribute-only never signs or CVE-gates (that already ran upstream in
@@ -235,46 +263,27 @@ export APPLE_SIGN VULNCHECK
 [ -n "${APPLE_SIGN}" ] && load_apple_account
 
 # ---- config / defaults ------------------------------------------------------
-RELEASE_HOST="${RELEASE_HOST:-nsm.renative.com}"
-STATIC_DIR="${STATIC_DIR:-/ebs_storage/apps/release.clawee.org/static}"
-RELEASE_REPO="${CLAWEE_RELEASE_REPO:-clawee-git/release}"
-
-# ---- Cloudflare edge purge of version.js -------------------------------------
-# The clawee.org version badge reads <comp>/version.js via JSONP, but the
-# clawee.org CF zone caches .js (4h browser TTL) — without a purge the badge
-# can show the previous release for hours. Best-effort: needs a CACHE-PURGE-
-# capable CF token on the release host (the certbot DNS token at
-# cloudflare-clawee.ini CANNOT purge — scope is DNS-only). Silently skipped
-# when the token file is absent; a failed purge only warns (the badge
-# self-heals when the TTL lapses).
-CF_ZONE_CLAWEE_ORG="${CF_ZONE_CLAWEE_ORG:-34317b4a011c53b64f3a1fe45a651fee}"
-CF_PURGE_TOKEN_FILE="${CF_PURGE_TOKEN_FILE:-/etc/cloud-certs/cloudflare-clawee-cache.ini}"
-purge_cf_version_js() {
-    local comp="$1"
-    # shellcheck disable=SC2029  # comp/zone/file are local, controlled values — client-side expansion into the remote command is intended.
-    ssh "${RELEASE_HOST}" "
-        [ -f '${CF_PURGE_TOKEN_FILE}' ] || exit 0
-        TOKEN=\$(grep -oE '[A-Za-z0-9_-]{30,}' '${CF_PURGE_TOKEN_FILE}' | head -1)
-        [ -n \"\$TOKEN\" ] || exit 0
-        curl -s -X POST -H \"Authorization: Bearer \$TOKEN\" -H 'Content-Type: application/json' \
-            'https://api.cloudflare.com/client/v4/zones/${CF_ZONE_CLAWEE_ORG}/purge_cache' \
-            --data '{\"files\":[\"https://release.clawee.org/${comp}/version.js\"]}' \
-            | grep -q '\"success\":true' \
-            && echo '✓ CF edge purge: ${comp}/version.js' \
-            || echo '⚠ CF purge failed (token lacks Cache Purge scope?) — badge follows the 4h TTL'
-    " >&2 || true
-}
+# RELEASE_HOST, STATIC_DIR and RELEASE_REPO are deliberately GONE. The cut
+# touches neither the static surface nor GitHub: regenerating version.js,
+# scp'ing install.sh and creating the release are go-live acts, and they moved
+# to promote. Nothing here may name a host or a GitHub repo.
 DP_DIR="${DP_DIR:-${REPO_ROOT}/../../../release.dp/code/main}"
 AGE_KEY_AGE="${DP_DIR}/clawee-release.key.age"
 AGE_IDENTITY="${AGE_IDENTITY:-${HOME}/.age/clawee-release.txt}"
 
-# ---- R2 mirror config (public downloads.clawee.org) -------------------------
-# R2 is a MIRROR of the GitHub release — GitHub is the primary channel. clawee's
-# R2 config lives OUTSIDE any repo at ~/.clawee/release/ (mirroring burrowee's
-# ~/.burrowee/release/): config.toml holds the non-secret r2_account_id/r2_bucket,
-# r2.key holds the S3 access_key_id/secret_access_key (clawee's own copy of the
-# token whose CONTENT is shared with burrowee — rotate both copies together). Any
-# missing piece → the mirror is SKIPPED, never fatal.
+# ---- staging store + manage service config ----------------------------------
+# clawee's release config lives OUTSIDE any repo at ~/.clawee/release/ (mirroring
+# burrowee's ~/.burrowee/release/): config.toml holds the non-secret
+# r2_account_id, the PRIVATE staging_bucket and the manage_url; r2.key holds the
+# S3 access_key_id/secret_access_key (clawee's own copy of the token whose
+# CONTENT is shared with burrowee — rotate both copies together).
+#
+# A MISSING PIECE IS NOW FATAL, which is the opposite of the old mirror posture
+# and deliberately so: the staging upload is the cut's ONLY publication. Under
+# the old shape R2 was a mirror behind GitHub Releases, so an unconfigured box
+# could skip it and still have produced a reachable release. There is no such
+# fallback any more — a skipped upload is a cut that produced nothing, and a
+# skipped registration is bytes nobody can find.
 R2_CONFIG="${CLAWEE_R2_CONFIG:-${HOME}/.clawee/release/config.toml}"
 R2_CREDS="${CLAWEE_R2_CREDS:-${HOME}/.clawee/release/r2.key}"
 
@@ -318,8 +327,6 @@ bins_for() {
         claweed)  printf '%s' "claweed claweed-updater" ;;
     esac
 }
-
-GHP="$(command -v ghp 2>/dev/null || echo "${HOME}/bin/ghp")"
 
 # ---- pre-flight -------------------------------------------------------------
 # Skipped entirely under --distribute-only: no build/sign/notarize happens
@@ -402,17 +409,15 @@ fi
 
 if [ "${DRY_RUN}" != 1 ]; then
     need age
-    # ghp is intentionally NOT `need`-checked: the per-dir hook can strip it from
-    # PATH, and GHP is resolved with a ~/.claude/bin fallback above — so validate
-    # that RESOLVED path here instead of requiring ghp on PATH (a bare `need ghp`
-    # checks PATH and spuriously fails the cut even though GHP is usable).
-    [ -x "${GHP}" ] || { echo "✗ ghp wrapper not found at ${GHP}" >&2; exit 1; }
-    "${GHP}" repo view "${RELEASE_REPO}" --json name >/dev/null 2>&1 \
-        || { echo "✗ ghp cannot access ${RELEASE_REPO} — check gh.account + auth" >&2; exit 1; }
-    ssh -o BatchMode=yes -o ConnectTimeout=5 "${RELEASE_HOST}" 'true' 2>/dev/null \
-        || { echo "✗ cannot ssh to ${RELEASE_HOST}" >&2; exit 1; }
+    # No ghp check any more: the cut talks to GitHub not at all. The release tag
+    # and the GitHub Release are created at PROMOTE, by an operator.
     [ -f "${AGE_KEY_AGE}" ] \
         || { echo "✗ release.dp signing key not found: ${AGE_KEY_AGE}" >&2; exit 1; }
+    # Refuse BEFORE anything is built or uploaded when the row cannot be
+    # registered. Bytes in the staging bucket with no catalog row are a
+    # stranded artifact — nobody can list them and nobody can promote them —
+    # and the only cheap moment to say so is before the upload.
+    require_manage_url
 fi
 
 # components to cut
@@ -558,85 +563,136 @@ render_inner() {
     chmod 0755 "${dest}"
 }
 
-# ---- R2 mirror --------------------------------------------------------------
-# mirror_to_r2 <comp> <stamp> <semver> <stage_dir>
+# ---- staging + registration -------------------------------------------------
+# resolve_channel <comp> — echo the channel this cut belongs to.
 #
-# Publishes a just-released component's staged artifacts to the PUBLIC R2 bucket
-# behind downloads.clawee.org (the install-time fallback), whose latest.json is
-# also the SOURCE OF TRUTH gen-version-jsonp.sh reads to write version.js (see
-# that script's header). Two DELIBERATELY different postures, drawn from the
-# 2026-08-20 incident where a timed-out upload was let through as a warning and
-# gen-version-jsonp.sh went on to publish a WITHDRAWN stamp's version.js off the
-# stale catalog:
-#
-#   - config genuinely absent (no r2_account_id / no creds file) → this machine
-#     has no R2 mirror configured at all, GitHub Releases stays primary, and
-#     that's a fine, deliberate posture on a box without R2 creds: warn + return
-#     0, distribute continues.
-#   - an upload was ATTEMPTED with creds present and FAILED → the catalog is now
-#     BEHIND the GitHub release that just got published, and continuing is
-#     exactly what shipped a withdrawn stamp's version.js on 2026-08-20. FAIL
-#     CLOSED: return 1 and stop the distribute there.
-#
-# Never called under --dry-run.
-#
-# Touching this function's branches → run tools/test-r2-mirror-fail-closed.sh
-# (unit-level; extracts this function verbatim and pins all three branches).
-mirror_to_r2() {
-    local comp="$1" stamp="$2" semver="$3" stage="$4"
-    if [ -n "${SKIP_R2}" ]; then
-        echo "→ R2 mirror skipped (--no-r2 / CLAWEE_SKIP_R2)"
+# An explicit --channel wins EXCEPT when it claims `stable` for a source tree
+# sitting on a beta branch: that combination is always a mistake, and honouring
+# it files beta bytes in the stable catalog where retention and every installer
+# treat them as the real thing. Without a flag, the branch decides.
+resolve_channel() {
+    local comp="$1" src br derived
+    src="$(src_for "${comp}")"
+    br="$(git -C "${src}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
+    case "${br}" in
+        beta|beta-*) derived="beta" ;;
+        *)           derived="stable" ;;
+    esac
+    if [ "${CHANNEL_EXPLICIT}" = 1 ]; then
+        if [ "${CHANNEL}" = stable ] && [ "${derived}" = beta ]; then
+            echo "✗ --channel stable requested but ${comp} source is on branch '${br}'" >&2
+            echo "  A beta tree cut into the stable channel is a mislabelled row: retention" >&2
+            echo "  and every installer would treat it as a stable release. Cut it as beta," >&2
+            echo "  or cut from a non-beta branch." >&2
+            exit 2
+        fi
+        printf '%s' "${CHANNEL}"
         return 0
     fi
+    printf '%s' "${derived}"
+}
+
+# require_manage_url — resolve MANAGE_URL or refuse, naming the key.
+#
+# Called before the upload, never after: a refusal here costs nothing, the same
+# refusal after the upload costs a stranded artifact.
+MANAGE_URL=""
+require_manage_url() {
+    MANAGE_URL="${CLAWEE_MANAGE_URL:-$(toml_get "${R2_CONFIG}" manage_url || true)}"
+    [ -n "${MANAGE_URL}" ] && return 0
+    echo "✗ no manage service URL configured — refusing to cut." >&2
+    echo "  A cut uploads to the PRIVATE staging bucket and then registers a" >&2
+    echo "  'staged' catalog row. Without the row the uploaded bytes are a" >&2
+    echo "  stranded artifact: nothing lists them and nothing can promote them." >&2
+    echo "  Set it as one of:" >&2
+    echo "    manage_url = \"<manage URL>\"   in ${R2_CONFIG}" >&2
+    echo "    \$CLAWEE_MANAGE_URL             the same value, from the environment" >&2
+    exit 1
+}
+
+# stage_to_staging <comp> <stamp> <semver> <stage_dir> <channel> [--dry-run]
+#
+# Uploads the four zips + SHA256SUMS.txt + its signature to the PRIVATE staging
+# bucket under <comp>/<channel>/<stamp>/, with --no-manifest so nothing names
+# the new stamp as current. Every unresolved piece is FATAL — see the config
+# block's note: this upload is the cut's only publication, so "skipped" and
+# "failed" are the same outcome and neither may pass for success.
+#
+# Touching this function's branches → run tools/test-stage-fail-closed.sh.
+stage_to_staging() {
+    local comp="$1" stamp="$2" semver="$3" stage="$4" channel="$5" dry="${6:-}"
     local account bucket
     account="$(toml_get "${R2_CONFIG}" r2_account_id || true)"
-    bucket="${CLAWEE_R2_BUCKET:-$(toml_get "${R2_CONFIG}" r2_bucket || true)}"
-    [ -n "${bucket}" ] || bucket="clawee-downloads"
+    bucket="${CLAWEE_R2_STAGING_BUCKET:-$(toml_get "${R2_CONFIG}" staging_bucket || true)}"
+    if [ -n "${dry}" ]; then
+        # --dry-run needs neither creds nor an account: it prints the keys the
+        # cut WOULD write and uploads nothing.
+        ( cd "${REPO_ROOT}/tools/r2-mirror" && "${GO_BIN}" run . \
+            --bucket "${bucket:-<staging bucket>}" --prefix "${channel}" --no-manifest \
+            --stage-dir "${stage}" --comp "${comp}" \
+            --version "${semver}" --stamp "${stamp}" --dry-run )
+        return $?
+    fi
     if [ -z "${account}" ]; then
-        echo "⚠ R2 mirror skipped: no r2_account_id in ${R2_CONFIG} (R2 is only a mirror; GitHub is primary)" >&2
-        return 0
+        echo "✗ no r2_account_id in ${R2_CONFIG} — cannot reach the staging bucket." >&2
+        return 1
+    fi
+    if [ -z "${bucket}" ]; then
+        echo "✗ no staging_bucket in ${R2_CONFIG} (or \$CLAWEE_R2_STAGING_BUCKET)." >&2
+        echo "  There is deliberately no default: a guessed bucket name is either a" >&2
+        echo "  failed upload or a write to the PUBLIC bucket, and the second one" >&2
+        echo "  publishes a build nobody approved." >&2
+        return 1
     fi
     if [ ! -f "${R2_CREDS}" ]; then
-        echo "⚠ R2 mirror skipped: creds not found at ${R2_CREDS} (set CLAWEE_R2_CREDS; GitHub release is published)" >&2
-        return 0
+        echo "✗ R2 creds not found at ${R2_CREDS} (set \$CLAWEE_R2_CREDS)." >&2
+        return 1
     fi
-    echo "→ mirroring ${comp} ${stamp} → R2 bucket ${bucket} (downloads.clawee.org)"
+    echo "→ staging ${comp} ${stamp} → ${bucket}:${comp}/${channel}/${stamp}/ (private)"
     if ( cd "${REPO_ROOT}/tools/r2-mirror" && "${GO_BIN}" run . \
             --account "${account}" --bucket "${bucket}" \
+            --prefix "${channel}" --no-manifest \
             --stage-dir "${stage}" --comp "${comp}" \
             --version "${semver}" --stamp "${stamp}" \
             --creds "${R2_CREDS}" ); then
-        echo "✓ mirrored ${comp} to R2 (downloads.clawee.org/${comp}/latest.json)"
         return 0
     fi
-    # FAILED, creds present — fail closed (2026-08-20 incident). State the
-    # world precisely and give a recovery that matches reality: this function is
-    # reached from both do_release (full cut) and distribute_only, and neither
-    # can simply be re-run past this point — --distribute-only refuses on the
-    # tag it already created locally ("tag already exists locally"), a full cut
-    # instead bumps to a new stamp and cuts a different release, and even past
-    # the tag check `ghp release create` refuses a duplicate release for an
-    # already-published tag — so the remaining steps must be finished by hand.
-    echo "✗ R2 mirror FAILED for ${comp} ${stamp} — stopping the distribute here." >&2
-    echo "  State: the GitHub release IS published; the R2 catalog" >&2
-    echo "  (downloads.clawee.org/${comp}/latest.json) did NOT update; version.js," >&2
-    echo "  bootstraps, the scp to \${RELEASE_HOST}, and the [RELEASED] marker commit" >&2
-    echo "  did NOT run." >&2
-    echo "  Recover by hand:" >&2
-    echo "  1) re-run the mirror with the same args this call used:" >&2
-    echo "       ( cd '${REPO_ROOT}/tools/r2-mirror' && '${GO_BIN}' run . \\" >&2
-    echo "           --account '${account}' --bucket '${bucket}' --stage-dir '${stage}' \\" >&2
-    echo "           --comp '${comp}' --version '${semver}' --stamp '${stamp}' --creds '${R2_CREDS}' )" >&2
-    echo "  2) then finish the rest by hand: tools/gen-bootstraps.sh, then" >&2
-    echo "     tools/gen-version-jsonp.sh ${comp}, then scp ${comp}/install.sh," >&2
-    echo "     ${comp}/upgrade.sh and ${comp}/version.js to" >&2
-    echo "     \${RELEASE_HOST}:\${STATIC_DIR}/${comp}/, then commit" >&2
-    echo "     the [RELEASED: ${comp}] ${stamp} marker." >&2
-    echo "  Re-running \`release.sh\` (either mode, same target) will NOT safely" >&2
-    echo "  finish this: --distribute-only refuses at \"tag already exists locally\";" >&2
-    echo "  a full cut bumps to a new stamp and cuts a DIFFERENT release instead of" >&2
-    echo "  finishing this one — and even past the tag check, GitHub refuses a" >&2
-    echo "  duplicate release for an already-published tag. Recover by hand:" >&2
+    echo "✗ staging upload FAILED for ${comp} ${stamp} — stopping here." >&2
+    echo "  State: NOTHING was published (the cut never publishes), no catalog row" >&2
+    echo "  was registered, the bootstraps were not regenerated and no [RELEASED]" >&2
+    echo "  marker was committed. Any objects that did land under" >&2
+    echo "  ${comp}/${channel}/${stamp}/ are unreferenced and harmless." >&2
+    echo "  Re-run the same cut: it is idempotent up to the version bump, and" >&2
+    echo "  --distribute-only ${comp} ${stamp} re-stages the existing dist/ dir" >&2
+    echo "  without rebuilding." >&2
+    return 1
+}
+
+# register_staged <comp> <stamp> <semver> <stage_dir> <channel> [--dry-run]
+#
+# Fails the cut on a refusal — AFTER the upload, deliberately. The uploaded
+# bytes are inert without a row (nothing lists a bucket the manage service does
+# not know about), so the failure to surface is the missing row, not the
+# objects.
+register_staged() {
+    local comp="$1" stamp="$2" semver="$3" stage="$4" channel="$5" dry="${6:-}"
+    local args=(--comp "${comp}" --channel "${channel}" --version "${semver}"
+                --stamp "${stamp}" --stage-dir "${stage}")
+    if [ -n "${dry}" ]; then
+        ( cd "${REPO_ROOT}" && "${GO_BIN}" run ./cmd/clawee-release-register \
+            "${args[@]}" --manage-url "${MANAGE_URL:-<manage URL>}" --dry-run )
+        return $?
+    fi
+    if ( cd "${REPO_ROOT}" && "${GO_BIN}" run ./cmd/clawee-release-register \
+            "${args[@]}" --manage-url "${MANAGE_URL}" --key "${SIGN_KEY}" ); then
+        return 0
+    fi
+    echo "✗ registering ${comp} ${stamp} with ${MANAGE_URL} FAILED." >&2
+    echo "  The artifacts ARE in the staging bucket under ${comp}/${channel}/${stamp}/," >&2
+    echo "  but no catalog row names them, so nothing can list or promote them." >&2
+    echo "  Nothing public changed and no marker commit was made." >&2
+    echo "  Fix the service (or the URL) and re-run:" >&2
+    echo "    bash tools/release.sh --distribute-only ${comp} ${stamp} --channel ${channel}" >&2
     return 1
 }
 
@@ -762,121 +818,71 @@ do_release() {
     # shellcheck disable=SC2012  # cosmetic listing of our own controlled asset names (no untrusted filenames); ls keeps the plain one-per-line format.
     ( cd "${stage}" && ls -1 clawee-"${comp}"-*.zip SHA256SUMS.txt SHA256SUMS.txt.minisig | sed 's/^/    /' )
 
+    local channel; channel="$(resolve_channel "${comp}")"
+
     if [ "${DRY_RUN}" = 1 ]; then
-        echo "✓ dry-run ${comp}: artifacts under ${stage}/ (version bump reverted; no tag/release/scp)"
+        echo
+        echo "--- staging keys (${channel}) ---"
+        stage_to_staging "${comp}" "${stamp}" "${new_semver}" "${stage}" "${channel}" --dry-run
+        echo "--- register payload ---"
+        register_staged "${comp}" "${stamp}" "${new_semver}" "${stage}" "${channel}" --dry-run
+        echo "✓ dry-run ${comp}: artifacts under ${stage}/ (version bump reverted; nothing uploaded, nothing registered)"
         revert_version
         trap shred_key ERR
         return 0
     fi
 
-    # (5) tag + GitHub Release.
-    # Change summary: component commits since the previous release's source sha.
-    # The stamp's trailing field IS the 8-char source sha, so the previous
-    # release's sha is the suffix of the highest existing <comp>/v… tag.
-    local prev_tag prev_sha changes
-    prev_tag="$(/usr/bin/git tag -l "${comp}/v*" --sort=version:refname | tail -n1)"
-    prev_sha="${prev_tag##*.}"
-    if [ -n "${prev_sha}" ] && git -C "${src}" cat-file -e "${prev_sha}^{commit}" 2>/dev/null; then
-        changes="$(git -C "${src}" log --oneline --no-merges "${prev_sha}..HEAD" 2>/dev/null)"
-        [ -n "${changes}" ] || changes="No code changes since ${prev_tag} (re-release)."
-    else
-        changes="Initial release."
-    fi
-
-    local tag="${comp}/${stamp}"
-    if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
-        # Explicit revert: plain `exit 1` fires only the EXIT trap (shred_key) —
-        # the ERR trap does NOT run on `exit`, so without this the bumped
-        # versions/<comp> would stay staged and the next cut would double-bump.
-        echo "✗ tag ${tag} already exists locally — reverting version" >&2
+    # (5) stage to the PRIVATE bucket. This is the cut's only publication and
+    # it publishes nothing: no manifest is written, so no installer can see it.
+    if ! stage_to_staging "${comp}" "${stamp}" "${new_semver}" "${stage}" "${channel}"; then
+        # The version bump is still staged in the tree at this point and the
+        # ERR trap does not fire on an explicit exit — revert it by hand, or
+        # the next cut double-bumps over a stamp that was never staged.
         revert_version
         exit 1
     fi
-    git tag -a "${tag}" -m "clawee ${comp} ${stamp}"
 
-    local notes; notes="${stage}/release-notes.md"
-    cat > "${notes}" <<NOTES
-clawee ${comp} ${stamp} — $(date -u +%Y-%m-%d)
-
-## Changes
-${changes}
-
-Install:
-  curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/${comp}/install.sh | sh
-
-Pin this version:
-  CLAWEE_$(printf '%s' "${comp}" | tr '[:lower:]' '[:upper:]')_VERSION=${tag} \\
-    curl -fsSL https://release.clawee.org/${comp}/install.sh | sh
-
-Verify by hand:
-  minisign -Vm SHA256SUMS.txt -P "\$(cat clawee-release.pub | tail -n1)"
-  f=<file>                                      # the file you downloaded
-  want=\$(awk -v f="\$f" '{ n = \$2; sub(/^\\*/, "", n); if (n == f) { print \$1; exit } }' SHA256SUMS.txt)
-  got=\$(shasum -a 256 "\$f" | awk '{print \$1}')  # sha256sum "\$f" on Linux
-  if   [ -z "\$want" ];        then echo "NO ENTRY for \$f in SHA256SUMS.txt — do not install"
-  elif [ "\$want" = "\$got" ];  then echo "OK \$f"
-  else                             echo "MISMATCH for \$f — do not install"; fi
-NOTES
-
-    ( cd "${stage}" && "${GHP}" -R "${RELEASE_REPO}" release create "${tag}" \
-        --title "${comp} ${stamp}" --notes-file "${notes}" \
-        clawee-"${comp}"-*.zip SHA256SUMS.txt SHA256SUMS.txt.minisig )
-
-    # Past the tag/release — clear the version-revert trap.
+    # (6) register the row. Past this point the cut has produced something an
+    # operator can find, so the version bump stands.
+    if ! register_staged "${comp}" "${stamp}" "${new_semver}" "${stage}" "${channel}"; then
+        exit 1
+    fi
     trap shred_key ERR
 
-    # (5b) mirror the published artifacts to the public R2 bucket
-    # (downloads.clawee.org) as the install-time fallback. Only a genuinely
-    # unconfigured mirror is non-fatal; a FAILED upload stops here (fail
-    # closed) — see mirror_to_r2's doc comment.
-    mirror_to_r2 "${comp}" "${stamp}" "${new_semver}" "${stage}"
-
-    # (6) regenerate bootstraps + the version JSONP, then scp the static surface.
+    # (7) regenerate the bootstraps and record the marker. The bootstraps embed
+    # no version — they resolve one at install time — so regenerating them here
+    # is bookkeeping, not publication, and nothing is copied anywhere: serving
+    # them is promote's job (a `publish-static` verb, not this script).
+    #
+    # version.js is NOT regenerated: it is derived from the PUBLIC catalog,
+    # which a cut does not touch. Writing it here would announce a staged build
+    # on the website's version badge.
     bash "${REPO_ROOT}/tools/gen-bootstraps.sh" >&2
-    # Sources the just-published version from the R2 catalog (mirrored in 5b above).
-    bash "${REPO_ROOT}/tools/gen-version-jsonp.sh" "${comp}" >&2
 
-    # shellcheck disable=SC2029  # ${STATIC_DIR}/${comp} are local, controlled values — expanding client-side into the remote command is intended.
-    ssh "${RELEASE_HOST}" "mkdir -p '${STATIC_DIR}/${comp}'"
-    scp -q "${REPO_ROOT}/${comp}/install.sh" "${RELEASE_HOST}:${STATIC_DIR}/${comp}/install.sh"
-    scp -q "${REPO_ROOT}/${comp}/upgrade.sh" "${RELEASE_HOST}:${STATIC_DIR}/${comp}/upgrade.sh"
-    scp -q "${REPO_ROOT}/${comp}/version.js" "${RELEASE_HOST}:${STATIC_DIR}/${comp}/version.js"
-    purge_cf_version_js "${comp}"
-    if [ -f "${REPO_ROOT}/clawee-release.pub" ]; then
-        scp -q "${REPO_ROOT}/clawee-release.pub" "${RELEASE_HOST}:${STATIC_DIR}/clawee-release.pub"
-    fi
-    if [ -f "${REPO_ROOT}/site/index.html" ]; then
-        scp -q "${REPO_ROOT}/site/index.html" "${RELEASE_HOST}:${STATIC_DIR}/index.html"
-    fi
+    git add "versions/${comp}" "${comp}/install.sh" "${comp}/upgrade.sh"
+    git commit -m "[RELEASED: ${comp}] $(date -u +%Y-%m-%d) ${stamp} (staged)"
 
-    # (7) marker commit.
-    git add "versions/${comp}" "${comp}/install.sh" "${comp}/upgrade.sh" "${comp}/version.js"
-    git commit -m "[RELEASED: ${comp}] $(date -u +%Y-%m-%d) ${stamp}"
-
-    echo "✓ released ${tag}"
-    echo "  Release: https://github.com/${RELEASE_REPO}/releases/tag/${tag}"
+    echo "✓ staged ${comp} ${stamp} on the ${channel} channel"
+    echo "  Promote it from the manage service: ${MANAGE_URL}"
 }
 
-# ---- distribute_only: distribution-only mode over an already-staged
-# dist/<stamp>/ (produced by `rkit build` — the produce half lives there now).
-# Runs ONLY: tag + GitHub Release -> mirror_to_r2 -> gen-bootstraps.sh ->
-# gen-version-jsonp.sh -> scp install.sh/upgrade.sh/version.js/pubkey/site to
-# the release host -> [RELEASED] marker commit. No build, no sign, no notarize, no version
-# bump — all of that already happened upstream in `rkit build`. clawee has no
-# console/register step (unlike Burrowee) — nothing to skip there.
+# ---- distribute_only: stage-only mode over an already-built dist/<stamp>/
+# (produced by `rkit build` — the produce half lives there now).
 #
-# The tag/notes/`ghp release create` block below is a DELIBERATE COPY of
-# do_release()'s step 5, not a shared helper: do_release's tag-exists path
-# does an EXPLICIT `revert_version` (see the comment there — a plain `exit 1`
-# only fires the EXIT trap, not ERR) to undo its version bump. distribute_only
-# never bumps a version, so that revert is meaningless here; factoring a
-# shared helper would either strip the revert out of do_release (a behavior
-# change to the existing full-cut path — risky) or carry dead revert-adjacent
-# logic into distribute_only. A copy keeps both paths exactly as narrow as
-# they need to be, and do_release is untouched.
+# Runs ONLY: stage to the private bucket -> register the row -> gen-bootstraps.sh
+# -> [RELEASED … (staged)] marker commit. No build, no sign, no notarize, no
+# version bump — all of that already happened upstream in `rkit build`. It is
+# also the re-run path when a cut got as far as building and then failed at the
+# upload or the registration.
 #
-# On --dry-run: validates the staged dir + component, then prints "would: ..."
-# for every publish action and returns — no ghp/git/ssh/scp/network writes.
+# The tag + `ghp release create` block that used to live here (a deliberate copy
+# of do_release's step 5) is GONE from both paths: the release tag is created at
+# PROMOTE, so a cut leaves no tag behind and re-staging the same stamp is no
+# longer refused by a tag that already exists. That removed the only reason the
+# two paths could not share the staging half, which they now do.
+#
+# On --dry-run: validates the staged dir + component, prints the staging keys
+# and the register payload, and returns — no network, no git, no writes.
 distribute_only() {
     local comp="$1" stamp="$2"
     case "${comp}" in
@@ -892,108 +898,41 @@ distribute_only() {
     compgen -G "${stage}/clawee-${comp}-*.zip" >/dev/null \
         || { echo "✗ no clawee-${comp}-*.zip found in ${stage} (rkit build must produce it)" >&2; exit 1; }
 
-    local src semver
+    local src semver channel
     src="$(src_for "${comp}")"
     [ -d "${src}" ] || { echo "✗ ${comp} source worktree missing: ${src}" >&2; exit 1; }
     semver="$(SRC_DIR="${src}" bash "${REPO_ROOT}/tools/version.sh" "${comp}" --semver)"
+    channel="$(resolve_channel "${comp}")"
 
     if [ "${DRY_RUN}" = 1 ]; then
-        echo "would: gh release create ${comp}/${stamp} (GitHub Release, public) via ghp"
-        echo "would: mirror_to_r2 ${comp} ${stamp} ${semver} (downloads.clawee.org)"
-        echo "would: gen-bootstraps.sh (regenerate ${comp}/install.sh + ${comp}/upgrade.sh)"
-        echo "would: gen-version-jsonp.sh ${comp} (regenerate ${comp}/version.js)"
-        echo "would: scp install.sh/upgrade.sh/version.js/clawee-release.pub/site/index.html to ${RELEASE_HOST}:${STATIC_DIR}/${comp}/"
-        echo "would: marker commit [RELEASED: ${comp}] ${stamp}"
-        echo "✓ dry-run distribute-only: no real writes"
+        echo "--- staging keys (${channel}) ---"
+        stage_to_staging "${comp}" "${stamp}" "${semver}" "${stage}" "${channel}" --dry-run
+        echo "--- register payload ---"
+        register_staged "${comp}" "${stamp}" "${semver}" "${stage}" "${channel}" --dry-run
+        echo "✓ dry-run distribute-only: nothing uploaded, nothing registered, no writes"
         return 0
     fi
 
-    command -v ghp >/dev/null 2>&1 || { echo "✗ required tool not found: ghp" >&2; exit 1; }
-    [ -x "${GHP}" ] || { echo "✗ ghp wrapper not found at ${GHP}" >&2; exit 1; }
-    "${GHP}" repo view "${RELEASE_REPO}" --json name >/dev/null 2>&1 \
-        || { echo "✗ ghp cannot access ${RELEASE_REPO} — check gh.account + auth" >&2; exit 1; }
-    # Same upfront reachability check the full-cut path runs (see the
-    # pre-flight block above) — without it a down host fails fast only at the
-    # scp below, AFTER the tag + GitHub Release + R2 mirror already published.
-    ssh -o BatchMode=yes -o ConnectTimeout=5 "${RELEASE_HOST}" 'true' 2>/dev/null \
-        || { echo "✗ cannot ssh to ${RELEASE_HOST}" >&2; exit 1; }
+    # Refuse before uploading, for the same reason the full cut does: bytes
+    # with no row are a stranded artifact.
+    require_manage_url
 
-    # (1) tag + GitHub Release — copied from do_release's step 5 (see the doc
-    # comment above for why this isn't a shared helper).
-    local prev_tag prev_sha changes
-    prev_tag="$(/usr/bin/git tag -l "${comp}/v*" --sort=version:refname | tail -n1)"
-    prev_sha="${prev_tag##*.}"
-    if [ -n "${prev_sha}" ] && git -C "${src}" cat-file -e "${prev_sha}^{commit}" 2>/dev/null; then
-        changes="$(git -C "${src}" log --oneline --no-merges "${prev_sha}..HEAD" 2>/dev/null)"
-        [ -n "${changes}" ] || changes="No code changes since ${prev_tag} (re-release)."
-    else
-        changes="Initial release."
-    fi
+    # The signing key is needed to sign the catalog row, and --distribute-only
+    # skips the pre-flight that normally resolves it. Registration is
+    # machine-authentication with the SAME key that signed SHA256SUMS.txt, so
+    # there is no second key to configure — just this decrypt.
+    resolve_sign_key
 
-    local tag="${comp}/${stamp}"
-    if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
-        echo "✗ tag ${tag} already exists locally" >&2
-        exit 1
-    fi
-    git tag -a "${tag}" -m "clawee ${comp} ${stamp}"
+    stage_to_staging "${comp}" "${stamp}" "${semver}" "${stage}" "${channel}" || exit 1
+    register_staged "${comp}" "${stamp}" "${semver}" "${stage}" "${channel}" || exit 1
 
-    local notes; notes="${stage}/release-notes.md"
-    cat > "${notes}" <<NOTES
-clawee ${comp} ${stamp} — $(date -u +%Y-%m-%d)
-
-## Changes
-${changes}
-
-Install:
-  curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/${comp}/install.sh | sh
-
-Pin this version:
-  CLAWEE_$(printf '%s' "${comp}" | tr '[:lower:]' '[:upper:]')_VERSION=${tag} \\
-    curl -fsSL https://release.clawee.org/${comp}/install.sh | sh
-
-Verify by hand:
-  minisign -Vm SHA256SUMS.txt -P "\$(cat clawee-release.pub | tail -n1)"
-  f=<file>                                      # the file you downloaded
-  want=\$(awk -v f="\$f" '{ n = \$2; sub(/^\\*/, "", n); if (n == f) { print \$1; exit } }' SHA256SUMS.txt)
-  got=\$(shasum -a 256 "\$f" | awk '{print \$1}')  # sha256sum "\$f" on Linux
-  if   [ -z "\$want" ];        then echo "NO ENTRY for \$f in SHA256SUMS.txt — do not install"
-  elif [ "\$want" = "\$got" ];  then echo "OK \$f"
-  else                             echo "MISMATCH for \$f — do not install"; fi
-NOTES
-
-    ( cd "${stage}" && "${GHP}" -R "${RELEASE_REPO}" release create "${tag}" \
-        --title "${comp} ${stamp}" --notes-file "${notes}" \
-        clawee-"${comp}"-*.zip SHA256SUMS.txt SHA256SUMS.txt.minisig )
-
-    # (2) mirror to R2 — fails closed on a FAILED upload (stops here, before
-    # gen-version-jsonp reads the now-stale catalog); only a genuinely
-    # unconfigured mirror is non-fatal. See mirror_to_r2's doc comment.
-    mirror_to_r2 "${comp}" "${stamp}" "${semver}" "${stage}"
-
-    # (3) regenerate bootstraps + version JSONP, then scp the static surface —
-    # mirrors do_release()'s step 6 verbatim.
     bash "${REPO_ROOT}/tools/gen-bootstraps.sh" >&2
-    bash "${REPO_ROOT}/tools/gen-version-jsonp.sh" "${comp}" >&2
 
-    # shellcheck disable=SC2029  # ${STATIC_DIR}/${comp} are local, controlled values — expanding client-side into the remote command is intended.
-    ssh "${RELEASE_HOST}" "mkdir -p '${STATIC_DIR}/${comp}'"
-    scp -q "${REPO_ROOT}/${comp}/install.sh" "${RELEASE_HOST}:${STATIC_DIR}/${comp}/install.sh"
-    scp -q "${REPO_ROOT}/${comp}/upgrade.sh" "${RELEASE_HOST}:${STATIC_DIR}/${comp}/upgrade.sh"
-    scp -q "${REPO_ROOT}/${comp}/version.js" "${RELEASE_HOST}:${STATIC_DIR}/${comp}/version.js"
-    purge_cf_version_js "${comp}"
-    if [ -f "${REPO_ROOT}/clawee-release.pub" ]; then
-        scp -q "${REPO_ROOT}/clawee-release.pub" "${RELEASE_HOST}:${STATIC_DIR}/clawee-release.pub"
-    fi
-    if [ -f "${REPO_ROOT}/site/index.html" ]; then
-        scp -q "${REPO_ROOT}/site/index.html" "${RELEASE_HOST}:${STATIC_DIR}/index.html"
-    fi
+    git add "versions/${comp}" "${comp}/install.sh" "${comp}/upgrade.sh"
+    git commit -m "[RELEASED: ${comp}] $(date -u +%Y-%m-%d) ${stamp} (staged)"
 
-    # (4) marker commit.
-    git add "versions/${comp}" "${comp}/install.sh" "${comp}/upgrade.sh" "${comp}/version.js"
-    git commit -m "[RELEASED: ${comp}] $(date -u +%Y-%m-%d) ${stamp}"
-
-    echo "✓ distributed ${tag}"
-    echo "  Release: https://github.com/${RELEASE_REPO}/releases/tag/${tag}"
+    echo "✓ staged ${comp} ${stamp} on the ${channel} channel"
+    echo "  Promote it from the manage service: ${MANAGE_URL}"
 }
 
 if [ "${DISTRIBUTE_ONLY}" = 1 ]; then
