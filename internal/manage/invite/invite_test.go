@@ -407,3 +407,61 @@ func scriptKeyOf(t *testing.T, f *fixture) string {
 	t.Fatal("no script was uploaded")
 	return ""
 }
+
+// Both protocol flags must be rendered. This is the DISCRIMINATING test for
+// the fix: which flag actually carries the guarantee depends on the host's
+// curl (see the template's comment), so only the presence of both can be
+// asserted here rather than in behaviour.
+func TestRenderedScriptPinsRedirectsToHTTPS(t *testing.T) {
+	f := newFixture(t, catalog.ChannelBeta)
+	f.serveArtifacts(t, "")
+	if _, err := Mint(context.Background(), f.deps, f.row, "ada"); err != nil {
+		t.Fatal(err)
+	}
+	script := string(f.staging.Objects[scriptKeyOf(t, f)])
+	if !strings.Contains(script, "--proto-redir '=https'") {
+		t.Fatalf("the fetch helper does not pin redirects:\n%s", script)
+	}
+	if !strings.Contains(script, "--proto '=https'") {
+		t.Fatal("the fetch helper does not pin the initial protocol")
+	}
+}
+
+// …and end to end, curl refuses the hop. NOTE: on the curl this repo is
+// developed against (8.7) `--proto '=https'` alone already refuses a redirect
+// onto http, so this test passes with or without --proto-redir and is NOT a
+// regression test for that flag — the assertion above is. It is here for the
+// property itself: whatever the host's curl does with the flags, a rendered
+// invite must not fetch anything over plaintext.
+func TestRenderedScriptRefusesARedirectOntoPlaintext(t *testing.T) {
+	requireTools(t)
+	f := newFixture(t, catalog.ChannelBeta)
+
+	// A plaintext server that would happily serve the sums file, and a TLS
+	// server that redirects to it. Only --proto-redir can stop the second hop.
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("bytes from a plaintext hop"))
+	}))
+	t.Cleanup(plain.Close)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL+r.URL.Path, http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+	testCert = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+	f.staging.PresignPrefix = srv.URL + "/"
+
+	if _, err := Mint(context.Background(), f.deps, f.row, "ada"); err != nil {
+		t.Fatal(err)
+	}
+	script := string(f.staging.Objects[scriptKeyOf(t, f)])
+	out, err := runScript(t, script, 0)
+	if err == nil {
+		t.Fatalf("the script followed a redirect onto plaintext:\n%s", out)
+	}
+	if !strings.Contains(out, "download failed") {
+		t.Fatalf("the refusal does not read as a download failure:\n%s", out)
+	}
+	if strings.Contains(out, "INNER INSTALLER RAN") {
+		t.Fatalf("the installer ran off plaintext bytes:\n%s", out)
+	}
+}

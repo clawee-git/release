@@ -66,9 +66,15 @@ TMP="$(mktemp -d)" || fail "could not create a temporary directory"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
 fetch() {
-    # --proto '=https' is not decoration: it is what stops a redirect from
-    # walking this download onto a plaintext hop.
-    curl -fsSL --proto '=https' --tlsv1.2 -o "$2" "$1" \
+    # BOTH flags, because which one carries the guarantee depends on the curl
+    # the host happens to have. --proto constrains the URL curl is GIVEN;
+    # redirects are governed by --proto-redir. Current curl (8.7 measured)
+    # already restricts redirects to the --proto set and refuses a plaintext
+    # hop with "Protocol http disabled (in redirect)" — but older releases
+    # defaulted --proto-redir to permit http, and an invite runs on whatever
+    # machine the recipient has. Spelling both makes the pinning independent
+    # of that.
+    curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -o "$2" "$1" \
         || fail "download failed: $3 (the link may have expired — links live 48 hours)"
 }
 

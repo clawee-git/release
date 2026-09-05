@@ -119,7 +119,16 @@ GH_PROXIES="${CLAWEE_GH_PROXY-https://gh-proxy.org https://cdn.gh-proxy.org http
 # test hook) is set.
 DOWNLOADS_BASE="${CLAWEE_DOWNLOADS_BASE-https://downloads.clawee.org}"
 
-# Production downloads are pinned to HTTPS/TLS1.2 (--proto =https). The
+# Production downloads are pinned to HTTPS/TLS1.2 (--proto =https) and to https
+# on every REDIRECT too (--proto-redir =https). Both are spelled because which
+# one carries the guarantee depends on the host's curl: current curl (8.7
+# measured) already restricts redirects to the --proto set, while older
+# releases defaulted --proto-redir to permit http. We follow redirects
+# everywhere (-L) — GitHub's asset URLs redirect by design — so on such a host
+# the https pinning stopped at the first request. Bytes are minisign + sha256
+# verified regardless, so this was never an install-anything hole; it was a
+# "who can read and rewrite the download" one.
+# The
 # CLAWEE_DL_BASE test hook points at a local plain-HTTP server, so when it is
 # set we drop the TLS-only flags (they'd reject http://). That relaxed mode
 # stays locked to the test base BY CONSTRUCTION (no separate guard check):
@@ -133,7 +142,7 @@ DOWNLOADS_BASE="${CLAWEE_DOWNLOADS_BASE-https://downloads.clawee.org}"
 if [ -n "$DL_BASE" ]; then
     CURL="curl -fsSL --connect-timeout 15 --max-time 300 --speed-limit 4096 --speed-time 20"
 else
-    CURL="curl -fsSL --proto =https --tlsv1.2 --connect-timeout 15 --max-time 300 --speed-limit 4096 --speed-time 20"
+    CURL="curl -fsSL --proto =https --proto-redir =https --tlsv1.2 --connect-timeout 15 --max-time 300 --speed-limit 4096 --speed-time 20"
 fi
 
 # ---- helpers ------------------------------------------------------------
