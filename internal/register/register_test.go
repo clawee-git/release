@@ -281,3 +281,92 @@ func TestRegisterSurfacesNon2xx(t *testing.T) {
 }
 
 func client(url string) *Client { return NewClient(url) }
+
+// ---- fixture-based crypto tests --------------------------------------------
+//
+// The tests above are self-referential by construction and that is a real
+// limit: writeMinisignKey synthesises a key file out of THIS parser's own
+// offset constants, so a wrong offset would be wrong identically on both sides
+// and the round trip would still pass. The two tests below close that.
+
+// TestLoadSigningKeyAgainstRealFixture parses a key file produced by the real
+// `minisign -G -W` and verifies a signature from it against the public key
+// minisign printed alongside it. Neither half comes from this package, so a
+// drifted layout constant fails here even though it would round-trip cleanly
+// through writeMinisignKey.
+func TestLoadSigningKeyAgainstRealFixture(t *testing.T) {
+	key, err := LoadSigningKey(filepath.Join("testdata", "test-only.key"))
+	if err != nil {
+		t.Fatalf("LoadSigningKey on a real minisign key: %v", err)
+	}
+
+	// The minisign public key line is: "Ed" | key_id[8] | ed25519 pub[32],
+	// base64. The key id must match the secret key's, which is what proves the
+	// two halves are the same identity and that keynumOffset is right.
+	pubLine, err := os.ReadFile(filepath.Join("testdata", "test-only.pub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(pubLine)), "\n")
+	rawPub, err := base64.StdEncoding.DecodeString(strings.TrimSpace(lines[len(lines)-1]))
+	if err != nil {
+		t.Fatalf("fixture public key is not base64: %v", err)
+	}
+	if len(rawPub) != 2+keyIDLen+ed25519.PublicKeySize {
+		t.Fatalf("fixture public key is %d bytes, want %d", len(rawPub), 2+keyIDLen+ed25519.PublicKeySize)
+	}
+	wantKeyID := base64.StdEncoding.EncodeToString(rawPub[2 : 2+keyIDLen])
+	if key.KeyID != wantKeyID {
+		t.Fatalf("key id from the secret key = %q, public key says %q", key.KeyID, wantKeyID)
+	}
+
+	pub := ed25519.PublicKey(rawPub[2+keyIDLen:])
+	msg := []byte("the bytes a catalog row would be")
+	sig, err := base64.StdEncoding.DecodeString(key.Sign(msg))
+	if err != nil {
+		t.Fatalf("signature is not base64: %v", err)
+	}
+	if !ed25519.Verify(pub, msg, sig) {
+		t.Fatal("a signature from the parsed real key does not verify against minisign's own public key")
+	}
+}
+
+// TestSigningBytesGolden pins the exact bytes a verifier must reconstruct.
+// The service recomputes this string from the body it received and checks the
+// signature over it, so field order, key names, compactness and the absence of
+// a trailing newline are all wire contract. A literal here fails on any change
+// to them — including one this package's own SigningBytes would make
+// consistently on both sides and never notice.
+func TestSigningBytesGolden(t *testing.T) {
+	p := Payload{
+		Component: "clawee",
+		Channel:   "beta",
+		Version:   "0.2.28",
+		Stamp:     "v0.2.28.2026.09.04.deadbeef",
+		Artifacts: []Artifact{{
+			Platform: "darwin/arm64",
+			Key:      "clawee/beta/v0.2.28.2026.09.04.deadbeef/clawee-clawee-darwin-arm64.zip",
+			SHA256:   "f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2",
+			Size:     5,
+		}},
+		SumsKey:    "clawee/beta/v0.2.28.2026.09.04.deadbeef/SHA256SUMS.txt",
+		MinisigKey: "clawee/beta/v0.2.28.2026.09.04.deadbeef/SHA256SUMS.txt.minisig",
+		Nonce:      "bm9uY2UtMQ==",
+		Signature:  "THIS MUST NOT APPEAR",
+	}
+	const golden = `{"component":"clawee","channel":"beta","version":"0.2.28",` +
+		`"stamp":"v0.2.28.2026.09.04.deadbeef","artifacts":[{"platform":"darwin/arm64",` +
+		`"key":"clawee/beta/v0.2.28.2026.09.04.deadbeef/clawee-clawee-darwin-arm64.zip",` +
+		`"sha256":"f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2","size":5}],` +
+		`"sums_key":"clawee/beta/v0.2.28.2026.09.04.deadbeef/SHA256SUMS.txt",` +
+		`"minisig_key":"clawee/beta/v0.2.28.2026.09.04.deadbeef/SHA256SUMS.txt.minisig",` +
+		`"nonce":"bm9uY2UtMQ=="}`
+
+	got, err := p.SigningBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != golden {
+		t.Fatalf("the signed bytes changed — this is the WIRE CONTRACT, not an\nimplementation detail; every signature the service verifies depends on it.\n got: %s\nwant: %s", got, golden)
+	}
+}
