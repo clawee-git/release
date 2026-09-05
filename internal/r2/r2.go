@@ -26,7 +26,19 @@ type Client struct {
 	accessKeyID string
 	secret      string
 	doer        Doer
+	// now is injected so a presigned URL is reproducible under test. A
+	// signature is a function of the clock, so a test that cannot fix the
+	// clock can only assert that the URL is "some string".
+	now func() time.Time
 }
+
+// Bucket is the bucket this client addresses. Copy needs the SOURCE client's
+// bucket name to build x-amz-copy-source, and asking the client rather than
+// re-threading the name through the caller keeps one spelling of it.
+func (c *Client) Bucket() string { return c.bucket }
+
+// SetClock replaces the client's clock. Tests only.
+func (c *Client) SetClock(now func() time.Time) { c.now = now }
 
 // New builds a Client. doer nil → an http.Client with per-phase timeouts.
 func New(accountID, bucket, accessKeyID, secret string, doer Doer) *Client {
@@ -59,19 +71,20 @@ func New(accountID, bucket, accessKeyID, secret string, doer Doer) *Client {
 		accessKeyID: accessKeyID,
 		secret:      secret,
 		doer:        doer,
+		now:         time.Now,
 	}
 }
 
 // Put uploads body to <endpoint>/<bucket>/<key> with a SigV4-signed PUT.
 func (c *Client) Put(ctx context.Context, key string, body []byte, contentType string) error {
-	url := fmt.Sprintf("%s/%s/%s", c.endpoint, c.bucket, key)
+	url := c.objectURL(key)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("r2: put: new request: %w", err)
 	}
 	req.Header.Set("Content-Type", contentType)
 	req.ContentLength = int64(len(body))
-	signV4(req, c.accessKeyID, c.secret, "auto", "s3", body, time.Now())
+	signV4(req, c.accessKeyID, c.secret, "auto", "s3", body, c.now())
 	resp, err := c.doer.Do(req)
 	if err != nil {
 		return fmt.Errorf("r2: put %s: %w", key, err)
@@ -116,7 +129,7 @@ func (c *Client) List(ctx context.Context, prefix string) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("r2: list %q: new request: %w", prefix, err)
 		}
-		signV4(req, c.accessKeyID, c.secret, "auto", "s3", nil, time.Now())
+		signV4(req, c.accessKeyID, c.secret, "auto", "s3", nil, c.now())
 		resp, err := c.doer.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("r2: list %q: %w", prefix, err)
@@ -147,12 +160,12 @@ func (c *Client) List(ctx context.Context, prefix string) ([]string, error) {
 // Delete removes the object at key. A 404/NoSuchKey is treated as success
 // (deleting an absent key is a no-op, which keeps prune idempotent).
 func (c *Client) Delete(ctx context.Context, key string) error {
-	reqURL := fmt.Sprintf("%s/%s/%s", c.endpoint, c.bucket, key)
+	reqURL := c.objectURL(key)
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, reqURL, nil)
 	if err != nil {
 		return fmt.Errorf("r2: delete %s: new request: %w", key, err)
 	}
-	signV4(req, c.accessKeyID, c.secret, "auto", "s3", nil, time.Now())
+	signV4(req, c.accessKeyID, c.secret, "auto", "s3", nil, c.now())
 	resp, err := c.doer.Do(req)
 	if err != nil {
 		return fmt.Errorf("r2: delete %s: %w", key, err)

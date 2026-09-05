@@ -1,0 +1,108 @@
+#!/bin/sh
+# Clawee INVITE installer — {{.Component}} {{.Version}}
+#
+# Minted for one person by a Clawee operator. It installs a build that is NOT
+# public: the bytes live in the private staging bucket and are reachable only
+# through the presigned URLs below, which stop working at
+#
+#     {{.ExpiresAt}}
+#
+# The verification chain is the SAME one the public bootstrap runs, in the same
+# order, and every step fails closed:
+#
+#     minisign signature over SHA256SUMS.txt  (baked public key, no key fetch)
+#         -> sha256 of the zip, taken from the now-trusted sums file
+#             -> unzip
+#                 -> exec the verified inner install.sh
+#
+# The presigned URL is a delivery mechanism, not a trust anchor: a link that
+# leaked still cannot install anything the release key did not sign.
+set -eu
+
+fail() { printf '\n  ✗ %s\n\n' "$1" >&2; exit 1; }
+info() { printf '  · %s\n' "$1"; }
+ok()   { printf '  ✓ %s\n' "$1"; }
+
+# This script takes no arguments. Silently ignoring one is worse than refusing:
+# a stray word here is almost always a mistyped flag from a longer command line.
+[ "$#" -eq 0 ] || fail "this installer takes no arguments (got: $*)"
+
+COMP="{{.Component}}"
+PUBKEY="{{.Pubkey}}"
+
+case "$(uname -s)" in
+    Darwin) OS=darwin ;;
+    Linux)  OS=linux ;;
+    *)      fail "unsupported OS: $(uname -s) (Clawee ships darwin + linux only)" ;;
+esac
+case "$(uname -m)" in
+    arm64|aarch64) ARCH=arm64 ;;
+    x86_64|amd64)  ARCH=amd64 ;;
+    *)             fail "unsupported arch: $(uname -m) (Clawee ships arm64 + amd64 only)" ;;
+esac
+
+printf '\n  Clawee %s invite installer  (%s/%s)\n  version %s  ·  link expires %s\n\n' \
+    "$COMP" "$OS" "$ARCH" "{{.Version}}" "{{.ExpiresAt}}"
+
+case "$OS-$ARCH" in
+{{range .Platforms}}    {{.Platform}})
+        ZIP='{{.File}}'
+        ZIP_URL='{{.URL}}'
+        ;;
+{{end}}    *) fail "no invite artifact for $OS-$ARCH in this link" ;;
+esac
+
+command -v minisign >/dev/null 2>&1 \
+    || fail "minisign is not installed — this invite verifies signatures and will not proceed without it"
+command -v unzip >/dev/null 2>&1 || fail "unzip is not installed"
+
+sha256_of() {
+    if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+    elif command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+    else return 1; fi
+}
+
+TMP="$(mktemp -d)" || fail "could not create a temporary directory"
+trap 'rm -rf "$TMP"' EXIT INT TERM
+
+fetch() {
+    # BOTH flags, because which one carries the guarantee depends on the curl
+    # the host happens to have. --proto constrains the URL curl is GIVEN;
+    # redirects are governed by --proto-redir. Current curl (8.7 measured)
+    # already restricts redirects to the --proto set and refuses a plaintext
+    # hop with "Protocol http disabled (in redirect)" — but older releases
+    # defaulted --proto-redir to permit http, and an invite runs on whatever
+    # machine the recipient has. Spelling both makes the pinning independent
+    # of that.
+    curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -o "$2" "$1" \
+        || fail "download failed: $3 (the link may have expired — links live 48 hours)"
+}
+
+info "downloading"
+fetch '{{.SumsURL}}'    "$TMP/SHA256SUMS.txt"         "SHA256SUMS.txt"
+fetch '{{.MinisigURL}}' "$TMP/SHA256SUMS.txt.minisig" "SHA256SUMS.txt.minisig"
+fetch "$ZIP_URL"        "$TMP/$ZIP"                   "$ZIP"
+
+info "verifying signature"
+minisign -V -P "$PUBKEY" -m "$TMP/SHA256SUMS.txt" -x "$TMP/SHA256SUMS.txt.minisig" >/dev/null \
+    || fail "signature verification failed — aborting (refusing to install unverified bytes)"
+ok "minisign signature valid"
+
+# Pick the line by EXACT filename, both the "hash  name" and binary "hash *name"
+# spellings. `shasum -c --ignore-missing` is a 2016-era addition and the stock
+# shasum on an older macOS rejects it outright, which came back as "checksum
+# mismatch" and accused good zips of tampering.
+want="$(awk -v f="$ZIP" '{ n = $2; sub(/^\*/, "", n); if (n == f) { print $1; exit } }' "$TMP/SHA256SUMS.txt")"
+[ -n "$want" ] || fail "no checksum entry for $ZIP — release incomplete or tampered; aborting"
+got="$(sha256_of "$TMP/$ZIP")" || fail "neither shasum nor sha256sum found — cannot verify; aborting"
+[ -n "$got" ] && [ "$want" = "$got" ] \
+    || fail "checksum mismatch — aborting (zip tampered or download corrupted)"
+ok "sha256 matches the signed sums file"
+
+info "unpacking"
+unzip -q -o "$TMP/$ZIP" -d "$TMP/unpacked" || fail "unzip failed"
+[ -f "$TMP/unpacked/install.sh" ] || fail "the verified zip carries no install.sh"
+
+info "running the verified installer"
+cd "$TMP/unpacked"
+exec sh ./install.sh

@@ -1,0 +1,13 @@
+{{define "content"}}
+<h2>Sign in</h2>
+<form method="post" action="/manage/login">
+  <input type="hidden" name="next" value="{{.Next}}">
+  <label for="name">Account</label>
+  <input id="name" name="name" type="text" autocomplete="username" autofocus required>
+  <label for="password">Password</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" required>
+  <p><button type="submit">Continue</button></p>
+</form>
+<p class="dim">Accounts are provisioned on the host with
+<code>clawee-release-manage admin add</code>. There is no sign-up.</p>
+{{end}}

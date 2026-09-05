@@ -30,8 +30,12 @@ itself, not for the cuts it records.
 | Signing | `minisign` (release key), `modernech-sign` + `rcodesign` (Apple) |
 | Secrets | age-sealed, in the sibling `release.dp` repo |
 
-Two Go modules, so `go vet ./... && go test ./...` runs **twice**: once at the
-repo root and once in `tools/r2-mirror/`.
+**One Go module.** `tools/r2-mirror` had its own until the manage service
+needed the same S3/SigV4 client and the same `latest.json` schema: two modules
+meant either a `replace` directive or a second copy of the signing code, and a
+second copy of a signer is a signer that drifts. The shared pieces are now
+`internal/r2` (client, presigning, creds) and `internal/manifest` (the channel
+manifest). `go vet ./... && go test ./...` at the repo root covers everything.
 
 ## The cut chain
 
@@ -125,6 +129,159 @@ GitHub, or host.
 | `Client.HTTP` | `internal/register` | the manage service — the tests run the real handshake against a fake server |
 | `GO_BIN` | `release.sh` | the toolchain, for harness sessions whose PATH lacks `go` |
 
+## The manage service
+
+`cmd/clawee-release-manage` is the other half of the cut: the kit stages
+privately and registers a row, and this service is what an operator promotes it
+from (`~/.agents/guidelines/release-management.md`). It is a single Go binary
+with a SQLite catalog and server-rendered pages — no SPA build, no second
+runtime.
+
+```
+clawee-release-manage serve --data-dir <dir> --base-url https://<host> [--listen 127.0.0.1:8787]
+clawee-release-manage admin add|list|remove <name> --data-dir <dir>
+clawee-release-manage version [--data-dir <dir>]
+clawee-release-manage docs > docs/cli-help.md
+```
+
+`docs/cli-help.md` is generated, and a suite test byte-diffs it — regenerate it
+in the same change as any surface move (`~/.agents/guidelines/cli-help.md`).
+
+| Package | Owns |
+|---|---|
+| `internal/manage/catalog` | the closed vocabulary: components, channels, states, stamp shapes. The router derives its per-channel paths from `Channels` |
+| `internal/manage/store` | the SQLite catalog: rows, admins, sessions, CSRF, nonces, invites. Clock-free — every method takes `now` from the caller |
+| `internal/manage/totp` | RFC 6238, pinned to the official vectors. Ported from the console's `internal/console/totp` |
+| `internal/manage/auth` | password (argon2id), sealed TOTP secrets, sessions, CSRF, login rate limiting |
+| `internal/manage/intake` | the nonce and register endpoints; verifies against the baked `clawee-release.pub` |
+| `internal/manage/web` | routing split, read API, pages |
+
+**Ported from, not imported:** the surface follows
+`Burrowee/console/code/main/internal/console/` — `release/channel.go`,
+`release/download_guard.go`, `release/r2_mirror.go`, `release/github_publish.go`,
+`store/release_version.go`, `totp/`, `grant/`, and that repo's release-versions
+retention and promote/R2-sync design specs. Read those before extending this.
+
+### Roots and secrets
+
+`--data-dir` has **no default and is never read from the environment**: it holds
+the catalog and the service's root secret, and a guessed root is either a second
+empty catalog or a write into another deployment's
+(`~/.agents/guidelines/privilege.md`). The secret key (`secret.key`, mode 0600)
+is validated at its own writer — absolute, clean, `O_NOFOLLOW`, refused at any
+mode another user can read. It seals enrolled TOTP secrets, so a copy of the
+catalog file alone is inert.
+
+Login attempts are rate-limited per **(stage, client IP, account)** and the
+counters live in the catalog (`login_failures`), not in process memory — an
+unpersisted limit is one a restart erases, so a guessing run resumes across a
+deploy. The two stages are counted **separately** and only a correct code
+clears the code counter: a password must never vouch for the factor it is gated
+by. `ClientIP` reads `RemoteAddr` and never `X-Forwarded-For`, so behind the
+host's proxy the limit is effectively per-account; a deployment that needs
+per-client limits must answer the trusted-proxy question explicitly.
+
+Cookies are marked `Secure` iff `--base-url` is https; `--listen` defaults to
+loopback because the service belongs behind the host's TLS proxy
+(`ops/nginx/`).
+
+### Operator commands
+
+```sh
+# provision an account; the second factor enrols itself at first login
+clawee-release-manage admin add <name> --data-dir <DATA_DIR>
+clawee-release-manage admin list --data-dir <DATA_DIR>
+
+# remove an account: its sessions and CSRF tokens cascade away with it.
+# There is no re-enrolment path — resetting someone's second factor means
+# removing the account and adding it again.
+clawee-release-manage admin remove <name> --data-dir <DATA_DIR>
+
+# run the service
+clawee-release-manage serve --data-dir <DATA_DIR> --base-url https://<MANAGE_HOST> \
+    --r2-account <R2_ACCOUNT> --r2-creds <R2_CREDS> \
+    --staging-bucket <STAGING_BUCKET> --public-bucket <PUBLIC_BUCKET> \
+    --github-repo <ORG>/<REPO> --github-token-file <GH_TOKEN_FILE>
+
+# the nightly retention net (a timer runs this)
+clawee-release-manage retain --data-dir <DATA_DIR> <the same store flags>
+
+# what a real pass WOULD expire. Touches neither the buckets nor the catalog,
+# so it is safe — and useful — before the stores are wired.
+clawee-release-manage retain --data-dir <DATA_DIR> --dry-run
+```
+
+**The real `retain` pass REFUSES without a public store and a GitHub
+publisher.** Expiring a row is one-way — a later pass only ever sees rows it
+expires itself — so marking rows it cannot prune would orphan their bytes
+permanently. Use `--dry-run` until the stores are wired.
+
+Placeholders only, here and everywhere else in this repo's markdown: the real
+account, buckets, host and token path live in the sealed `release.dp` config
+(`~/.agents/guidelines/secrets.md`).
+
+| Flag | What it names |
+|---|---|
+| `--data-dir` | the catalog (`catalog.db`) and, by default, the service secret key. **No default, never read from the environment** |
+| `--secret-key` | the key that seals enrolled TOTP secrets; defaults to `secret.key` inside `--data-dir`. Created 0600 on first run, and refused at any mode another user can read or through a symlink. It is **not** in the catalog on purpose: a copy of the database alone is inert. Replacing it invalidates every enrolled second factor |
+| `--base-url` | the public URL; also decides whether cookies are marked `Secure` |
+| `--listen` | default `127.0.0.1:8787` — loopback, because the service belongs behind the host's TLS proxy (`ops/nginx/`) |
+| `--r2-account`, `--r2-creds` | the Cloudflare account and the file holding `access_key_id` / `secret_access_key` |
+| `--staging-bucket` | the PRIVATE bucket a cut uploads to. Read, presign, and one write (the invite script) |
+| `--public-bucket` | what installers read. Refused if it equals the staging bucket |
+| `--github-repo`, `--github-token-file` | the release listing; **promote fails closed without them** |
+
+**Every seam is optional and a missing one refuses with a 503 naming the gap**,
+so the service can be brought up in stages — catalog first, then invites, then
+promote. A *half*-configured store is an error, not a silently disabled one.
+The startup log prints which seams are live.
+
+### What promote does, in order
+
+    verify → copy every file → GitHub release → manifest LAST → flip → retention
+
+Every step before the flip is reversible by doing nothing: a failure leaves the
+row `staged`, the manifest untouched, and at most some orphaned public objects
+the next attempt overwrites. Writing the manifest last is what makes that true —
+the manifest is the go-live. Progress streams as NDJSON (`PATCH
+/api/v1/manage/releases/{id}`) and as plain text from the page buttons, both
+rendered from the same event stream.
+
+The service runs with **`WriteTimeout: 0`**. It bounds the whole response, and
+a promote's response is a progress stream open for the entire publish; at 60
+seconds it truncated the operator's log mid-publish while the promote carried
+on invisibly. What can wedge is bounded instead at the phases
+(`ReadHeaderTimeout`, `IdleTimeout`) and inside the outbound clients, which
+carry no blanket timeout for the same reason (`internal/r2/r2.go`).
+
+**Yank inverts the order** — manifest first, then the row flips — because a
+failure between the two must leave the withdrawn build *unserved* rather than
+still being handed to every installer.
+
+**Retention** keeps 10 stable / 1 beta per component on both surfaces, never the
+current row, and runs at the end of every promote plus from `retain`. Pruning is
+best effort: the catalog is the source of truth and bytes are reconciled to it.
+
+### Known gaps
+
+**Staging-store retention is not implemented.** The guideline
+(`~/.agents/guidelines/release-management.md` §7) asks for the staging store to
+be kept to the same counts plus every `staged` row; this service prunes the
+public surface and GitHub only. The divergence is deliberate and visible in the
+seam: `backend.Staging` exposes no `Delete`, so promote cannot damage what a
+cut staged no matter how it is wired. Adding staging retention means adding
+that capability, and it should arrive as its own narrower seam with its own
+tests rather than by widening this one. Until then the staging bucket grows
+without bound and is pruned by hand or by a bucket lifecycle rule.
+
+`RecordLoginFailure` **warns and continues** when the catalog write fails, so a
+database that has become unwritable would stop counting login attempts while
+still authenticating them. Failing the login closed instead would turn a
+transient disk problem into a total lockout of a surface whose whole job is
+publishing. It is a deliberate trade, not an oversight; if the catalog is
+unwritable, promote and invites are already refusing and the operator has a
+bigger problem than the counter.
+
 ## Sealed config
 
 Read through `CLAWEE_R2_CONFIG` (default `~/.clawee/release/config.toml`), which
@@ -166,7 +323,6 @@ password-protected key is a configuration error, named as such.
 ```sh
 # Go, both modules
 go vet ./...  && go test ./...
-( cd tools/r2-mirror && go vet ./... && go test ./... )
 
 # shell suites — run them all
 for t in tools/test-*.sh tools/*.test.sh; do bash "$t"; done

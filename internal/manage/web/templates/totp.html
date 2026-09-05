@@ -1,0 +1,19 @@
+{{define "content"}}
+<h2>Verification code</h2>
+{{if .Enrolment}}
+<div class="notice">
+  <p><strong>This is the only time this secret is shown.</strong> Add it to an
+  authenticator app now — it is stored encrypted and cannot be read back.</p>
+  <p class="stamp">{{.Enrolment.Secret}}</p>
+  <p class="stamp">{{.Enrolment.OTPAuthURL}}</p>
+</div>
+{{end}}
+<form method="post" action="/manage/login/totp">
+  <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+  <input type="hidden" name="next" value="{{.Next}}">
+  <label for="code">Six-digit code</label>
+  <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code"
+         pattern="[0-9]{6}" autofocus required>
+  <p><button type="submit">Sign in</button></p>
+</form>
+{{end}}

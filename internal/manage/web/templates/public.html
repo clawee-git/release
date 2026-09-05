@@ -1,0 +1,16 @@
+{{define "content"}}
+<h2>Clawee</h2>
+<p class="dim">This page is a placeholder: the public download surface lands
+with the site feature. It shows only what has been promoted.</p>
+{{range .Channels}}
+<h2>{{.Channel}}</h2>
+{{if .Rows}}
+<table>
+  <thead><tr><th>component</th><th>version</th><th>stamp</th></tr></thead>
+  <tbody>
+  {{range .Rows}}<tr><td>{{.Component}}</td><td>{{.Version}}</td><td class="stamp">{{.Stamp}}</td></tr>{{end}}
+  </tbody>
+</table>
+{{else}}<p class="dim">Nothing promoted on this channel yet.</p>{{end}}
+{{end}}
+{{end}}

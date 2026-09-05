@@ -1,0 +1,45 @@
+{{define "content"}}
+<nav class="tabs">
+  {{range .Channels}}<a href="/manage?channel={{.}}"{{if eq . $.Channel}} aria-current="page"{{end}}>{{.}}</a>{{end}}
+</nav>
+<div class="cards">
+{{range .Cards}}
+  <section class="card">
+    <h3>{{.Component}}</h3>
+    <div class="row">
+      <div class="dim">current</div>
+      {{if .Current}}
+        <div class="stamp">{{.Current.Stamp}}</div>
+        <div><span class="state">{{.Current.State}}</span> {{.Current.Version}}
+          <span class="dim">promoted {{.Current.PromotedAt}}</span></div>
+        <form class="inline" method="post" action="/manage/releases/{{.Current.ID}}/yank">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <button type="submit">yank</button>
+        </form>
+      {{else}}
+        <div class="dim">nothing promoted on this channel</div>
+      {{end}}
+    </div>
+    <div class="row">
+      <div class="dim">unpromoted</div>
+      {{if .Unpromoted}}
+        <div class="stamp">{{.Unpromoted.Stamp}}</div>
+        <div><span class="state">{{.Unpromoted.State}}</span> {{.Unpromoted.Version}}
+          <span class="dim">cut {{.Unpromoted.CreatedAt}}</span></div>
+        <form class="inline" method="post" action="/manage/releases/{{.Unpromoted.ID}}/promote">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <button type="submit">promote</button>
+        </form>
+        <form class="inline" method="post" action="/manage/releases/{{.Unpromoted.ID}}/mint">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <button type="submit">mint invite</button>
+        </form>
+      {{else}}
+        <div class="dim">no staged cut waiting</div>
+      {{end}}
+    </div>
+    <div class="row"><a href="/manage/releases/{{.Component}}?channel={{$.Channel}}">history</a></div>
+  </section>
+{{end}}
+</div>
+{{end}}
