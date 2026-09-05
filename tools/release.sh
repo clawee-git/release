@@ -328,6 +328,145 @@ bins_for() {
     esac
 }
 
+# ---- staging + registration -------------------------------------------------
+# THIS BLOCK MUST STAY ABOVE THE PRE-FLIGHT. The pre-flight calls
+# require_manage_url, and bash resolves a function name only if it has already
+# been read: defined below, every non-dry-run cut died with "command not found"
+# (exit 127) before the first build, and no suite caught it because every suite
+# stayed on the --dry-run path. tools/test-cut-no-publish.sh PART D now runs a
+# stubbed non-dry-run pre-flight for exactly this reason.
+# resolve_channel <comp> — echo the channel this cut belongs to.
+#
+# An explicit --channel wins EXCEPT when it claims `stable` for a source tree
+# sitting on a beta branch: that combination is always a mistake, and honouring
+# it files beta bytes in the stable catalog where retention and every installer
+# treat them as the real thing. Without a flag, the branch decides.
+resolve_channel() {
+    local comp="$1" src br derived
+    src="$(src_for "${comp}")"
+    br="$(git -C "${src}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
+    case "${br}" in
+        beta|beta-*) derived="beta" ;;
+        *)           derived="stable" ;;
+    esac
+    if [ "${CHANNEL_EXPLICIT}" = 1 ]; then
+        if [ "${CHANNEL}" = stable ] && [ "${derived}" = beta ]; then
+            echo "✗ --channel stable requested but ${comp} source is on branch '${br}'" >&2
+            echo "  A beta tree cut into the stable channel is a mislabelled row: retention" >&2
+            echo "  and every installer would treat it as a stable release. Cut it as beta," >&2
+            echo "  or cut from a non-beta branch." >&2
+            exit 2
+        fi
+        printf '%s' "${CHANNEL}"
+        return 0
+    fi
+    printf '%s' "${derived}"
+}
+
+# require_manage_url — resolve MANAGE_URL or refuse, naming the key.
+#
+# Called before the upload, never after: a refusal here costs nothing, the same
+# refusal after the upload costs a stranded artifact.
+MANAGE_URL=""
+require_manage_url() {
+    MANAGE_URL="${CLAWEE_MANAGE_URL:-$(toml_get "${R2_CONFIG}" manage_url || true)}"
+    [ -n "${MANAGE_URL}" ] && return 0
+    echo "✗ no manage service URL configured — refusing to cut." >&2
+    echo "  A cut uploads to the PRIVATE staging bucket and then registers a" >&2
+    echo "  'staged' catalog row. Without the row the uploaded bytes are a" >&2
+    echo "  stranded artifact: nothing lists them and nothing can promote them." >&2
+    echo "  Set it as one of:" >&2
+    echo "    manage_url = \"<manage URL>\"   in ${R2_CONFIG}" >&2
+    echo "    \$CLAWEE_MANAGE_URL             the same value, from the environment" >&2
+    exit 1
+}
+
+# stage_to_staging <comp> <stamp> <semver> <stage_dir> <channel> [--dry-run]
+#
+# Uploads the four zips + SHA256SUMS.txt + its signature to the PRIVATE staging
+# bucket under <comp>/<channel>/<stamp>/, with --no-manifest so nothing names
+# the new stamp as current. Every unresolved piece is FATAL — see the config
+# block's note: this upload is the cut's only publication, so "skipped" and
+# "failed" are the same outcome and neither may pass for success.
+#
+# Touching this function's branches → run tools/test-stage-fail-closed.sh.
+stage_to_staging() {
+    local comp="$1" stamp="$2" semver="$3" stage="$4" channel="$5" dry="${6:-}"
+    local account bucket
+    account="$(toml_get "${R2_CONFIG}" r2_account_id || true)"
+    bucket="${CLAWEE_R2_STAGING_BUCKET:-$(toml_get "${R2_CONFIG}" staging_bucket || true)}"
+    if [ -n "${dry}" ]; then
+        # --dry-run needs neither creds nor an account: it prints the keys the
+        # cut WOULD write and uploads nothing.
+        ( cd "${REPO_ROOT}/tools/r2-mirror" && "${GO_BIN}" run . \
+            --bucket "${bucket:-<staging bucket>}" --prefix "${channel}" --no-manifest \
+            --stage-dir "${stage}" --comp "${comp}" \
+            --version "${semver}" --stamp "${stamp}" --dry-run )
+        return $?
+    fi
+    if [ -z "${account}" ]; then
+        echo "✗ no r2_account_id in ${R2_CONFIG} — cannot reach the staging bucket." >&2
+        return 1
+    fi
+    if [ -z "${bucket}" ]; then
+        echo "✗ no staging_bucket in ${R2_CONFIG} (or \$CLAWEE_R2_STAGING_BUCKET)." >&2
+        echo "  There is deliberately no default: a guessed bucket name is either a" >&2
+        echo "  failed upload or a write to the PUBLIC bucket, and the second one" >&2
+        echo "  publishes a build nobody approved." >&2
+        return 1
+    fi
+    if [ ! -f "${R2_CREDS}" ]; then
+        echo "✗ R2 creds not found at ${R2_CREDS} (set \$CLAWEE_R2_CREDS)." >&2
+        return 1
+    fi
+    echo "→ staging ${comp} ${stamp} → ${bucket}:${comp}/${channel}/${stamp}/ (private)"
+    if ( cd "${REPO_ROOT}/tools/r2-mirror" && "${GO_BIN}" run . \
+            --account "${account}" --bucket "${bucket}" \
+            --prefix "${channel}" --no-manifest \
+            --stage-dir "${stage}" --comp "${comp}" \
+            --version "${semver}" --stamp "${stamp}" \
+            --creds "${R2_CREDS}" ); then
+        return 0
+    fi
+    echo "✗ staging upload FAILED for ${comp} ${stamp} — stopping here." >&2
+    echo "  State: NOTHING was published (the cut never publishes), no catalog row" >&2
+    echo "  was registered, the bootstraps were not regenerated and no [RELEASED]" >&2
+    echo "  marker was committed. Any objects that did land under" >&2
+    echo "  ${comp}/${channel}/${stamp}/ are unreferenced and harmless." >&2
+    echo "  Re-run the same cut: it is idempotent up to the version bump, and" >&2
+    echo "  --distribute-only ${comp} ${stamp} re-stages the existing dist/ dir" >&2
+    echo "  without rebuilding." >&2
+    return 1
+}
+
+# register_staged <comp> <stamp> <semver> <stage_dir> <channel> [--dry-run]
+#
+# Fails the cut on a refusal — AFTER the upload, deliberately. The uploaded
+# bytes are inert without a row (nothing lists a bucket the manage service does
+# not know about), so the failure to surface is the missing row, not the
+# objects.
+register_staged() {
+    local comp="$1" stamp="$2" semver="$3" stage="$4" channel="$5" dry="${6:-}"
+    local args=(--comp "${comp}" --channel "${channel}" --version "${semver}"
+                --stamp "${stamp}" --stage-dir "${stage}")
+    if [ -n "${dry}" ]; then
+        ( cd "${REPO_ROOT}" && "${GO_BIN}" run ./cmd/clawee-release-register \
+            "${args[@]}" --manage-url "${MANAGE_URL:-<manage URL>}" --dry-run )
+        return $?
+    fi
+    if ( cd "${REPO_ROOT}" && "${GO_BIN}" run ./cmd/clawee-release-register \
+            "${args[@]}" --manage-url "${MANAGE_URL}" --key "${SIGN_KEY}" ); then
+        return 0
+    fi
+    echo "✗ registering ${comp} ${stamp} with ${MANAGE_URL} FAILED." >&2
+    echo "  The artifacts ARE in the staging bucket under ${comp}/${channel}/${stamp}/," >&2
+    echo "  but no catalog row names them, so nothing can list or promote them." >&2
+    echo "  Nothing public changed and no marker commit was made." >&2
+    echo "  Fix the service (or the URL) and re-run:" >&2
+    echo "    bash tools/release.sh --distribute-only ${comp} ${stamp} --channel ${channel}" >&2
+    return 1
+}
+
 # ---- pre-flight -------------------------------------------------------------
 # Skipped entirely under --distribute-only: no build/sign/notarize happens
 # there (that already ran upstream in `rkit build`), so none of zip/unzip/
@@ -561,139 +700,6 @@ render_inner() {
             ;;
     esac
     chmod 0755 "${dest}"
-}
-
-# ---- staging + registration -------------------------------------------------
-# resolve_channel <comp> — echo the channel this cut belongs to.
-#
-# An explicit --channel wins EXCEPT when it claims `stable` for a source tree
-# sitting on a beta branch: that combination is always a mistake, and honouring
-# it files beta bytes in the stable catalog where retention and every installer
-# treat them as the real thing. Without a flag, the branch decides.
-resolve_channel() {
-    local comp="$1" src br derived
-    src="$(src_for "${comp}")"
-    br="$(git -C "${src}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
-    case "${br}" in
-        beta|beta-*) derived="beta" ;;
-        *)           derived="stable" ;;
-    esac
-    if [ "${CHANNEL_EXPLICIT}" = 1 ]; then
-        if [ "${CHANNEL}" = stable ] && [ "${derived}" = beta ]; then
-            echo "✗ --channel stable requested but ${comp} source is on branch '${br}'" >&2
-            echo "  A beta tree cut into the stable channel is a mislabelled row: retention" >&2
-            echo "  and every installer would treat it as a stable release. Cut it as beta," >&2
-            echo "  or cut from a non-beta branch." >&2
-            exit 2
-        fi
-        printf '%s' "${CHANNEL}"
-        return 0
-    fi
-    printf '%s' "${derived}"
-}
-
-# require_manage_url — resolve MANAGE_URL or refuse, naming the key.
-#
-# Called before the upload, never after: a refusal here costs nothing, the same
-# refusal after the upload costs a stranded artifact.
-MANAGE_URL=""
-require_manage_url() {
-    MANAGE_URL="${CLAWEE_MANAGE_URL:-$(toml_get "${R2_CONFIG}" manage_url || true)}"
-    [ -n "${MANAGE_URL}" ] && return 0
-    echo "✗ no manage service URL configured — refusing to cut." >&2
-    echo "  A cut uploads to the PRIVATE staging bucket and then registers a" >&2
-    echo "  'staged' catalog row. Without the row the uploaded bytes are a" >&2
-    echo "  stranded artifact: nothing lists them and nothing can promote them." >&2
-    echo "  Set it as one of:" >&2
-    echo "    manage_url = \"<manage URL>\"   in ${R2_CONFIG}" >&2
-    echo "    \$CLAWEE_MANAGE_URL             the same value, from the environment" >&2
-    exit 1
-}
-
-# stage_to_staging <comp> <stamp> <semver> <stage_dir> <channel> [--dry-run]
-#
-# Uploads the four zips + SHA256SUMS.txt + its signature to the PRIVATE staging
-# bucket under <comp>/<channel>/<stamp>/, with --no-manifest so nothing names
-# the new stamp as current. Every unresolved piece is FATAL — see the config
-# block's note: this upload is the cut's only publication, so "skipped" and
-# "failed" are the same outcome and neither may pass for success.
-#
-# Touching this function's branches → run tools/test-stage-fail-closed.sh.
-stage_to_staging() {
-    local comp="$1" stamp="$2" semver="$3" stage="$4" channel="$5" dry="${6:-}"
-    local account bucket
-    account="$(toml_get "${R2_CONFIG}" r2_account_id || true)"
-    bucket="${CLAWEE_R2_STAGING_BUCKET:-$(toml_get "${R2_CONFIG}" staging_bucket || true)}"
-    if [ -n "${dry}" ]; then
-        # --dry-run needs neither creds nor an account: it prints the keys the
-        # cut WOULD write and uploads nothing.
-        ( cd "${REPO_ROOT}/tools/r2-mirror" && "${GO_BIN}" run . \
-            --bucket "${bucket:-<staging bucket>}" --prefix "${channel}" --no-manifest \
-            --stage-dir "${stage}" --comp "${comp}" \
-            --version "${semver}" --stamp "${stamp}" --dry-run )
-        return $?
-    fi
-    if [ -z "${account}" ]; then
-        echo "✗ no r2_account_id in ${R2_CONFIG} — cannot reach the staging bucket." >&2
-        return 1
-    fi
-    if [ -z "${bucket}" ]; then
-        echo "✗ no staging_bucket in ${R2_CONFIG} (or \$CLAWEE_R2_STAGING_BUCKET)." >&2
-        echo "  There is deliberately no default: a guessed bucket name is either a" >&2
-        echo "  failed upload or a write to the PUBLIC bucket, and the second one" >&2
-        echo "  publishes a build nobody approved." >&2
-        return 1
-    fi
-    if [ ! -f "${R2_CREDS}" ]; then
-        echo "✗ R2 creds not found at ${R2_CREDS} (set \$CLAWEE_R2_CREDS)." >&2
-        return 1
-    fi
-    echo "→ staging ${comp} ${stamp} → ${bucket}:${comp}/${channel}/${stamp}/ (private)"
-    if ( cd "${REPO_ROOT}/tools/r2-mirror" && "${GO_BIN}" run . \
-            --account "${account}" --bucket "${bucket}" \
-            --prefix "${channel}" --no-manifest \
-            --stage-dir "${stage}" --comp "${comp}" \
-            --version "${semver}" --stamp "${stamp}" \
-            --creds "${R2_CREDS}" ); then
-        return 0
-    fi
-    echo "✗ staging upload FAILED for ${comp} ${stamp} — stopping here." >&2
-    echo "  State: NOTHING was published (the cut never publishes), no catalog row" >&2
-    echo "  was registered, the bootstraps were not regenerated and no [RELEASED]" >&2
-    echo "  marker was committed. Any objects that did land under" >&2
-    echo "  ${comp}/${channel}/${stamp}/ are unreferenced and harmless." >&2
-    echo "  Re-run the same cut: it is idempotent up to the version bump, and" >&2
-    echo "  --distribute-only ${comp} ${stamp} re-stages the existing dist/ dir" >&2
-    echo "  without rebuilding." >&2
-    return 1
-}
-
-# register_staged <comp> <stamp> <semver> <stage_dir> <channel> [--dry-run]
-#
-# Fails the cut on a refusal — AFTER the upload, deliberately. The uploaded
-# bytes are inert without a row (nothing lists a bucket the manage service does
-# not know about), so the failure to surface is the missing row, not the
-# objects.
-register_staged() {
-    local comp="$1" stamp="$2" semver="$3" stage="$4" channel="$5" dry="${6:-}"
-    local args=(--comp "${comp}" --channel "${channel}" --version "${semver}"
-                --stamp "${stamp}" --stage-dir "${stage}")
-    if [ -n "${dry}" ]; then
-        ( cd "${REPO_ROOT}" && "${GO_BIN}" run ./cmd/clawee-release-register \
-            "${args[@]}" --manage-url "${MANAGE_URL:-<manage URL>}" --dry-run )
-        return $?
-    fi
-    if ( cd "${REPO_ROOT}" && "${GO_BIN}" run ./cmd/clawee-release-register \
-            "${args[@]}" --manage-url "${MANAGE_URL}" --key "${SIGN_KEY}" ); then
-        return 0
-    fi
-    echo "✗ registering ${comp} ${stamp} with ${MANAGE_URL} FAILED." >&2
-    echo "  The artifacts ARE in the staging bucket under ${comp}/${channel}/${stamp}/," >&2
-    echo "  but no catalog row names them, so nothing can list or promote them." >&2
-    echo "  Nothing public changed and no marker commit was made." >&2
-    echo "  Fix the service (or the URL) and re-run:" >&2
-    echo "    bash tools/release.sh --distribute-only ${comp} ${stamp} --channel ${channel}" >&2
-    return 1
 }
 
 # ---- per-component release --------------------------------------------------

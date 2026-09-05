@@ -186,4 +186,50 @@ set -e
 [ "${rc}" -eq 2 ] || die "--channel nonsense should be a usage error (got ${rc})"
 printf '  ✓ an unknown channel is a usage error\n'
 
+# ---- PART D: the NON-dry-run pre-flight actually runs ----------------------
+# Every other case here stays on the --dry-run path, and that is how a real cut
+# shipped broken: require_manage_url was called from the pre-flight and defined
+# 180 lines below it, so bash had not read the name yet and every non-dry-run
+# cut died "command not found", exit 127, before the first build. A grep cannot
+# see that — the call and the definition both exist — so this case EXECUTES the
+# pre-flight and demands the refusal it is supposed to produce.
+#
+# The cut is steered into refusing at the manage-URL check (the last pre-flight
+# step) so nothing is ever built: what is asserted is that the run reached that
+# check and said the right thing, not that it got further.
+say "PART D: a non-dry-run pre-flight reaches the manage-URL refusal"
+
+PREFLIGHT_STUBS="${WORK}/preflight"; mkdir -p "${PREFLIGHT_STUBS}"
+# The pre-flight only checks these exist; none of them runs before the refusal.
+for cmd in zip unzip minisign age; do
+    printf '#!/usr/bin/env bash
+exit 0
+' > "${PREFLIGHT_STUBS}/${cmd}"
+    chmod +x "${PREFLIGHT_STUBS}/${cmd}"
+done
+# A stand-in for the age-sealed signing key: the pre-flight tests for the file,
+# it does not decrypt it until later.
+FAKE_DP="${WORK}/dp"; mkdir -p "${FAKE_DP}"
+: > "${FAKE_DP}/clawee-release.key.age"
+
+set +e
+out="$(cd "${REPO_ROOT}" && PATH="${PREFLIGHT_STUBS}:${STUBS}:${PATH}" \
+    DP_DIR="${FAKE_DP}" \
+    CLAWEE_R2_CONFIG="${WORK}/no-such-config.toml" \
+    CLAWEE_MANAGE_URL="" \
+    CLAWEE_SRC_CLAWEE="${FAKE_SRC}" \
+    bash "${RELEASE_SH}" clawee </dev/null 2>&1)"
+rc=$?
+set -e
+
+echo "${out}" | grep -qi 'command not found' \
+    && die "the pre-flight called a function defined later in the file:\n${out}"
+[ "${rc}" -ne 127 ] || die "the cut exited 127 (unresolved command) — a function is used before it is defined:\n${out}"
+[ "${rc}" -ne 0 ] || die "a cut with no manage URL configured succeeded"
+echo "${out}" | grep -qi 'no manage service URL configured' \
+    || die "the pre-flight did not reach the manage-URL refusal (rc=${rc}):\n${out}"
+echo "${out}" | grep -q 'manage_url' \
+    || die "the refusal does not name the config key:\n${out}"
+printf '  ✓ non-dry-run pre-flight refuses on the manage URL, naming the key\n'
+
 printf '\n✓ cut-no-publish PASSED\n'
