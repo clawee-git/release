@@ -20,8 +20,18 @@ func Targets() []build.Target {
 // Bins returns the build.BinSpec list for comp, mirroring tools/build.sh's
 // binary->package map. GoWork is left empty (release-kit build.Compile defaults
 // it to "off" — module mode, pinned tags).
+//
+// Every binary is linked with -X main.channel=stable as well: the cli's
+// cmd/clawee and cmd/clawee-updater parse that value at startup and REFUSE an
+// empty one ("bad build: -X main.channel=\"\" is not a channel"), so a cut
+// without it publishes a clawee that cannot start (this line found out on
+// 2026-09-05, one cut after the cli adopted the check). main is the stable
+// cut origin, so the value is the constant; the channel-aware rework on dev
+// derives it from the source branch and supersedes this when it lands.
+// A package without a main.channel symbol (claweed today) drops the flag
+// silently, which is the harmless direction.
 func Bins(comp, stamp string) ([]build.BinSpec, error) {
-	v := "-X main.version=" + stamp
+	v := "-X main.version=" + stamp + " -X main.channel=stable"
 	switch comp {
 	case "clawee":
 		return []build.BinSpec{

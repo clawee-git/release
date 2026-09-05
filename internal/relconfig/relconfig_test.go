@@ -15,7 +15,7 @@ func TestBinsClawee(t *testing.T) {
 		if want[b.Name] != b.Package {
 			t.Errorf("bin %s: package %q, want %q", b.Name, b.Package, want[b.Name])
 		}
-		if b.Ldflags != "-X main.version=v0.1.90.2026.07.14.deadbeef" {
+		if b.Ldflags != "-X main.version=v0.1.90.2026.07.14.deadbeef -X main.channel=stable" {
 			t.Errorf("bin %s: ldflags %q", b.Name, b.Ldflags)
 		}
 	}
