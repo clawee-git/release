@@ -17,55 +17,136 @@ Usage:
   clawee-release-manage <verb> [flags]
 
 Commands:
-  serve                                   run the manage service: the catalog, the register
-                                          endpoints and /manage
-            [--base-url <url>]            the public url this service is reached at, e.g.
-                                          https://release.example.org (required)
-            [--data-dir <dir>]            the dir holding the catalog and the service secret key
-                                          (required)
-            [--github-repo <owner/repo>]  owner/repo to publish releases to
-            [--github-token-file <path>]  path to a file holding the GitHub token
-            [--listen <address>]          address to bind; the default is loopback because this
-                                          service sits behind the host's TLS proxy
-            [--public-bucket <bucket>]    the public bucket promote copies into
-            [--r2-account <account>]      the Cloudflare account id the buckets live in
-            [--r2-creds <path>]           path to the file holding access_key_id and
-                                          secret_access_key
-            [--secret-key <path>]         path to the service secret key; defaults to secret.key
-                                          inside --data-dir
-            [--staging-bucket <bucket>]   the PRIVATE staging bucket a cut uploads to
-  admin                                   operator accounts for the manage surface
-    add                                   provision an account; the second factor enrols at first
-                                          login
-            <name>                        the account name, as it is typed at the login page
-            [--data-dir <dir>]            the dir holding the catalog and the service secret key
-                                          (required)
-            [--password-stdin]            read the password from standard input instead of prompting
-    list                                  print the accounts and whether each has enrolled a second
-                                          factor
-            [--data-dir <dir>]            the dir holding the catalog and the service secret key
-                                          (required)
-    remove                                delete an account and end its sessions
-            <name>                        the account to delete
-            [--data-dir <dir>]            the dir holding the catalog and the service secret key
-                                          (required)
-  retain                                  run retention over every component and channel — the
-                                          nightly net
-            [--data-dir <dir>]            the dir holding the catalog and the service secret key
-                                          (required)
-            [--dry-run]                   print which rows WOULD be expired and prune nothing
-            [--github-repo <owner/repo>]  owner/repo to publish releases to
-            [--github-token-file <path>]  path to a file holding the GitHub token
-            [--public-bucket <bucket>]    the public bucket promote copies into
-            [--r2-account <account>]      the Cloudflare account id the buckets live in
-            [--r2-creds <path>]           path to the file holding access_key_id and
-                                          secret_access_key
-            [--staging-bucket <bucket>]   the PRIVATE staging bucket a cut uploads to
-  version                                 print the build stamp, and the applied migrations when a
-                                          data dir is named
-            [--data-dir <dir>]            the dir holding the catalog; when given, the applied
-                                          migrations are printed too
-  docs                                    print the whole command surface as markdown
+  serve                                          run the manage service: the catalog, the register
+                                                 endpoints and /manage
+                  [--base-url <url>]             the public url this service is reached at, e.g.
+                                                 https://release.example.org (required)
+                  [--data-dir <dir>]             the dir holding the catalog and the service secret
+                                                 key (required)
+                  [--github-repo <owner/repo>]   owner/repo to publish releases to
+                  [--github-token-file <path>]   path to a file holding the GitHub token
+                  [--listen <address>]           address to bind; the default is loopback because
+                                                 this service sits behind the host's TLS proxy
+                  [--public-base-url <url>]      the public url the public bucket is served at, e.g.
+                                                 https://downloads.example.org; the download page
+                                                 links into its channel layout
+                  [--public-bucket <bucket>]     the public bucket promote copies into
+                  [--r2-account <account>]       the Cloudflare account id the buckets live in
+                  [--r2-creds <path>]            path to the file holding access_key_id and
+                                                 secret_access_key
+                  [--secret-key <path>]          path to the service secret key; defaults to
+                                                 secret.key inside --data-dir
+                  [--staging-bucket <bucket>]    the PRIVATE staging bucket a cut uploads to
+  admin                                          operator accounts for the manage surface
+    add                                          provision an account; the second factor enrols at
+                                                 first login
+                  <name>                         the account name, as it is typed at the login page
+                  [--data-dir <dir>]             the dir holding the catalog and the service secret
+                                                 key (required)
+                  [--password-stdin]             read the password from standard input instead of
+                                                 prompting
+    list                                         print the accounts and whether each has enrolled a
+                                                 second factor
+                  [--data-dir <dir>]             the dir holding the catalog and the service secret
+                                                 key (required)
+    remove                                       delete an account and end its sessions
+                  <name>                         the account to delete
+                  [--data-dir <dir>]             the dir holding the catalog and the service secret
+                                                 key (required)
+  retain                                         run retention over every component and channel —
+                                                 the nightly net
+                  [--data-dir <dir>]             the dir holding the catalog and the service secret
+                                                 key (required)
+                  [--dry-run]                    print which rows WOULD be expired and prune nothing
+                  [--github-repo <owner/repo>]   owner/repo to publish releases to
+                  [--github-token-file <path>]   path to a file holding the GitHub token
+                  [--public-base-url <url>]      the public url the public bucket is served at, e.g.
+                                                 https://downloads.example.org; the download page
+                                                 links into its channel layout
+                  [--public-bucket <bucket>]     the public bucket promote copies into
+                  [--r2-account <account>]       the Cloudflare account id the buckets live in
+                  [--r2-creds <path>]            path to the file holding access_key_id and
+                                                 secret_access_key
+                  [--staging-bucket <bucket>]    the PRIVATE staging bucket a cut uploads to
+  publish-static                                 copy the kit's generated static files to the
+                                                 release host — run when the KIT changes, not per
+                                                 cut
+                  [--dest <[user@host:]dir>]     where to publish: [user@host:]dir, the nginx static
+                                                 root. With no host it is a local copy (required)
+                  [--dry-run]                    print the plan and copy nothing
+                  [--root <dir>]                 the release kit checkout dir holding the generated
+                                                 files (required)
+  doctor                                         check this deployment: the catalog, the roots, the
+                                                 signing key, the buckets and the token
+                  [--check-write]                also require that the GitHub token's permissions
+                                                 would allow publishing a release; nothing is
+                                                 created either way
+                  [--data-dir <dir>]             the dir holding the catalog and the service secret
+                                                 key (required)
+                  [--github-repo <owner/repo>]   owner/repo to publish releases to
+                  [--github-token-file <path>]   path to a file holding the GitHub token
+                  [--json]                       print the report as JSON instead of one line per
+                                                 check
+                  [--kit-root <dir>]             a release kit checkout dir on this host; the
+                                                 signing key is compared against its pubkey and
+                                                 bootstraps
+                  [--public-base-url <url>]      the public url the public bucket is served at, e.g.
+                                                 https://downloads.example.org; the download page
+                                                 links into its channel layout
+                  [--public-bucket <bucket>]     the public bucket promote copies into
+                  [--r2-account <account>]       the Cloudflare account id the buckets live in
+                  [--r2-creds <path>]            path to the file holding access_key_id and
+                                                 secret_access_key
+                  [--secret-key <path>]          path to the service secret key; defaults to
+                                                 secret.key inside --data-dir
+                  [--staging-bucket <bucket>]    the PRIVATE staging bucket a cut uploads to
+                  [--user <user>]                the user the service runs as; the data dir and the
+                                                 secret key must be owned by it, not by whoever runs
+                                                 this command
+  ops                                            the deployment artefacts — rendered here, installed
+                                                 by the operator
+    render                                       write the systemd units, the retention timer and
+                                                 the nginx vhost to a directory
+                  [--base-url <url>]             the public url the service is reached at (required)
+                  [--data-dir <dir>]             the dir holding the catalog and the service secret
+                                                 key (required); it is the unit's only writable path
+                  [--exec <path>]                path the service binary is installed at, as the
+                                                 unit will exec it
+                  [--github-repo <owner/repo>]   owner/repo to publish releases to
+                  [--github-token-file <path>]   path to a file holding the GitHub token
+                  [--group <group>]              the unit's group; empty leaves systemd to use the
+                                                 user's primary group
+                  [--host <hostname>]            the hostname the vhost answers for (required); it
+                                                 names the rendered conf too
+                  [--listen <address>]           address the unit binds and the vhost proxies to;
+                                                 loopback, because the edge terminates TLS
+                  [--out <dir>]                  the dir to write the rendered files into
+                                                 (required); it is created if missing
+                  [--public-base-url <url>]      the public url the public bucket is served at, e.g.
+                                                 https://downloads.example.org; the download page
+                                                 links into its channel layout
+                  [--public-bucket <bucket>]     the public bucket promote copies into
+                  [--r2-account <account>]       the Cloudflare account id the buckets live in
+                  [--r2-creds <path>]            path to the file holding access_key_id and
+                                                 secret_access_key
+                  [--retain-at <time>]           the nightly retention pass's time of day, as
+                                                 systemd OnCalendar spells it
+                  [--secret-key <path>]          path to the service secret key, when it is not the
+                                                 default inside --data-dir
+                  [--staging-bucket <bucket>]    the PRIVATE staging bucket a cut uploads to
+                  [--static-dir <dir>]           the nginx static root (required) — the same dir
+                                                 publish-static writes to
+                  [--tls-cert <path>]            path to the origin certificate; defaults to the
+                                                 Let's Encrypt layout for --host
+                  [--tls-key <path>]             path to the origin private key; defaults to the
+                                                 Let's Encrypt layout for --host
+                  [--tls-protocols <protocols>]  the protocols line for the vhost
+                  [--user <user>]                the dedicated user the unit runs as
+  version                                        print the build stamp, and the applied migrations
+                                                 when a data dir is named
+                  [--data-dir <dir>]             the dir holding the catalog; when given, the
+                                                 applied migrations are printed too
+  docs                                           print the whole command surface as markdown
 
 Run 'clawee-release-manage <verb> --help' for that command's help.
 ```
@@ -91,6 +172,9 @@ Commands:
          [--github-token-file <path>]  path to a file holding the GitHub token
          [--listen <address>]          address to bind; the default is loopback because this service
                                        sits behind the host's TLS proxy
+         [--public-base-url <url>]     the public url the public bucket is served at, e.g.
+                                       https://downloads.example.org; the download page links into
+                                       its channel layout
          [--public-bucket <bucket>]    the public bucket promote copies into
          [--r2-account <account>]      the Cloudflare account id the buckets live in
          [--r2-creds <path>]           path to the file holding access_key_id and secret_access_key
@@ -190,10 +274,172 @@ Commands:
           [--dry-run]                   print which rows WOULD be expired and prune nothing
           [--github-repo <owner/repo>]  owner/repo to publish releases to
           [--github-token-file <path>]  path to a file holding the GitHub token
+          [--public-base-url <url>]     the public url the public bucket is served at, e.g.
+                                        https://downloads.example.org; the download page links into
+                                        its channel layout
           [--public-bucket <bucket>]    the public bucket promote copies into
           [--r2-account <account>]      the Cloudflare account id the buckets live in
           [--r2-creds <path>]           path to the file holding access_key_id and secret_access_key
           [--staging-bucket <bucket>]   the PRIVATE staging bucket a cut uploads to
+```
+
+### `clawee-release-manage publish-static`
+
+copy the kit's generated static files to the release host — run when the KIT changes, not per cut
+
+```
+clawee-release-manage publish-static — copy the kit's generated static files to the release host — run when the KIT changes, not per cut
+
+Usage:
+  clawee-release-manage publish-static [flags]
+
+Commands:
+  publish-static                              copy the kit's generated static files to the release
+                                              host — run when the KIT changes, not per cut
+                  [--dest <[user@host:]dir>]  where to publish: [user@host:]dir, the nginx static
+                                              root. With no host it is a local copy (required)
+                  [--dry-run]                 print the plan and copy nothing
+                  [--root <dir>]              the release kit checkout dir holding the generated
+                                              files (required)
+```
+
+### `clawee-release-manage doctor`
+
+check this deployment: the catalog, the roots, the signing key, the buckets and the token
+
+```
+clawee-release-manage doctor — check this deployment: the catalog, the roots, the signing key, the buckets and the token
+
+Usage:
+  clawee-release-manage doctor [flags]
+
+Commands:
+  doctor                                check this deployment: the catalog, the roots, the signing
+                                        key, the buckets and the token
+          [--check-write]               also require that the GitHub token's permissions would allow
+                                        publishing a release; nothing is created either way
+          [--data-dir <dir>]            the dir holding the catalog and the service secret key
+                                        (required)
+          [--github-repo <owner/repo>]  owner/repo to publish releases to
+          [--github-token-file <path>]  path to a file holding the GitHub token
+          [--json]                      print the report as JSON instead of one line per check
+          [--kit-root <dir>]            a release kit checkout dir on this host; the signing key is
+                                        compared against its pubkey and bootstraps
+          [--public-base-url <url>]     the public url the public bucket is served at, e.g.
+                                        https://downloads.example.org; the download page links into
+                                        its channel layout
+          [--public-bucket <bucket>]    the public bucket promote copies into
+          [--r2-account <account>]      the Cloudflare account id the buckets live in
+          [--r2-creds <path>]           path to the file holding access_key_id and secret_access_key
+          [--secret-key <path>]         path to the service secret key; defaults to secret.key
+                                        inside --data-dir
+          [--staging-bucket <bucket>]   the PRIVATE staging bucket a cut uploads to
+          [--user <user>]               the user the service runs as; the data dir and the secret
+                                        key must be owned by it, not by whoever runs this command
+```
+
+### `clawee-release-manage ops`
+
+the deployment artefacts — rendered here, installed by the operator
+
+```
+clawee-release-manage ops — the deployment artefacts — rendered here, installed by the operator
+
+Usage:
+  clawee-release-manage ops <verb> [flags]
+
+Commands:
+  ops                                      the deployment artefacts — rendered here, installed by
+                                           the operator
+    render                                 write the systemd units, the retention timer and the
+                                           nginx vhost to a directory
+            [--base-url <url>]             the public url the service is reached at (required)
+            [--data-dir <dir>]             the dir holding the catalog and the service secret key
+                                           (required); it is the unit's only writable path
+            [--exec <path>]                path the service binary is installed at, as the unit will
+                                           exec it
+            [--github-repo <owner/repo>]   owner/repo to publish releases to
+            [--github-token-file <path>]   path to a file holding the GitHub token
+            [--group <group>]              the unit's group; empty leaves systemd to use the user's
+                                           primary group
+            [--host <hostname>]            the hostname the vhost answers for (required); it names
+                                           the rendered conf too
+            [--listen <address>]           address the unit binds and the vhost proxies to;
+                                           loopback, because the edge terminates TLS
+            [--out <dir>]                  the dir to write the rendered files into (required); it
+                                           is created if missing
+            [--public-base-url <url>]      the public url the public bucket is served at, e.g.
+                                           https://downloads.example.org; the download page links
+                                           into its channel layout
+            [--public-bucket <bucket>]     the public bucket promote copies into
+            [--r2-account <account>]       the Cloudflare account id the buckets live in
+            [--r2-creds <path>]            path to the file holding access_key_id and
+                                           secret_access_key
+            [--retain-at <time>]           the nightly retention pass's time of day, as systemd
+                                           OnCalendar spells it
+            [--secret-key <path>]          path to the service secret key, when it is not the
+                                           default inside --data-dir
+            [--staging-bucket <bucket>]    the PRIVATE staging bucket a cut uploads to
+            [--static-dir <dir>]           the nginx static root (required) — the same dir
+                                           publish-static writes to
+            [--tls-cert <path>]            path to the origin certificate; defaults to the Let's
+                                           Encrypt layout for --host
+            [--tls-key <path>]             path to the origin private key; defaults to the Let's
+                                           Encrypt layout for --host
+            [--tls-protocols <protocols>]  the protocols line for the vhost
+            [--user <user>]                the dedicated user the unit runs as
+
+Run 'clawee-release-manage ops <verb> --help' for that command's help.
+```
+
+#### `clawee-release-manage ops render`
+
+write the systemd units, the retention timer and the nginx vhost to a directory
+
+```
+clawee-release-manage ops render — write the systemd units, the retention timer and the nginx vhost to a directory
+
+Usage:
+  clawee-release-manage ops render [flags]
+
+Commands:
+  render                                 write the systemd units, the retention timer and the nginx
+                                         vhost to a directory
+          [--base-url <url>]             the public url the service is reached at (required)
+          [--data-dir <dir>]             the dir holding the catalog and the service secret key
+                                         (required); it is the unit's only writable path
+          [--exec <path>]                path the service binary is installed at, as the unit will
+                                         exec it
+          [--github-repo <owner/repo>]   owner/repo to publish releases to
+          [--github-token-file <path>]   path to a file holding the GitHub token
+          [--group <group>]              the unit's group; empty leaves systemd to use the user's
+                                         primary group
+          [--host <hostname>]            the hostname the vhost answers for (required); it names the
+                                         rendered conf too
+          [--listen <address>]           address the unit binds and the vhost proxies to; loopback,
+                                         because the edge terminates TLS
+          [--out <dir>]                  the dir to write the rendered files into (required); it is
+                                         created if missing
+          [--public-base-url <url>]      the public url the public bucket is served at, e.g.
+                                         https://downloads.example.org; the download page links into
+                                         its channel layout
+          [--public-bucket <bucket>]     the public bucket promote copies into
+          [--r2-account <account>]       the Cloudflare account id the buckets live in
+          [--r2-creds <path>]            path to the file holding access_key_id and
+                                         secret_access_key
+          [--retain-at <time>]           the nightly retention pass's time of day, as systemd
+                                         OnCalendar spells it
+          [--secret-key <path>]          path to the service secret key, when it is not the default
+                                         inside --data-dir
+          [--staging-bucket <bucket>]    the PRIVATE staging bucket a cut uploads to
+          [--static-dir <dir>]           the nginx static root (required) — the same dir
+                                         publish-static writes to
+          [--tls-cert <path>]            path to the origin certificate; defaults to the Let's
+                                         Encrypt layout for --host
+          [--tls-key <path>]             path to the origin private key; defaults to the Let's
+                                         Encrypt layout for --host
+          [--tls-protocols <protocols>]  the protocols line for the vhost
+          [--user <user>]                the dedicated user the unit runs as
 ```
 
 ### `clawee-release-manage version`

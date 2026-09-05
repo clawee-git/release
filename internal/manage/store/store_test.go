@@ -3,6 +3,8 @@ package store
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -548,5 +550,52 @@ func TestPlanExpiryMatchesWhatExpireActuallyDoes(t *testing.T) {
 		if !want[rv.ID] {
 			t.Errorf("the pass expired row %d, which the plan did not name", rv.ID)
 		}
+	}
+}
+
+// OpenReadOnly is what `doctor` uses, and the two things that matter about it
+// are that it creates nothing and migrates nothing. Through the ordinary
+// opener a health check created catalog.db for a mistyped data dir and
+// reported it healthy, and it could never observe a ledger behind the binary
+// because Open had already brought it forward.
+func TestOpenReadOnlyRefusesAMissingCatalogAndCreatesNothing(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := OpenReadOnly(dir); err == nil {
+		t.Fatal("OpenReadOnly accepted a data dir with no catalog")
+	}
+	if _, err := os.Stat(filepath.Join(dir, DBFile)); !os.IsNotExist(err) {
+		t.Fatalf("OpenReadOnly created %s", DBFile)
+	}
+}
+
+func TestOpenReadOnlyReadsTheLedgerAndAppliesNoMigration(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied, err := s.AppliedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	ro, err := OpenReadOnly(dir)
+	if err != nil {
+		t.Fatalf("OpenReadOnly: %v", err)
+	}
+	defer ro.Close()
+	got, err := ro.AppliedMigrations()
+	if err != nil {
+		t.Fatalf("AppliedMigrations read-only: %v", err)
+	}
+	if len(got) != len(applied) {
+		t.Fatalf("read-only ledger has %d rungs, want %d", len(got), len(applied))
+	}
+	// A write through the read-only handle must be refused, not silently
+	// queued: the whole guarantee is that inspecting a production catalog
+	// cannot change it.
+	if _, err := ro.db.Exec(`INSERT INTO migrations (version, name, applied_at) VALUES (99, 'x', 0)`); err == nil {
+		t.Fatal("a read-only catalog accepted a write")
 	}
 }

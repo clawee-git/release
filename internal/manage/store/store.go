@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver, registered as "sqlite"
@@ -92,6 +93,45 @@ func Open(dataDir string) (*Store, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// OpenReadOnly opens an EXISTING catalog without creating it and without
+// running a single migration.
+//
+// It exists because `doctor` asked the catalog a question and, through the
+// ordinary opener, changed the answer: Open creates catalog.db when it is
+// absent and applies every pending rung before returning, so a health check
+// wired to it reported ✓ for a data dir that had no catalog a moment earlier,
+// silently migrated a production catalog as a side effect of being inspected,
+// and could never observe the "ledger behind the binary" state it was written
+// to detect — Open had already fixed it.
+//
+// Two things make it read-only, and both are needed. `mode=ro` refuses to
+// create the file and rejects every write at the driver; the explicit Stat
+// first is what turns "unable to open database file" into a message naming the
+// path an operator probably mistyped. A migration is an INSTALL step
+// (migrations.md), never something a reader performs on the way past.
+func OpenReadOnly(dataDir string) (*Store, error) {
+	if dataDir == "" {
+		return nil, fmt.Errorf("store: data dir is empty")
+	}
+	path := filepath.Join(dataDir, DBFile)
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("store: no catalog at %s: %w", path, err)
+	}
+	dsn := "file:" + url.PathEscape(path) +
+		"?mode=ro" +
+		"&_pragma=busy_timeout(5000)" +
+		"&_pragma=foreign_keys(1)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("store: open %q read-only: %w", path, err)
+	}
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store: open %q read-only: %w", path, err)
+	}
+	return &Store{db: db}, nil
 }
 
 // Close releases the database handle.
@@ -275,6 +315,12 @@ func (s *Store) applyMigration(m migration) error {
 	}
 	return tx.Commit()
 }
+
+// LatestMigration is how many rungs this binary carries. `doctor` compares it
+// against the ledger: a catalog with FEWER rungs has a migration outstanding,
+// and one with MORE was migrated by a newer build than the one running, which
+// is the direction that silently drops what a newer schema fills.
+func LatestMigration() int { return len(migrations) }
 
 // AppliedMigrations returns the ledger, oldest first. The `version` verb
 // prints it, so an operator can tell which rungs a host has run without

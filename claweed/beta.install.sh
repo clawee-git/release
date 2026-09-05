@@ -1,10 +1,10 @@
 #!/bin/sh
 # Clawee outer bootstrap — THE TRUST ANCHOR (POSIX sh, macOS + Linux).
 #
-#   curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/clawee/install.sh | sh
-#   curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/clawee/upgrade.sh | sh -s -- 0.2.0
+#   curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/claweed/install.sh | sh
+#   curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/claweed/upgrade.sh | sh -s -- 0.2.0
 #
-# This is the stable, curl'd-alone entry point for the `clawee` component. It
+# This is the stable, curl'd-alone entry point for the `claweed` component. It
 # NEVER runs an unverified byte: it downloads the release zip + SHA256SUMS.txt +
 # its minisig, verifies the minisign signature with a baked-in PUBLIC key,
 # verifies the zip's sha256 against the now-trusted sums file, and ONLY THEN
@@ -30,18 +30,18 @@
 # ships a migration ladder today (clawee, the terminal client, ships none).
 # Which kits carry migrations/ is decided in the COMPONENT repos at their
 # build; this repo renders a static file at ITS cut and serves it from a URL we
-# advertise. A conditional render would put a "does clawee have a ladder"
+# advertise. A conditional render would put a "does claweed have a ladder"
 # belief in this repo that nothing keeps in step with the zips, and the first
 # time it was wrong the URL would 404. So the file always exists, and a kit
 # with no migrations/upgrade.sh is a RUNTIME refusal naming the component and
 # the version just installed — a message an operator can act on.
 #
-# TWO CHANNELS, THE SAME TEMPLATE. stable is substituted at render time and
+# TWO CHANNELS, THE SAME TEMPLATE. beta is substituted at render time and
 # decides which channel manifest this file resolves — nothing else about it
 # differs, because the trust gate must not have two implementations:
 #
-#   clawee/install.sh        stable  ->  <comp>/latest.json
-#   clawee/beta.install.sh   beta    ->  <comp>/beta/latest.json
+#   claweed/install.sh        stable  ->  <comp>/latest.json
+#   claweed/beta.install.sh   beta    ->  <comp>/beta/latest.json
 #
 # The beta twins are rendered UNCONDITIONALLY. Whether a beta exists is what
 # its manifest answers, at install time, on the host doing the installing; a
@@ -49,8 +49,8 @@
 # nothing keeps in step. A twin whose channel is serving nothing refuses at
 # runtime, naming the channel.
 #
-# DO NOT EDIT generated copies (clawee/install.sh, clawee/upgrade.sh,
-# clawee/beta.install.sh, clawee/beta.upgrade.sh) by hand — they are produced
+# DO NOT EDIT generated copies (claweed/install.sh, claweed/upgrade.sh,
+# claweed/beta.install.sh, claweed/beta.upgrade.sh) by hand — they are produced
 # from tools/bootstrap.template.sh by tools/gen-bootstraps.sh.
 #
 # Arguments (upgrade.sh only; install.sh takes none and REJECTS any):
@@ -70,7 +70,7 @@
 #  64   the command line was wrong, or the ladder rejected the one built for it
 #
 # Env vars:
-#   <pin var>               pin a release tag (e.g. clawee/v0.1.1.…); default: latest
+#   <pin var>               pin a release tag (e.g. claweed/v0.1.1.…); default: latest
 #                           (clawee → CLAWEE_VERSION; claweed → CLAWEE_CLAWEED_VERSION)
 #   PREFIX                  install root (default $HOME/.local; bins at PREFIX/bin)
 #   CLAWEE_UNINSTALL=1      clawee only — remove the installed bin
@@ -106,16 +106,16 @@
 set -eu
 
 # ---- knobs --------------------------------------------------------------
-COMP="clawee"
+COMP="claweed"
 # "install" or "upgrade" — see the two-modes note in the header. Baked, never
 # read from the environment: the mode is a property of the URL the operator
 # curl'd, and a runtime override would make one file behave as the other.
-MODE="upgrade"
+MODE="install"
 # "stable" or "beta". Baked for the same reason MODE is: the channel is a
 # property of the URL the operator curl'd, and a host that could be moved
 # between channels by an environment variable is a host whose channel nobody
 # can state (release-management.md §9 — a host never changes channel).
-CHANNEL="stable"
+CHANNEL="beta"
 PUBKEY="RWTuO+iTqEyo52tDnuRxx1IsrARInzZbBSfgbj4r5jZusvksN2VHuY3E"
 REPO="${CLAWEE_RELEASE_REPO:-clawee-git/release}"
 PREFIX="${PREFIX:-$HOME/.local}"

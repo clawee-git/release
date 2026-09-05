@@ -13,8 +13,8 @@
 #     dash tools/test-checksum-verify.sh        # and this one, always
 #
 # (1) STATIC   — no bootstrap, template or generated, may name --ignore-missing,
-#     and the advice a human READS — site/index.html, the release notes in
-#     tools/release.sh — must verify one file by exact name rather than run
+#     and the advice a human READS — the site's /verify page, now a template in
+#     the manage service — must verify one file by exact name rather than run
 #     `-c` over the whole sums file, which fails on an intact download.
 # (2) BEHAVIOR — the shipped block, extracted verbatim from clawee/install.sh, is
 #     driven against a stub `shasum` that models the old one: good zip verifies,
@@ -61,7 +61,10 @@ printf '  OK: no --ignore-missing\n'
 # page went on printing the wrong recipe for two months after the READMEs were
 # fixed.
 say "STATIC: operator-facing verify advice selects one file by name, not -c over the sums file"
-for advice in "$REPO_ROOT/site/index.html"; do
+# site/index.html USED TO BE THE ADVICE. The static page is gone: the site is
+# rendered by the manage service now, so the recipe lives in the template that
+# renders /verify and that is what this gate reads.
+for advice in "$REPO_ROOT/internal/manage/web/templates/public/verify.html"; do
     rel="${advice#"$REPO_ROOT"/}"
     [ -f "$advice" ] || { printf '  (no %s — skipped)\n' "$rel"; continue; }
     # Command-shaped hits only: quote, entity and tag boundaries end the match,

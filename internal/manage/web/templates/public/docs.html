@@ -1,0 +1,30 @@
+{{define "content"}}
+  <section>
+    <h2>Documentation</h2>
+    <p class="muted">Each command ships its own reference, and each installed binary prints it:</p>
+    <ul class="links">
+      {{range .Refs}}
+      <li><code>{{.Command}}</code> <span class="what">— {{.What}}</span>{{if .URL}} · <a href="{{.URL}}">{{.RefName}}</a>{{end}}</li>
+      {{end}}
+    </ul>
+    <p class="faint">Every page of every reference is generated from the same command tree the
+      binary parses, so a reference that disagrees with the tool fails that tool's build.</p>
+  </section>
+
+  <section>
+    <h2>For coding agents</h2>
+    <p class="muted">Point an agent at a machine that already has the tools and it can read the
+      whole surface without scraping <code>--help</code> level by level:</p>
+    <pre class="block">clawee docs                  # the terminal client's whole command surface, as markdown
+claweed docs                 # the PTY daemon's
+clawee-release-manage docs   # this service's, if you run one</pre>
+    <p class="muted">Installing from scratch is two lines, and neither needs a login:</p>
+    <pre class="block">curl -fsSL --proto '=https' --tlsv1.2 {{.InstallBase}}/clawee/install.sh | sh
+curl -fsSL --proto '=https' --tlsv1.2 {{.InstallBase}}/claweed/install.sh | sh   # run as your user, not sudo</pre>
+    <p class="faint">Both bootstraps verify a minisign signature and a SHA-256 before they unzip
+      anything, against a public key baked into the script — see <a href="/verify">verify by
+      hand</a>. An agent that needs a specific build can read the channel manifest directly:
+      <code>{{.ManifestBase}}/&lt;component&gt;/latest.json</code>, or
+      <code>{{.ManifestBase}}/&lt;component&gt;/beta/latest.json</code> for the beta twin.</p>
+  </section>
+{{end}}

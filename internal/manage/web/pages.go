@@ -348,41 +348,6 @@ func (s *Server) handleInvitesPage(w http.ResponseWriter, r *http.Request, sess 
 	s.render(w, r, "invites", http.StatusOK, page)
 }
 
-// ── Public ───────────────────────────────────────────────────────────────
-
-type publicPage struct {
-	pageData
-	Channels []publicChannel
-}
-
-type publicChannel struct {
-	Channel string
-	Rows    []*rowView
-}
-
-// handlePublicIndex is feature 03's placeholder. It runs exactly ONE query —
-// CurrentPublic — so "the public surface shows only promoted rows" is a
-// property of the code rather than a rule the next author has to remember.
-func (s *Server) handlePublicIndex(w http.ResponseWriter, r *http.Request) {
-	page := publicPage{pageData: pageData{Title: "Clawee"}}
-	for _, ch := range catalog.Channels {
-		pc := publicChannel{Channel: ch}
-		for _, comp := range catalog.Components {
-			cur, err := s.Store.CurrentPublic(comp, ch)
-			if err != nil {
-				if !errors.Is(err, store.ErrNotFound) {
-					s.pageError(w, r, err)
-					return
-				}
-				continue
-			}
-			pc.Rows = append(pc.Rows, toView(cur))
-		}
-		page.Channels = append(page.Channels, pc)
-	}
-	s.render(w, r, "public", http.StatusOK, page)
-}
-
 func (s *Server) pageError(w http.ResponseWriter, r *http.Request, err error) {
 	s.Log.Error("manage page", "err", err, "path", r.URL.Path)
 	http.Error(w, "the catalog could not be read", http.StatusInternalServerError)

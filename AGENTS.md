@@ -140,6 +140,9 @@ runtime.
 ```
 clawee-release-manage serve --data-dir <dir> --base-url https://<host> [--listen 127.0.0.1:8787]
 clawee-release-manage admin add|list|remove <name> --data-dir <dir>
+clawee-release-manage publish-static --root <kit> --dest <[user@host:]dir> [--dry-run]
+clawee-release-manage doctor --data-dir <dir> <the same store flags> [--kit-root <kit>] [--check-write] [--json]
+clawee-release-manage ops render --out <dir> --host <host> --static-dir <dir> --data-dir <dir> --base-url <url>
 clawee-release-manage version [--data-dir <dir>]
 clawee-release-manage docs > docs/cli-help.md
 ```
@@ -154,7 +157,9 @@ in the same change as any surface move (`~/.agents/guidelines/cli-help.md`).
 | `internal/manage/totp` | RFC 6238, pinned to the official vectors. Ported from the console's `internal/console/totp` |
 | `internal/manage/auth` | password (argon2id), sealed TOTP secrets, sessions, CSRF, login rate limiting |
 | `internal/manage/intake` | the nonce and register endpoints; verifies against the baked `clawee-release.pub` |
-| `internal/manage/web` | routing split, read API, pages |
+| `internal/manage/web` | routing split, read API, operator pages, and the PUBLIC pages (`internal/manage/web/public.go`) |
+| `internal/manage/doctor` | the deployment pre-flight: every check behind a seam, and no write anywhere in the package |
+| `internal/staticsurface` | the one list of files the host still serves as static bytes — read by `publish-static` and by the site's link check |
 
 **Ported from, not imported:** the surface follows
 `Burrowee/console/code/main/internal/console/` — `release/channel.go`,
@@ -211,6 +216,18 @@ clawee-release-manage retain --data-dir <DATA_DIR> <the same store flags>
 clawee-release-manage retain --data-dir <DATA_DIR> --dry-run
 ```
 
+```sh
+# check a deployment before promoting anything through it
+clawee-release-manage doctor --data-dir <DATA_DIR> --user clawee-release \
+    <the same store flags> --kit-root <KIT_CHECKOUT> --check-write
+
+# the deployment artefacts. It renders and stops — installing them is the
+# operator's step (ops/README.md)
+clawee-release-manage ops render --out <DIR> --host <RELEASE_HOST> \
+    --static-dir <STATIC_DIR> --data-dir <DATA_DIR> --base-url <MANAGE_URL> \
+    <the same store flags>
+```
+
 **The real `retain` pass REFUSES without a public store and a GitHub
 publisher.** Expiring a row is one-way — a later pass only ever sees rows it
 expires itself — so marking rows it cannot prune would orphan their bytes
@@ -229,12 +246,73 @@ account, buckets, host and token path live in the sealed `release.dp` config
 | `--r2-account`, `--r2-creds` | the Cloudflare account and the file holding `access_key_id` / `secret_access_key` |
 | `--staging-bucket` | the PRIVATE bucket a cut uploads to. Read, presign, and one write (the invite script) |
 | `--public-bucket` | what installers read. Refused if it equals the staging bucket |
-| `--github-repo`, `--github-token-file` | the release listing; **promote fails closed without them** |
+| `--github-repo`, `--github-token-file` | the release listing; **promote fails closed without them**. The repo half also gives the download page its GitHub release links |
+| `--public-base-url` | the URL the public bucket is served at. The download page links into its channel layout; without it the page renders with no download links rather than with guessed ones |
 
 **Every seam is optional and a missing one refuses with a 503 naming the gap**,
 so the service can be brought up in stages — catalog first, then invites, then
 promote. A *half*-configured store is an error, not a silently disabled one.
 The startup log prints which seams are live.
+
+### The public surface
+
+`release.clawee.org` is this service. `/` (install), `/downloads`, `/verify`,
+`/platforms` and `/docs` are server-rendered from the promoted catalog and the
+channel manifests — there is no static `index.html` any more, and no cut copies
+one. The page a visitor reads and the version an installer resolves therefore
+cannot disagree.
+
+**Every public handler reads the catalog through `CurrentPublic` or
+`PublicHistory`, and neither can return a `staged` row.** That is the property
+the split exists for, enforced by the store's method set rather than by a filter
+each handler remembers: `ListByComponent` returns every state and backs the
+OPERATOR's history page, so a public handler that reached for it and forgot the
+filter would look exactly like working code. A test seeds staged rows on both
+channels and asserts their stamps, versions and artifact names appear nowhere.
+
+The beta install line and the beta download tab carry content only while that
+component has a beta `is_current`. A beta command that outlives its cycle
+installs the last beta forever after it graduated.
+
+What is still static, and why: the bootstraps (`<comp>/install.sh`,
+`<comp>/upgrade.sh` and their `beta.*` twins), the signing pubkey, and the
+per-channel badge JSONP. They embed no version — the bootstraps resolve one at
+install time — and a static file cannot be affected by whether the service is
+up. The badge is generated from the channel manifest and **only** from it: an
+unreachable manifest writes an empty badge rather than falling back to
+`versions/<comp>`, which is the number the NEXT cut will carry. The committed
+`<comp>/version.js` and `<comp>/beta.version.js` are the generator's own bytes —
+if you ever need to correct one, run `tools/gen-version-jsonp.sh` against a
+manifest carrying the values you want rather than editing the file, so its shape
+stays the one thing that produces it.
+
+A **yanked** row keeps its place in the download history and loses its links.
+Its bytes are usually still in the bucket and on the GitHub release — yank
+withdraws the release, it does not delete the objects — which is exactly why the
+page must not hand them out: a withdrawn build is one somebody decided nobody
+should install. `internal/staticsurface` is the one list of them; `publish-static` copies
+exactly that list and the site's link check will not let a page link outside it.
+
+### `publish-static`
+
+```sh
+clawee-release-manage publish-static --root <KIT_CHECKOUT> --dest <RELEASE_HOST>:<STATIC_DIR> --dry-run
+clawee-release-manage publish-static --root <KIT_CHECKOUT> --dest <RELEASE_HOST>:<STATIC_DIR>
+```
+
+This was five `scp` lines inside `tools/release.sh`, running on every cut. Both
+facts were wrong: serving a file is a publication and a cut publishes nothing,
+and the files it copied embed no version, so it was a round trip to write bytes
+that had not changed on the one host where an accidental write is visible to
+everyone.
+
+**Run it when the KIT changes** — a new bootstrap template, a regenerated badge,
+a rotated signing key — not per release. It checks the whole set before copying
+anything (a partial publish leaves some bootstraps new and some old, and each
+still verifies its own download, so nothing downstream notices), refuses a kit
+missing a generated file while naming the generator that produces it, and
+`--dry-run` prints the plan. The host and the static dir come from the sealed
+`release.dp` config; nothing about them is in this binary.
 
 ### What promote does, in order
 
@@ -261,6 +339,71 @@ still being handed to every installer.
 **Retention** keeps 10 stable / 1 beta per component on both surfaces, never the
 current row, and runs at the end of every promote plus from `retain`. Pruning is
 best effort: the catalog is the source of truth and bytes are reconciled to it.
+
+### `doctor`
+
+Eight named checks, each behind a seam with fakes, over the things whose
+failure is silent until it is expensive: the catalog and its migration ledger,
+the data root's and the secret key's mode and owner, the three copies of the
+signing key (baked, `clawee-release.pub`, and the generated bootstraps), both
+buckets, and the GitHub token.
+
+**The one it exists for is `staging-private`.** It performs an
+*unauthenticated* GET — through a seam of its own, so it cannot reuse the
+credentials the rest of the pass carries — and a 2xx is a loud refusal: a
+staging bucket that answers anonymously has been publishing every unpromoted
+build since the day it was created, and nothing else in this system can notice.
+A transport error is also a failure, because the absence of an answer is not
+privacy; an empty bucket passes and says the probe was weaker than it looks.
+
+`doctor` **writes nothing** — no probe object, no draft release, and no
+catalog: it opens the catalog through `store.OpenReadOnly`, which creates
+nothing and migrates nothing. Wired to the ordinary opener it created
+`catalog.db` for a mistyped `--data-dir` and reported it healthy, migrated a
+production catalog as a side effect of being inspected, and could never observe
+the behind-the-binary ledger it exists to report.
+
+Ownership is compared against `--user` (default `clawee-release`, the same
+account `ops render` writes into the unit), never against whoever ran the
+command: under `sudo` that was root, so a correctly owned data root failed, and
+run as root against a root-owned tree it passed vacuously. An unresolvable
+`--user` still runs the check against the invoking account and says so in every
+line. `--check-write`
+reads the repo's permissions rather than creating a release, which is what
+makes the verb safe to run against production.
+
+Three statuses, not two: a store the operator has not wired yet is **skipped**,
+not passed and not failed. The service comes up in stages, and a doctor that
+went red on a stage nobody reached is one nobody reads. Exit 0 all pass, 1 any
+fail, 2 usage; `--json` prints the same report.
+
+### `ops render`
+
+The systemd unit, the nightly retain timer and its oneshot, and the nginx
+vhost. It renders into `--out` and **stops** — nothing copies to a host,
+reloads nginx or enables a unit, because activating a service on a production
+host is the operator's act (`~/.agents/guidelines/release.md` §11).
+
+Every value is a flag and nothing is read from the environment: the data root,
+the buckets and the token path are the deployment's, and a unit generator that
+inherited them from whoever ran it would render a unit for the wrong one.
+
+The **units are not committed** — their `ExecStart` carries the bucket names
+and credential paths. The **vhost is**: it names no secret, so
+`ops/nginx/release.clawee.org.conf` is the template's own output and a suite
+test byte-diffs it, exactly like `docs/cli-help.md`. Edit the template in
+`cmd/clawee-release-manage/ops.go` and regenerate; a hand edit fails the build.
+
+The unit's hardening is the reason it is rendered rather than described:
+`User=` (unset means a publishing service running as **root**),
+`ProtectSystem=strict` with `ReadWritePaths=` naming the data dir and nothing
+else, `NoNewPrivileges`. Each is a line whose absence looks like a working
+service.
+
+**The runbook is `ops/README.md`** — buckets, sealed keys, the service user,
+the unit, the edge, admin provisioning and TOTP enrolment, `doctor`, the timer,
+`publish-static`, the first promote and what to check after it, and rollback by
+yank.
 
 ### Known gaps
 

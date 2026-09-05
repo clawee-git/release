@@ -335,9 +335,15 @@ func Yank(ctx context.Context, d Deps, rowID int64, w io.Writer) (err error) {
 		}
 	} else {
 		// Nothing left to serve: the entry is REMOVED rather than left
-		// pointing at a withdrawn build. An installer that gets a 404 tries
-		// the GitHub fallback; one that gets a manifest naming a yanked
-		// release installs it.
+		// pointing at a withdrawn build.
+		//
+		// The 404 that leaves behind is the SIGNAL, not a gap. The bootstrap
+		// treats a manifest that answers "not found" as this channel saying it
+		// serves nothing, and refuses — it does NOT fall through to the GitHub
+		// tag list, which still carries this release's tag because yank
+		// deliberately leaves the GitHub release in place. Falling through
+		// would reinstall exactly what was just withdrawn
+		// (tools/bootstrap.template.sh, step 1).
 		st.send(Event{Step: "manifest", File: mkey, Status: "start", Detail: "no public row remains; removing"})
 		if err := d.Public.Delete(ctx, mkey); err != nil {
 			return fmt.Errorf("manifest %s: %w", mkey, err)

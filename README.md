@@ -22,6 +22,18 @@ curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/clawee/install.
 curl -fsSL --proto '=https' --tlsv1.2 https://release.clawee.org/claweed/install.sh | sh
 ```
 
+While a beta cycle is open, each component also serves a **beta twin** —
+`<comp>/beta.install.sh`, resolving the beta channel manifest instead of the
+stable one. The site offers that line **only while a beta is actually
+promoted**, because a beta command that outlives its cycle installs the last
+beta forever after it graduated.
+
+`https://release.clawee.org` is the manage service's public face, rendered from
+the promoted catalog: `/` (install), `/downloads` (per-platform zips, checksums
+and signatures per promoted release, both channels), `/verify`, `/platforms` and
+`/docs`. Nothing `staged` appears on any of them — a staged cut is a build no
+operator has approved.
+
 Each installer detects your OS/arch, resolves the latest published release for
 that component, downloads the zip + `SHA256SUMS.txt` + `SHA256SUMS.txt.minisig`,
 **verifies the minisign signature against the baked public key**, checks the
@@ -143,8 +155,11 @@ Windows is not supported.
 This is the public face of the channel. Built binaries for the private
 component repos (`clawee-git/cli`, `clawee-git/daemon`) are published as
 **GitHub Release assets on this repo** (the component sources are private and
-can't be `curl`'d anonymously). The static bootstrap scripts are mirrored to
-`release.clawee.org` (nginx + Cloudflare).
+can't be `curl`'d anonymously). `release.clawee.org` (nginx + Cloudflare) is the
+manage service's public face; the bootstraps, the signing pubkey and the version
+JSONP stay static files beside it, put there by `clawee-release-manage
+publish-static` when the **kit** changes — not on every cut, because they embed
+no version.
 
 ### A cut does not publish
 
@@ -182,14 +197,19 @@ The two configuration keys it needs (`<staging bucket>`, `<manage URL>`) live
 in the sealed config; see `AGENTS.md`.
 
 ```
-clawee/    claweed/        ← per-component outer bootstrap (install.sh + upgrade.sh, generated)
+clawee/    claweed/        ← per-component outer bootstraps, generated: install.sh
+                              + upgrade.sh (stable) and their beta.* twins, plus
+                              version.js + beta.version.js (the site's badge JSONP)
 inner/clawee/install.sh     ← clawee's inner installer, repo-committed (ships
                               verbatim inside each verified clawee zip). claweed
                               has no committed copy: its inner installer is
                               rendered at build time from the daemon repo's
                               install/install.sh.in
 versions/<comp>             ← per-component SemVer source of truth
-site/index.html             ← release.clawee.org landing page
+internal/manage/web/templates/public/
+                            ← release.clawee.org's pages, rendered from the
+                              promoted catalog (there is no static index.html
+                              any more)
 tools/                      ← version.sh, build.sh, gen-bootstraps.sh, release.sh,
                               prune-releases.sh, test-e2e.sh, verify-no-env.sh,
                               test-stage-fail-closed.sh, test-cut-no-publish.sh,
