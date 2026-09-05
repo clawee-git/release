@@ -435,17 +435,27 @@ func TestBuildAppleSelectsDevIDSignerAndNotarizes(t *testing.T) {
 // worktree paths. An unknown component resolves to "".
 func TestSrcDirFor(t *testing.T) {
 	t.Setenv("CLAWEE_SRC_CLAWEE", "/env/clawee/src")
-	if got := srcDirFor("clawee"); got != "/env/clawee/src" {
+	const repo = "/root/Brand/release/code/main"
+	if got := srcDirFor(repo, "clawee"); got != "/env/clawee/src" {
 		t.Fatalf("srcDirFor(clawee) = %q, want env override", got)
 	}
 
+	// No env: the default is the component's main worktree under the brand
+	// root the release repo sits in — three levels up from the repo, never a
+	// literal volume path.
 	t.Setenv("CLAWEE_SRC_CLAWEED", "")
-	const wantDefault = "/Volumes/MacintoshED/Workstation/Coding/Clawee/daemon/code/main"
-	if got := srcDirFor("claweed"); got != wantDefault {
+	t.Setenv("CLAWEE_BRAND_ROOT", "")
+	const wantDefault = "/root/Brand/daemon/code/main"
+	if got := srcDirFor(repo, "claweed"); got != wantDefault {
 		t.Fatalf("srcDirFor(claweed) default = %q, want %q", got, wantDefault)
 	}
+	t.Setenv("CLAWEE_BRAND_ROOT", "/elsewhere/Brand")
+	if got := srcDirFor(repo, "claweed"); got != "/elsewhere/Brand/daemon/code/main" {
+		t.Fatalf("srcDirFor(claweed) with CLAWEE_BRAND_ROOT = %q, want the override's tree", got)
+	}
+	t.Setenv("CLAWEE_BRAND_ROOT", "")
 
-	if got := srcDirFor("unknown"); got != "" {
+	if got := srcDirFor(repo, "unknown"); got != "" {
 		t.Fatalf("srcDirFor(unknown) = %q, want empty", got)
 	}
 }

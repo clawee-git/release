@@ -6,7 +6,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GUARD="${HERE}/verify-no-env.sh"
 GO_BIN="${GO_BIN:-go}"
 command -v "${GO_BIN}" >/dev/null 2>&1 || GO_BIN=/opt/homebrew/bin/go
-CLAWEED_SRC="${CLAWEED_SRC:-/Volumes/MacintoshED/Workstation/Coding/Clawee/daemon/code/main}"
+# The daemon's main worktree, found relative to this repo (<brand>/release/code/<worktree>).
+CLAWEED_SRC="${CLAWEED_SRC:-$(cd "${HERE}/../../../.." && pwd)/daemon/code/main}"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
 mkdir -p "${TMP}/stale"
