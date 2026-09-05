@@ -99,9 +99,8 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /api/v1/manage/releases/"+ch+"/versions/{comp}", s.apiGuard(s.handleVersionDetail))
 	}
 
-	// ── Batch B's write API. These exist NOW, answering 501, so the pages
-	// that link to them are final and the routing split is complete.
-	mux.HandleFunc("PATCH /api/v1/manage/releases/{id}", s.apiGuard(s.handleNotImplementedAPI))
+	// ── The write API: promote and yank, both streaming.
+	mux.HandleFunc("PATCH /api/v1/manage/releases/{id}", s.apiGuard(s.handleReleaseAction))
 	mux.HandleFunc("POST /api/v1/manage/releases/{channel}/install-url", s.apiGuard(s.handleInstallURL))
 	mux.HandleFunc("GET /api/v1/manage/releases/{channel}/invites", s.apiGuard(s.handleInvitesAPI))
 
@@ -125,7 +124,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /manage/releases/{comp}", s.pageGuard(s.handleHistoryPage))
 	mux.HandleFunc("POST /manage/releases/{id}/mint", s.pageGuard(s.handleMintPage))
 	for _, action := range []string{"promote", "yank"} {
-		mux.HandleFunc("POST /manage/releases/{id}/"+action, s.pageGuard(s.handleNotImplementedPage))
+		mux.HandleFunc("POST /manage/releases/{id}/"+action, s.pageGuard(s.handleActionPage(action)))
 	}
 	// Anything else under /manage/ goes through the guard too, so an anonymous
 	// visitor gets the login form rather than a 404 that maps which manage

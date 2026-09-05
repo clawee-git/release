@@ -41,6 +41,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/clawee-git/release/internal/manifest"
 	"github.com/clawee-git/release/internal/r2"
 )
 
@@ -49,19 +50,11 @@ const (
 	minisigName = "SHA256SUMS.txt.minisig"
 )
 
-// latestManifest is the <comp>/latest.json schema. Fields are declared in
-// alphabetical order so json.Marshal emits them in the same order as the live
-// bucket's hand-uploaded manifest (a stable, diff-friendly shape).
-type latestManifest struct {
-	Component  string   `json:"component"`
-	Minisig    string   `json:"minisig"`
-	Path       string   `json:"path"`
-	SHA256Sums string   `json:"sha256sums"`
-	Stamp      string   `json:"stamp"`
-	Updated    string   `json:"updated"`
-	Version    string   `json:"version"`
-	Zips       []string `json:"zips"`
-}
+// latestManifest is internal/manifest.Latest. The schema moved into its own
+// package when promote became the OTHER writer of these objects: two
+// declarations of one schema is a schema that drifts, and the symptom would be
+// installers that stop resolving.
+type latestManifest = manifest.Latest
 
 type config struct {
 	account  string
@@ -293,6 +286,10 @@ func collectArtifacts(stageDir, comp string) (artifacts, zips []string, err erro
 }
 
 func buildManifest(cfg config, zips []string) latestManifest {
+	// The cut's key base is <comp>/<prefix>/<stamp> with a prefix and
+	// <comp>/<stamp> without, which is the same shape manifest.PublicBase
+	// produces for a channel — but the cut can be handed an arbitrary prefix,
+	// so it keeps its own keyBase and passes the result in.
 	base := cfg.keyBase()
 	return latestManifest{
 		Component:  cfg.comp,

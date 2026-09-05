@@ -1,7 +1,10 @@
 package web
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -119,7 +122,9 @@ func (f *fixture) client() *http.Client {
 // authenticated client plus its CSRF token.
 func (f *fixture) login(c *http.Client) string {
 	f.t.Helper()
-	if err := f.auth.AddAdmin(adminName, adminPassword); err != nil {
+	// Tolerate an already-provisioned admin: a test that rebuilds the server
+	// with different backends logs in twice against the same catalog.
+	if err := f.auth.AddAdmin(adminName, adminPassword); err != nil && !errors.Is(err, store.ErrAlreadyExists) {
 		f.t.Fatalf("AddAdmin: %v", err)
 	}
 	resp, err := c.PostForm(f.server.URL+"/manage/login", url.Values{
@@ -143,8 +148,11 @@ func (f *fixture) login(c *http.Client) string {
 	if err != nil {
 		f.t.Fatalf("the enrolled secret does not unseal: %v", err)
 	}
-	if !strings.Contains(body, string(secretBytes)) {
-		f.t.Fatal("the enrolment page did not show the secret; it exists only in that response")
+	// On a FIRST login the secret is shown inline — it exists in that response
+	// and nowhere else. On a later one it is not, and the code page is fetched
+	// for its form instead. Both paths end at the same place.
+	if enrolled := strings.Contains(body, string(secretBytes)); !enrolled {
+		_, body = f.get(c, "/manage/login/totp")
 	}
 
 	// The token comes off the RENDERED FORM, not the jar: that is the path a
@@ -152,6 +160,10 @@ func (f *fixture) login(c *http.Client) string {
 	// read the session back out of a request whose cookies had only just been
 	// set on the response.
 	csrf := csrfFieldOf(f.t, body)
+	// Move the clock a step on before computing the code. A second login in
+	// the same test would otherwise reuse the step the first one spent, and
+	// the replay watermark would — correctly — refuse it.
+	f.now = f.now.Add(2 * totp.Period * time.Second)
 	code, _ := totp.Code(string(secretBytes), f.now)
 	resp, err = c.PostForm(f.server.URL+"/manage/login/totp", url.Values{
 		"code": {code}, "csrf_token": {csrf},
@@ -355,15 +367,19 @@ func TestWritesWithoutTheCSRFTokenAre403(t *testing.T) {
 		t.Fatalf("PATCH without a token: HTTP %d %s", resp.StatusCode, body)
 	}
 
-	// A form POST carrying the token passes the gate and reaches the handler,
-	// which is batch B's 501.
+	// A form POST carrying the token passes the CSRF gate and reaches the
+	// handler — which, on a fixture with no object store, refuses with 503.
+	// The point of the assertion is that it got PAST the gate.
 	resp, err = c.PostForm(f.server.URL+"/manage/releases/1/promote", url.Values{"csrf_token": {csrf}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	body = readBody(t, resp)
-	if resp.StatusCode != http.StatusNotImplemented {
-		t.Fatalf("promote with a token: HTTP %d %s", resp.StatusCode, body)
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized {
+		t.Fatalf("promote with a token was refused by the gate: HTTP %d %s", resp.StatusCode, body)
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("promote with no object store: HTTP %d %s, want 503", resp.StatusCode, body)
 	}
 
 	// The same POST without it is refused before the handler.
@@ -743,8 +759,14 @@ func (f *fixture) stageWithArtifacts(comp, channel, stamp string, at time.Time) 
 	for _, plat := range []string{"darwin/arm64", "linux/amd64"} {
 		name := "clawee-" + comp + "-" + strings.ReplaceAll(plat, "/", "-") + ".zip"
 		key := keyBase + "/" + name
-		f.staging.Objects[key] = []byte("zip " + name)
-		arts = append(arts, art{Platform: plat, Key: key, SHA256: strings.Repeat("a", 64), Size: 8})
+		body := []byte("zip " + name)
+		f.staging.Objects[key] = body
+		// The recorded size and hash have to be the real ones: promote checks
+		// the staged bytes against the row before it copies anything, so a
+		// fixture that lies here only ever exercises the refusal path.
+		sum := sha256.Sum256(body)
+		arts = append(arts, art{Platform: plat, Key: key,
+			SHA256: hex.EncodeToString(sum[:]), Size: int64(len(body))})
 	}
 	sumsKey, minisigKey := keyBase+"/SHA256SUMS.txt", keyBase+"/SHA256SUMS.txt.minisig"
 	f.staging.Objects[sumsKey] = []byte("sums")
@@ -896,5 +918,174 @@ func TestMintButtonOnThePageMintsAndRedirects(t *testing.T) {
 	_, body := f.get(c, "/manage/invites")
 	if !strings.Contains(body, "curl -fsSL") {
 		t.Fatalf("the invites page does not offer the command:\n%s", body)
+	}
+}
+
+// promoteFixture rebuilds the fixture's server with the full backend set, so
+// the promote and yank routes have something to publish to.
+func (f *fixture) withBackends(t *testing.T) (*backendtest.Public, *backendtest.GitHub) {
+	t.Helper()
+	pub := backendtest.NewPublic(f.rec, f.staging)
+	gh := backendtest.NewGitHub(f.rec)
+	f.server.Close()
+	srv, err := New(f.st, f.auth, f.intake, Backends{Staging: f.staging, Public: pub, GitHub: gh},
+		slog.New(slog.DiscardHandler), func() time.Time { return f.now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.server = httptest.NewServer(srv.Handler())
+	t.Cleanup(f.server.Close)
+	return pub, gh
+}
+
+func (f *fixture) patch(c *http.Client, path, body, csrf string) (*http.Response, string) {
+	f.t.Helper()
+	req, _ := http.NewRequest(http.MethodPatch, f.server.URL+path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if csrf != "" {
+		req.Header.Set(auth.CSRFHeader, csrf)
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return resp, readBody(f.t, resp)
+}
+
+func TestPromoteThroughTheAPIStreamsNDJSON(t *testing.T) {
+	f := newFixture(t)
+	pub, _ := f.withBackends(t)
+	c := f.client()
+	csrf := f.login(c)
+	id := f.stageWithArtifacts(catalog.ComponentCLI, catalog.ChannelStable, stableStamp, f.now)
+
+	resp, body := f.patch(c, "/api/v1/manage/releases/"+itoa(id)+"/", `{"action":"promote"}`, csrf)
+	if resp.StatusCode == http.StatusNotFound {
+		// The route has no trailing slash.
+		resp, body = f.patch(c, "/api/v1/manage/releases/"+itoa(id), `{"action":"promote"}`, csrf)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("promote: HTTP %d %s", resp.StatusCode, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/x-ndjson" {
+		t.Fatalf("Content-Type = %q", ct)
+	}
+	// One JSON object per line, and the last one says done.
+	lines := strings.Split(strings.TrimSpace(body), "\n")
+	for _, l := range lines {
+		var e map[string]any
+		if err := json.Unmarshal([]byte(l), &e); err != nil {
+			t.Fatalf("progress line %q is not JSON: %v", l, err)
+		}
+	}
+	if !strings.Contains(lines[len(lines)-1], `"done"`) {
+		t.Fatalf("the stream does not end with done: %q", lines[len(lines)-1])
+	}
+	row, _ := f.st.Get(id)
+	if row.State != catalog.StatePublic {
+		t.Fatalf("row = %s", row.State)
+	}
+	if _, ok := pub.Objects["clawee/latest.json"]; !ok {
+		t.Fatal("no manifest was written")
+	}
+}
+
+func TestPromoteRefusalsGetTheirOwnStatusBeforeTheStream(t *testing.T) {
+	f := newFixture(t)
+	c := f.client()
+	csrf := f.login(c)
+	id := f.stageWithArtifacts(catalog.ComponentCLI, catalog.ChannelStable, stableStamp, f.now)
+
+	// No public store and no publisher on the default fixture: 503, and the
+	// message names the missing piece rather than failing mid-stream.
+	resp, body := f.patch(c, "/api/v1/manage/releases/"+itoa(id), `{"action":"promote"}`, csrf)
+	if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body, "object store") {
+		t.Fatalf("no backends: HTTP %d %s", resp.StatusCode, body)
+	}
+
+	pub, _ := f.withBackends(t)
+	_ = pub
+	c = f.client()
+	csrf = f.login(c)
+
+	resp, body = f.patch(c, "/api/v1/manage/releases/9999", `{"action":"promote"}`, csrf)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown row: HTTP %d %s", resp.StatusCode, body)
+	}
+	resp, body = f.patch(c, "/api/v1/manage/releases/"+itoa(id), `{"action":"burn"}`, csrf)
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, "unknown action") {
+		t.Fatalf("bad action: HTTP %d %s", resp.StatusCode, body)
+	}
+	// A yank of a staged row is a 409 BEFORE the stream opens.
+	resp, body = f.patch(c, "/api/v1/manage/releases/"+itoa(id), `{"action":"yank"}`, csrf)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("yank of a staged row: HTTP %d %s", resp.StatusCode, body)
+	}
+}
+
+func TestPromoteWithoutAPublisherIs503AndCopiesNothing(t *testing.T) {
+	f := newFixture(t)
+	pub := backendtest.NewPublic(f.rec, f.staging)
+	f.server.Close()
+	srv, err := New(f.st, f.auth, f.intake, Backends{Staging: f.staging, Public: pub},
+		slog.New(slog.DiscardHandler), func() time.Time { return f.now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.server = httptest.NewServer(srv.Handler())
+	defer f.server.Close()
+
+	c := f.client()
+	csrf := f.login(c)
+	id := f.stageWithArtifacts(catalog.ComponentCLI, catalog.ChannelStable, stableStamp, f.now)
+	resp, body := f.patch(c, "/api/v1/manage/releases/"+itoa(id), `{"action":"promote"}`, csrf)
+	if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body, "GitHub publisher") {
+		t.Fatalf("HTTP %d %s, want 503 naming the publisher", resp.StatusCode, body)
+	}
+	if len(pub.Objects) != 0 {
+		t.Fatal("a refused promote copied objects")
+	}
+}
+
+func TestPromoteButtonOnThePageStreamsAReadableLog(t *testing.T) {
+	f := newFixture(t)
+	pub, _ := f.withBackends(t)
+	c := f.client()
+	csrf := f.login(c)
+	id := f.stageWithArtifacts(catalog.ComponentCLI, catalog.ChannelStable, stableStamp, f.now)
+
+	resp, err := c.PostForm(f.server.URL+"/manage/releases/"+itoa(id)+"/promote",
+		url.Values{"csrf_token": {csrf}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("HTTP %d %s", resp.StatusCode, body)
+	}
+	for _, want := range []string{"verify", "copy", "github", "manifest", "flip", "✓ promote finished"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the streamed log has no %q line:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "{") {
+		t.Fatalf("the page log leaked raw JSON:\n%s", body)
+	}
+	if _, ok := pub.Objects["clawee/latest.json"]; !ok {
+		t.Fatal("the button did not publish")
+	}
+
+	// …and yank takes it back off.
+	resp, err = c.PostForm(f.server.URL+"/manage/releases/"+itoa(id)+"/yank",
+		url.Values{"csrf_token": {csrf}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = readBody(t, resp)
+	if !strings.Contains(body, "✓ yank finished") {
+		t.Fatalf("yank log:\n%s", body)
+	}
+	if _, ok := pub.Objects["clawee/latest.json"]; ok {
+		t.Fatal("the manifest survived the yank of the only public row")
 	}
 }
