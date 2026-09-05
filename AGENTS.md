@@ -67,12 +67,32 @@ to promote. `tools/test-cut-no-publish.sh` enforces it.
   already there and are inert — the thing to surface is the missing row, not the
   objects.
 
-### `--channel`
+### `--channel` and the cut origin
 
-Defaults to `beta` when the component source worktree is on a beta branch and
-`stable` otherwise. An explicit `--channel stable` from a beta branch is
-**refused**: retention and every installer would treat those bytes as a stable
-release.
+The channel and the branch are one decision, not two:
+
+| Channel | Cut origin |
+|---|---|
+| `stable` | `main` |
+| `beta` | `beta` — the permanent cycle branch — or a `beta-<slug>` experiment beside it |
+
+The branch decides when `--channel` is absent. A flag that disagrees with the
+branch is **refused** (retention and every installer read the channel, not the
+branch, so a mislabelled row is a beta build treated as stable), and a branch
+that maps to neither is no cut origin at all — a release is published from a
+decided branch, never from wherever the tree happens to be.
+
+**Both the component source worktree and this repo answer to the rule.** They
+are inputs to one artifact; a stable kit cutting a beta component is the same
+mislabelling from the other side. This also means a cut cannot run from a
+project worktree, which is intentional.
+
+Dry-runs are lenient about all of it, so they still run off a prep worktree.
+
+`main` was previously the only accepted branch, full stop, which made the beta
+path unreachable: the channel could be derived and the flag accepted, but the
+only branch either could have come from was rejected. A cycle changes what feeds
+the cut, not whether there is one (`~/.agents/guidelines/beta.md` §2/§4).
 
 ## Seams
 

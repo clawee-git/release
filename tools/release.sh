@@ -53,9 +53,13 @@
 # throwaway artifacts under dist/<stamp>/.
 #
 # --channel stable|beta selects the staging prefix and the catalog row's
-#   channel. It defaults to beta when the component source is on a beta branch
-#   and stable otherwise; asking for --channel stable from a beta branch is
-#   refused rather than quietly mislabelling the row.
+#   channel, and with it the CUT ORIGIN: stable publishes from `main`, beta from
+#   the permanent `beta` cycle branch (or a `beta-<slug>` experiment beside it).
+#   The branch decides when the flag is absent; a flag that disagrees with the
+#   branch is refused rather than quietly mislabelling the row, and a branch
+#   that is neither is no cut origin at all. Both the component source worktree
+#   and this repo answer to the same rule — they are inputs to one artifact.
+#   Dry-runs are lenient, so they still run off a prep worktree.
 #
 # claweed inner installer: rendered at build time from the daemon repo's CANONICAL
 # install/install.sh.in (the sudo-minimal installer), substituting the stamp. The
@@ -335,32 +339,98 @@ bins_for() {
 # (exit 127) before the first build, and no suite caught it because every suite
 # stayed on the --dry-run path. tools/test-cut-no-publish.sh PART D now runs a
 # stubbed non-dry-run pre-flight for exactly this reason.
-# resolve_channel <comp> — echo the channel this cut belongs to.
+# channel_for_branch <branch> — the channel a branch is a cut origin for, or
+# the empty string when it is not one at all.
 #
-# An explicit --channel wins EXCEPT when it claims `stable` for a source tree
-# sitting on a beta branch: that combination is always a mistake, and honouring
-# it files beta bytes in the stable catalog where retention and every installer
-# treat them as the real thing. Without a flag, the branch decides.
+# The mapping is the whole rule and it is symmetric: `main` publishes stable,
+# the permanent `beta` cycle branch (and a `beta-<slug>` experiment beside it)
+# publishes beta, and nothing else publishes anything. A branch that maps to
+# nothing is not a "probably stable" cut origin — it is a tree nobody decided
+# to release from.
+channel_for_branch() {
+    case "$1" in
+        main)        printf 'stable' ;;
+        beta|beta-*) printf 'beta' ;;
+        *)           printf '' ;;
+    esac
+}
+
+# resolve_channel <comp> — set RESOLVED_CHANNEL, return non-zero on a refusal.
+#
+# IT SETS A GLOBAL AND RETURNS A STATUS; it does not echo and it does not exit.
+# The first version echoed the channel and called `exit 2` on a refusal, which
+# looks fine until you notice every call site was `channel="$(resolve_channel …)"`:
+# inside a command substitution that exit kills the SUBSHELL, and the refusal
+# only stops the script because `set -e` happens to see the status. Reached from
+# an `if`, a `||` or a pipeline — where set -e is suppressed — the refusal
+# degraded into an EMPTY channel string, and an empty channel is an empty
+# --prefix, which is r2-mirror's FLAT PUBLIC LAYOUT. A refusal that silently
+# selects the public layout is worse than no refusal.
+RESOLVED_CHANNEL=""
 resolve_channel() {
+    RESOLVED_CHANNEL=""
     local comp="$1" src br derived
     src="$(src_for "${comp}")"
     br="$(git -C "${src}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
-    case "${br}" in
-        beta|beta-*) derived="beta" ;;
-        *)           derived="stable" ;;
-    esac
+    derived="$(channel_for_branch "${br}")"
+
     if [ "${CHANNEL_EXPLICIT}" = 1 ]; then
-        if [ "${CHANNEL}" = stable ] && [ "${derived}" = beta ]; then
-            echo "✗ --channel stable requested but ${comp} source is on branch '${br}'" >&2
-            echo "  A beta tree cut into the stable channel is a mislabelled row: retention" >&2
-            echo "  and every installer would treat it as a stable release. Cut it as beta," >&2
-            echo "  or cut from a non-beta branch." >&2
-            exit 2
+        if [ -n "${derived}" ] && [ "${derived}" != "${CHANNEL}" ]; then
+            echo "✗ --channel ${CHANNEL} requested but ${comp} source is on branch '${br}'," >&2
+            echo "  which is a ${derived} cut origin." >&2
+            echo "  Filing the row under the wrong channel mislabels it: retention and every" >&2
+            echo "  installer read the channel, not the branch. Cut it as ${derived}, or cut" >&2
+            echo "  from a ${CHANNEL} branch (stable ⇔ main, beta ⇔ beta / beta-<slug>)." >&2
+            return 1
         fi
-        printf '%s' "${CHANNEL}"
+        RESOLVED_CHANNEL="${CHANNEL}"
         return 0
     fi
-    printf '%s' "${derived}"
+
+    if [ -z "${derived}" ]; then
+        # A dry-run is deliberately lenient — it exists to be runnable off a prep
+        # worktree — so it assumes stable and says so. A real cut is refused by
+        # cut_origin_guard below; this is not the place that decides.
+        RESOLVED_CHANNEL="stable"
+        return 0
+    fi
+    RESOLVED_CHANNEL="${derived}"
+    return 0
+}
+
+# cut_origin_guard <what> <dir> <channel> — refuse unless <dir>'s branch is a
+# cut origin FOR THAT CHANNEL.
+#
+# The old guard was `branch = main`, full stop, which made beta unreachable on a
+# full cut: resolve_channel could derive `beta` and --channel beta was accepted,
+# but the guard rejected the only branch either could have come from, so the
+# whole beta path existed and could not be run. `main` is not the cut origin —
+# it is the STABLE cut origin, and a cycle changes what feeds the cut, not
+# whether there is one (beta.md §2/§4, release.md §2).
+#
+# Applied to the component source worktree AND to this repo: both are inputs to
+# the same artifact, and a stable kit cutting a beta component (or the reverse)
+# is the same mislabelling from the other side.
+cut_origin_guard() {
+    local what="$1" dir="$2" channel="$3" br got want
+    br="$(git -C "${dir}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
+    got="$(channel_for_branch "${br}")"
+    [ "${got}" = "${channel}" ] && return 0
+    case "${channel}" in
+        stable) want="main" ;;
+        beta)   want="beta (or a beta-<slug> experiment beside it)" ;;
+        *)      want="stable ⇔ main, beta ⇔ beta / beta-<slug>" ;;
+    esac
+    echo "✗ ${what} is on branch '${br}', which is not a ${channel} cut origin." >&2
+    echo "  A ${channel} cut publishes from ${want}." >&2
+    if [ -n "${got}" ]; then
+        echo "  That branch is the ${got} cut origin — cut ${got}, or switch branch." >&2
+    else
+        echo "  That branch is no cut origin at all: a release is published from a" >&2
+        echo "  decided branch, never from wherever the tree happens to be." >&2
+    fi
+    echo "  Directory: ${dir}" >&2
+    return 1
 }
 
 # require_manage_url — resolve MANAGE_URL or refuse, naming the key.
@@ -562,16 +632,20 @@ fi
 # components to cut
 if [ "${WHAT}" = all ]; then COMPONENTS=(clawee claweed); else COMPONENTS=("${WHAT}"); fi
 
-# per-component source-worktree cleanliness + branch (real releases must come
-# from a clean `main`; dry-runs are lenient so they can run off a prep worktree).
+# per-component source-worktree cleanliness + cut origin. A real cut publishes
+# from a DECIDED branch and the channel says which one (stable ⇔ main, beta ⇔
+# beta / beta-<slug>); dry-runs are lenient so they can run off a prep worktree.
 for comp in "${COMPONENTS[@]}"; do
     src="$(src_for "${comp}")"
     [ -d "${src}" ] || { echo "✗ ${comp} source worktree missing: ${src}" >&2; exit 1; }
     git -C "${src}" rev-parse --git-dir >/dev/null 2>&1 \
         || { echo "✗ ${comp} source is not a git worktree: ${src}" >&2; exit 1; }
     if [ "${DRY_RUN}" != 1 ]; then
-        br="$(git -C "${src}" rev-parse --abbrev-ref HEAD)"
-        [ "${br}" = main ] || { echo "✗ ${comp} source not on main (on ${br}): ${src}" >&2; exit 1; }
+        resolve_channel "${comp}" || exit 2
+        cut_origin_guard "${comp} source" "${src}" "${RESOLVED_CHANNEL}" || exit 1
+        # This repo is an input to the same artifact, so it answers to the same
+        # rule: a stable kit must not cut a beta component, or the reverse.
+        cut_origin_guard "the release repo" "${REPO_ROOT}" "${RESOLVED_CHANNEL}" || exit 1
         [ -z "$(git -C "${src}" status --porcelain)" ] \
             || { echo "✗ ${comp} source worktree is dirty: ${src}" >&2; exit 1; }
     fi
@@ -824,7 +898,8 @@ do_release() {
     # shellcheck disable=SC2012  # cosmetic listing of our own controlled asset names (no untrusted filenames); ls keeps the plain one-per-line format.
     ( cd "${stage}" && ls -1 clawee-"${comp}"-*.zip SHA256SUMS.txt SHA256SUMS.txt.minisig | sed 's/^/    /' )
 
-    local channel; channel="$(resolve_channel "${comp}")"
+    resolve_channel "${comp}" || exit 2
+    local channel="${RESOLVED_CHANNEL}"
 
     if [ "${DRY_RUN}" = 1 ]; then
         echo
@@ -908,7 +983,12 @@ distribute_only() {
     src="$(src_for "${comp}")"
     [ -d "${src}" ] || { echo "✗ ${comp} source worktree missing: ${src}" >&2; exit 1; }
     semver="$(SRC_DIR="${src}" bash "${REPO_ROOT}/tools/version.sh" "${comp}" --semver)"
-    channel="$(resolve_channel "${comp}")"
+    resolve_channel "${comp}" || exit 2
+    channel="${RESOLVED_CHANNEL}"
+    if [ "${DRY_RUN}" != 1 ]; then
+        cut_origin_guard "${comp} source" "${src}" "${channel}" || exit 1
+        cut_origin_guard "the release repo" "${REPO_ROOT}" "${channel}" || exit 1
+    fi
 
     if [ "${DRY_RUN}" = 1 ]; then
         echo "--- staging keys (${channel}) ---"
