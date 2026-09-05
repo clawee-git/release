@@ -10,8 +10,9 @@
 //	/manage/*               the same, rendered as pages
 //
 // The public half can only ever see what promote made public, because the only
-// query it runs is CurrentPublic. That is a property of the code rather than a
-// rule someone has to remember when adding the download page in feature 03.
+// queries it runs are CurrentPublic and PublicHistory, and NEITHER can return a
+// `staged` row. That is a property of the code rather than a rule someone has
+// to remember: see internal/manage/web/public.go.
 //
 // Pages are server-rendered from embedded html/template files. There is no SPA
 // build: this surface is a handful of forms an operator uses a few times a
@@ -56,29 +57,42 @@ type Server struct {
 	Auth     *auth.Service
 	Intake   *intake.Handler
 	Backends Backends
+	Public   PublicConfig
 	Log      *slog.Logger
 	Now      func() time.Time
 
-	pages map[string]*template.Template
+	pages       map[string]*template.Template
+	publicPages map[string]*template.Template
 }
 
 // New builds the server and parses the templates. A template that fails to
 // parse is a startup error, not a 500 the first operator to visit discovers.
-func New(st *store.Store, a *auth.Service, in *intake.Handler, backends Backends, log *slog.Logger, now func() time.Time) (*Server, error) {
+func New(st *store.Store, a *auth.Service, in *intake.Handler, backends Backends, public PublicConfig, log *slog.Logger, now func() time.Time) (*Server, error) {
 	if now == nil {
 		now = time.Now
 	}
 	if log == nil {
 		log = slog.Default()
 	}
-	s := &Server{Store: st, Auth: a, Intake: in, Backends: backends, Log: log, Now: now,
-		pages: map[string]*template.Template{}}
-	for _, name := range []string{"login", "totp", "index", "history", "invites", "public"} {
+	s := &Server{Store: st, Auth: a, Intake: in, Backends: backends, Public: public, Log: log, Now: now,
+		pages: map[string]*template.Template{}, publicPages: map[string]*template.Template{}}
+	for _, name := range []string{"login", "totp", "index", "history", "invites"} {
 		t, err := template.ParseFS(templateFS, "templates/layout.html", "templates/"+name+".html")
 		if err != nil {
 			return nil, fmt.Errorf("parse template %q: %w", name, err)
 		}
 		s.pages[name] = t
+	}
+	// The public pages have their OWN layout, not a variant of the operator
+	// one. They are the brand's page and it carries no session, no CSRF token
+	// and no manage navigation; sharing a layout would put a per-page
+	// conditional around every one of those.
+	for _, name := range []string{"install", "downloads", "verify", "platforms", "docs"} {
+		t, err := template.ParseFS(templateFS, "templates/public/layout.html", "templates/public/"+name+".html")
+		if err != nil {
+			return nil, fmt.Errorf("parse public template %q: %w", name, err)
+		}
+		s.publicPages[name] = t
 	}
 	return s, nil
 }
@@ -132,7 +146,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/manage/", s.pageGuard(s.handleNotFoundPage))
 
 	// ── Public ────────────────────────────────────────────────────────────
+	// Every one of these is unauthenticated by design and reads the catalog
+	// only through the two methods that cannot return a staged row.
 	mux.HandleFunc("GET /{$}", s.handlePublicIndex)
+	mux.HandleFunc("GET /downloads", s.handlePublicDownloads)
+	mux.HandleFunc("GET /verify", s.handlePublicVerify)
+	mux.HandleFunc("GET /platforms", s.handlePublicPlatforms)
+	mux.HandleFunc("GET /docs", s.handlePublicDocs)
 	mux.HandleFunc("/", s.handleNotFound)
 
 	return mux

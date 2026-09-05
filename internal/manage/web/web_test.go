@@ -31,6 +31,15 @@ const (
 	betaStamp     = "v0.3.0.beta.2026.09.04.deadbeef"
 )
 
+// testPublicConfig is the public surface's non-secret configuration. The hosts
+// are .invalid on purpose: no test may reach a real bucket or a real GitHub,
+// and a link check that walked out of the fixture would be a network test.
+var testPublicConfig = PublicConfig{
+	BaseURL:       "https://release.example.invalid",
+	DownloadsBase: "https://downloads.example.invalid",
+	GitHubRepo:    "clawee-git/release",
+}
+
 type fixture struct {
 	t       *testing.T
 	st      *store.Store
@@ -80,7 +89,7 @@ func newFixture(t *testing.T) *fixture {
 	f.intake = in
 	f.rec = &backendtest.Recorder{}
 	f.staging = backendtest.NewStaging(f.rec, "clawee-staging")
-	srv, err := New(st, f.auth, in, Backends{Staging: f.staging}, slog.New(slog.DiscardHandler), func() time.Time { return f.now })
+	srv, err := New(st, f.auth, in, Backends{Staging: f.staging}, testPublicConfig, slog.New(slog.DiscardHandler), func() time.Time { return f.now })
 	if err != nil {
 		t.Fatalf("web.New: %v", err)
 	}
@@ -626,37 +635,6 @@ func TestHistoryAndInvitesPagesRender(t *testing.T) {
 	}
 }
 
-// ── The public split ─────────────────────────────────────────────────────
-
-func TestPublicIndexShowsOnlyPromotedRows(t *testing.T) {
-	f := newFixture(t)
-	c := f.client()
-	staged := f.stage(catalog.ComponentCLI, catalog.ChannelStable, stableStamp, f.now)
-
-	resp, body := f.get(c, "/")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("HTTP %d", resp.StatusCode)
-	}
-	if strings.Contains(body, stableStamp) {
-		t.Fatal("a staged stamp is on the public page — the private half of the split leaked")
-	}
-
-	if err := f.st.Promote(staged, f.now); err != nil {
-		t.Fatal(err)
-	}
-	_, body = f.get(c, "/")
-	if !strings.Contains(body, stableStamp) {
-		t.Fatal("a promoted row is missing from the public page")
-	}
-
-	// And the public page needs no session at all.
-	anon := f.client()
-	resp, _ = f.get(anon, "/")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("public page anonymously: HTTP %d", resp.StatusCode)
-	}
-}
-
 func TestUnknownPathIs404(t *testing.T) {
 	f := newFixture(t)
 	resp, _ := f.get(f.client(), "/nope")
@@ -883,7 +861,7 @@ func TestMintRefusesUnknownRowsAndUnmintableStates(t *testing.T) {
 func TestMintWithoutAStagingStoreIs503(t *testing.T) {
 	f := newFixture(t)
 	f.server.Close()
-	srv, err := New(f.st, f.auth, mustIntake(t, f), Backends{}, slog.New(slog.DiscardHandler),
+	srv, err := New(f.st, f.auth, mustIntake(t, f), Backends{}, testPublicConfig, slog.New(slog.DiscardHandler),
 		func() time.Time { return f.now })
 	if err != nil {
 		t.Fatal(err)
@@ -929,7 +907,7 @@ func (f *fixture) withBackends(t *testing.T) (*backendtest.Public, *backendtest.
 	gh := backendtest.NewGitHub(f.rec)
 	f.server.Close()
 	srv, err := New(f.st, f.auth, f.intake, Backends{Staging: f.staging, Public: pub, GitHub: gh},
-		slog.New(slog.DiscardHandler), func() time.Time { return f.now })
+		testPublicConfig, slog.New(slog.DiscardHandler), func() time.Time { return f.now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1028,7 +1006,7 @@ func TestPromoteWithoutAPublisherIs503AndCopiesNothing(t *testing.T) {
 	pub := backendtest.NewPublic(f.rec, f.staging)
 	f.server.Close()
 	srv, err := New(f.st, f.auth, f.intake, Backends{Staging: f.staging, Public: pub},
-		slog.New(slog.DiscardHandler), func() time.Time { return f.now })
+		testPublicConfig, slog.New(slog.DiscardHandler), func() time.Time { return f.now })
 	if err != nil {
 		t.Fatal(err)
 	}

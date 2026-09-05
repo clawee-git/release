@@ -1,0 +1,19 @@
+{{define "content"}}
+  <section>
+    <h2>Supported platforms</h2>
+    <div class="scroll">
+    <table>
+      <thead>
+        <tr><th>OS</th><th>arm64</th><th>amd64</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>macOS (darwin)</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td>Linux</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="faint">Windows is not supported.</p>
+    <p class="muted">The installer detects the pair for you; the per-platform zips are on the
+      <a href="/downloads">downloads</a> page if you would rather fetch one yourself.</p>
+  </section>
+{{end}}

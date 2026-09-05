@@ -35,6 +35,7 @@ type storeOpts struct {
 	r2Creds       string
 	githubRepo    string
 	githubToken   string
+	publicBaseURL string
 }
 
 func (o *storeOpts) register(fs *flag.FlagSet) {
@@ -44,6 +45,8 @@ func (o *storeOpts) register(fs *flag.FlagSet) {
 	fs.StringVar(&o.r2Creds, "r2-creds", "", "`path` to the file holding access_key_id and secret_access_key")
 	fs.StringVar(&o.githubRepo, "github-repo", "", "`owner/repo` to publish releases to")
 	fs.StringVar(&o.githubToken, "github-token-file", "", "`path` to a file holding the GitHub token")
+	fs.StringVar(&o.publicBaseURL, "public-base-url", "",
+		"the public `url` the public bucket is served at, e.g. https://downloads.example.org; the download page links into its channel layout")
 }
 
 // backends builds the seams the flags describe. A partially configured store
@@ -116,6 +119,18 @@ func seam(name string, present bool, gates string) string {
 		return name + ": configured"
 	}
 	return fmt.Sprintf("%s: ABSENT (%s will refuse)", name, gates)
+}
+
+// publicConfig is the non-secret half of the same flags, handed to the public
+// pages. It is derived HERE rather than read separately so the download links
+// and the bucket promote writes to can only ever be described by one set of
+// flags.
+func (o *storeOpts) publicConfig(baseURL string) web.PublicConfig {
+	return web.PublicConfig{
+		BaseURL:       baseURL,
+		DownloadsBase: strings.TrimSuffix(strings.TrimSpace(o.publicBaseURL), "/"),
+		GitHubRepo:    strings.TrimSpace(o.githubRepo),
+	}
 }
 
 // componentChannel is one retention scope.

@@ -27,6 +27,9 @@ Commands:
             [--github-token-file <path>]  path to a file holding the GitHub token
             [--listen <address>]          address to bind; the default is loopback because this
                                           service sits behind the host's TLS proxy
+            [--public-base-url <url>]     the public url the public bucket is served at, e.g.
+                                          https://downloads.example.org; the download page links
+                                          into its channel layout
             [--public-bucket <bucket>]    the public bucket promote copies into
             [--r2-account <account>]      the Cloudflare account id the buckets live in
             [--r2-creds <path>]           path to the file holding access_key_id and
@@ -56,6 +59,9 @@ Commands:
             [--dry-run]                   print which rows WOULD be expired and prune nothing
             [--github-repo <owner/repo>]  owner/repo to publish releases to
             [--github-token-file <path>]  path to a file holding the GitHub token
+            [--public-base-url <url>]     the public url the public bucket is served at, e.g.
+                                          https://downloads.example.org; the download page links
+                                          into its channel layout
             [--public-bucket <bucket>]    the public bucket promote copies into
             [--r2-account <account>]      the Cloudflare account id the buckets live in
             [--r2-creds <path>]           path to the file holding access_key_id and
@@ -91,6 +97,9 @@ Commands:
          [--github-token-file <path>]  path to a file holding the GitHub token
          [--listen <address>]          address to bind; the default is loopback because this service
                                        sits behind the host's TLS proxy
+         [--public-base-url <url>]     the public url the public bucket is served at, e.g.
+                                       https://downloads.example.org; the download page links into
+                                       its channel layout
          [--public-bucket <bucket>]    the public bucket promote copies into
          [--r2-account <account>]      the Cloudflare account id the buckets live in
          [--r2-creds <path>]           path to the file holding access_key_id and secret_access_key
@@ -190,6 +199,9 @@ Commands:
           [--dry-run]                   print which rows WOULD be expired and prune nothing
           [--github-repo <owner/repo>]  owner/repo to publish releases to
           [--github-token-file <path>]  path to a file holding the GitHub token
+          [--public-base-url <url>]     the public url the public bucket is served at, e.g.
+                                        https://downloads.example.org; the download page links into
+                                        its channel layout
           [--public-bucket <bucket>]    the public bucket promote copies into
           [--r2-account <account>]      the Cloudflare account id the buckets live in
           [--r2-creds <path>]           path to the file holding access_key_id and secret_access_key

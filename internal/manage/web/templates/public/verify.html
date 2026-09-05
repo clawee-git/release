@@ -1,0 +1,20 @@
+{{define "content"}}
+  <section>
+    <h2>Verify by hand</h2>
+    <p class="muted">Every release ships <code>SHA256SUMS.txt</code> and a minisign signature.
+      The signing public key lives at
+      <a href="/{{.PubkeyFile}}">/{{.PubkeyFile}}</a> — it is also baked into the
+      installer, which is the trust anchor that verifies each download automatically. To check
+      a download yourself:</p>
+    <pre class="block">minisign -V -P "$(cat {{.PubkeyFile}} | tail -n1)" -m SHA256SUMS.txt -x SHA256SUMS.txt.minisig
+f=&lt;file&gt;                                      # the file you downloaded
+want=$(awk -v f="$f" '{ n = $2; sub(/^\*/, "", n); if (n == f) { print $1; exit } }' SHA256SUMS.txt)
+got=$(shasum -a 256 "$f" | awk '{print $1}')  # sha256sum "$f" on Linux
+if   [ -z "$want" ];        then echo "NO ENTRY for $f in SHA256SUMS.txt — do not install"
+elif [ "$want" = "$got" ];  then echo "OK $f"
+else                             echo "MISMATCH for $f — do not install"; fi</pre>
+    <p class="faint">A failed signature check means the bytes are untrusted — do not install them.</p>
+    <p class="muted">Both files are published beside every zip; the <a href="/downloads">downloads</a>
+      page links them per release.</p>
+  </section>
+{{end}}

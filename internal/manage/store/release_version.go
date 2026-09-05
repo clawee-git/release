@@ -444,3 +444,25 @@ func (s *Store) ByVersion(component, channel, version string) (*ReleaseVersion, 
 	}
 	return &rows[0], nil
 }
+
+// PublicHistory returns the rows a PUBLIC page may render for (component,
+// channel), newest first: `public`, `yanked` and `expired`, and never
+// `staged`.
+//
+// It exists as its own method rather than as a filter the caller applies,
+// because "the public surface cannot show a staged row" then holds by
+// construction. ListByComponent returns every state and backs the operator's
+// history page; a public handler that reached for it and forgot the filter
+// would publish the stamp of a build nobody approved — and the mistake would
+// look exactly like working code.
+func (s *Store) PublicHistory(component, channel string) ([]ReleaseVersion, error) {
+	if !catalog.ValidComponent(component) || !catalog.ValidChannel(channel) {
+		return nil, fmt.Errorf("%w: %s/%s", ErrBadValue, component, channel)
+	}
+	return queryVersions(s.db, `
+		SELECT `+versionCols+` FROM release_versions
+		WHERE component = ? AND channel = ? AND state IN (?, ?, ?)
+		ORDER BY created_at DESC, id DESC`,
+		component, channel,
+		catalog.StatePublic, catalog.StateYanked, catalog.StateExpired)
+}
