@@ -30,28 +30,51 @@ import (
 // this is a redirect loop or an attempt to exhaust the checker.
 const maxRedirects = 5
 
+// Phase bounds. Each one bounds a phase that can WEDGE; none of them bounds
+// the whole exchange.
+//
+// There is deliberately no http.Client.Timeout here, and the reason is written
+// down in internal/r2/r2.go against a real incident: a blanket timeout bounds
+// the body upload too, so a multi-megabyte PUT on a slow uplink fails as
+// "Client.Timeout exceeded while awaiting headers" while the transfer is still
+// making progress. On 2026-09-03 that stalled a cut mid-distribute and left the
+// GitHub release published with the R2 catalog un-updated. Promote pushes four
+// ~11 MB zips through this client as release assets — the same shape, and the
+// same trap. Bound what can hang; let a slow upload take the time it needs.
+const (
+	guardDialTimeout     = 30 * time.Second
+	guardTLSTimeout      = 30 * time.Second
+	guardResponseTimeout = 10 * time.Minute
+	guardIdleConnTimeout = 90 * time.Second
+	guardExpectContinue  = 1 * time.Second
+)
+
 // Guard builds bounded HTTP clients.
 type Guard struct {
 	// AllowPrivate permits private and loopback addresses. Tests set it —
 	// httptest listens on 127.0.0.1 — and nothing else does.
 	AllowPrivate bool
-	Timeout      time.Duration
+	// ResponseHeaderTimeout overrides the default wait for response headers.
+	// It bounds a phase, never the whole exchange; a test sets it small to
+	// prove the bound exists at all.
+	ResponseHeaderTimeout time.Duration
 }
 
 // Client returns an http.Client that enforces the guard on every hop.
 func (g *Guard) Client() *http.Client {
-	timeout := g.Timeout
-	if timeout == 0 {
-		timeout = 60 * time.Second
+	responseHeader := g.ResponseHeaderTimeout
+	if responseHeader == 0 {
+		responseHeader = guardResponseTimeout
 	}
 	return &http.Client{
-		Timeout: timeout,
+		// Timeout is INTENTIONALLY unset — see the constants above.
 		Transport: &http.Transport{
 			Proxy:                 nil, // a proxy would resolve and dial for us
 			DialContext:           g.dial,
-			TLSHandshakeTimeout:   30 * time.Second,
-			ResponseHeaderTimeout: 5 * time.Minute,
-			ExpectContinueTimeout: time.Second,
+			TLSHandshakeTimeout:   guardTLSTimeout,
+			ResponseHeaderTimeout: responseHeader,
+			IdleConnTimeout:       guardIdleConnTimeout,
+			ExpectContinueTimeout: guardExpectContinue,
 		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= maxRedirects {
@@ -101,7 +124,7 @@ func (g *Guard) dial(ctx context.Context, network, address string) (net.Conn, er
 		return nil, fmt.Errorf("download guard: resolve %q: %w", host, err)
 	}
 	var dialer net.Dialer
-	dialer.Timeout = 30 * time.Second
+	dialer.Timeout = guardDialTimeout
 	for _, a := range addrs {
 		if !g.AllowPrivate && !isPublic(a) {
 			// One private answer poisons the name: a round-robin that returns
