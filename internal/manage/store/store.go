@@ -97,12 +97,6 @@ func Open(dataDir string) (*Store, error) {
 // Close releases the database handle.
 func (s *Store) Close() error { return s.db.Close() }
 
-// DB exposes the handle for the few places that need a transaction the store
-// does not already wrap. It exists for batch B's promote, which must flip a
-// row and write an audit line in one transaction with work this package does
-// not own.
-func (s *Store) DB() *sql.DB { return s.db }
-
 // migration is one rung of the forward-only ladder. Version numbers are dense
 // and never reused; the name is what the ledger records for a human reading
 // the table.

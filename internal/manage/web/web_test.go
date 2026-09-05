@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/clawee-git/release/internal/manage/auth"
+	"github.com/clawee-git/release/internal/manage/backend/backendtest"
 	"github.com/clawee-git/release/internal/manage/catalog"
 	"github.com/clawee-git/release/internal/manage/intake"
 	"github.com/clawee-git/release/internal/manage/store"
@@ -32,8 +33,21 @@ type fixture struct {
 	st     *store.Store
 	auth   *auth.Service
 	sealer *auth.Sealer
-	server *httptest.Server
-	now    time.Time
+	server  *httptest.Server
+	now     time.Time
+	rec     *backendtest.Recorder
+	staging *backendtest.Staging
+	intake  *intake.Handler
+}
+
+// mustIntake hands back the fixture's intake handler for a test that rebuilds
+// the server with different backends.
+func mustIntake(t *testing.T, f *fixture) *intake.Handler {
+	t.Helper()
+	if f.intake == nil {
+		t.Fatal("fixture has no intake handler")
+	}
+	return f.intake
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -60,7 +74,10 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatalf("intake.New: %v", err)
 	}
-	srv, err := New(st, f.auth, in, slog.New(slog.DiscardHandler), func() time.Time { return f.now })
+	f.intake = in
+	f.rec = &backendtest.Recorder{}
+	f.staging = backendtest.NewStaging(f.rec, "clawee-staging")
+	srv, err := New(st, f.auth, in, Backends{Staging: f.staging}, slog.New(slog.DiscardHandler), func() time.Time { return f.now })
 	if err != nil {
 		t.Fatalf("web.New: %v", err)
 	}
@@ -708,5 +725,176 @@ func TestAuthenticatedResponsesAreNotCacheable(t *testing.T) {
 	got, _ := f.get(anon, "/api/v1/manage/releases/stable/versions")
 	if cc := got.Header.Get("Cache-Control"); cc != "no-store" {
 		t.Errorf("401 refusal: Cache-Control = %q, want no-store", cc)
+	}
+}
+
+// stageWithArtifacts stages a row AND seeds the fake staging bucket with the
+// objects it names, so an invite can actually be minted from it.
+func (f *fixture) stageWithArtifacts(comp, channel, stamp string, at time.Time) int64 {
+	f.t.Helper()
+	keyBase := comp + "/" + channel + "/" + stamp
+	type art struct {
+		Platform string `json:"platform"`
+		Key      string `json:"key"`
+		SHA256   string `json:"sha256"`
+		Size     int64  `json:"size"`
+	}
+	var arts []art
+	for _, plat := range []string{"darwin/arm64", "linux/amd64"} {
+		name := "clawee-" + comp + "-" + strings.ReplaceAll(plat, "/", "-") + ".zip"
+		key := keyBase + "/" + name
+		f.staging.Objects[key] = []byte("zip " + name)
+		arts = append(arts, art{Platform: plat, Key: key, SHA256: strings.Repeat("a", 64), Size: 8})
+	}
+	sumsKey, minisigKey := keyBase+"/SHA256SUMS.txt", keyBase+"/SHA256SUMS.txt.minisig"
+	f.staging.Objects[sumsKey] = []byte("sums")
+	f.staging.Objects[minisigKey] = []byte("sig")
+	blob, _ := json.Marshal(arts)
+	id, err := f.st.Stage(store.ReleaseVersion{
+		Component: comp, Channel: channel, Version: "0.3.0", Stamp: stamp,
+		ArtifactsJSON: string(blob), SumsKey: sumsKey, MinisigKey: minisigKey, CreatedAt: at,
+	})
+	if err != nil {
+		f.t.Fatalf("Stage: %v", err)
+	}
+	return id
+}
+
+func (f *fixture) postJSON(c *http.Client, path, body, csrf string) (*http.Response, string) {
+	f.t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, f.server.URL+path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if csrf != "" {
+		req.Header.Set(auth.CSRFHeader, csrf)
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return resp, readBody(f.t, resp)
+}
+
+func TestMintInviteThroughTheAPI(t *testing.T) {
+	f := newFixture(t)
+	c := f.client()
+	csrf := f.login(c)
+	f.stageWithArtifacts(catalog.ComponentCLI, catalog.ChannelBeta, betaStamp, f.now)
+
+	resp, body := f.postJSON(c, "/api/v1/manage/releases/beta/install-url",
+		`{"component":"clawee","version":"0.3.0"}`, csrf)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("mint: HTTP %d %s", resp.StatusCode, body)
+	}
+	var got struct {
+		URL       string `json:"url"`
+		Command   string `json:"command"`
+		ExpiresAt string `json:"expires_at"`
+	}
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.URL == "" || !strings.Contains(got.Command, got.URL) {
+		t.Fatalf("mint response = %s", body)
+	}
+
+	// The listing serves it while it is live.
+	resp, body = f.get(c, "/api/v1/manage/releases/beta/invites")
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, got.URL) {
+		t.Fatalf("invites listing: HTTP %d %s", resp.StatusCode, body)
+	}
+	// …and never for a dead one. Written straight into the audit table with a
+	// past expiry rather than by advancing the clock, because moving the clock
+	// far enough to expire an invite also expires the session reading it.
+	row, err := f.st.Unpromoted(catalog.ComponentCLI, catalog.ChannelBeta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.CreateInvite(store.Invite{
+		RowID: row.ID, MintedBy: adminName, ScriptKey: "invites/dead/install.sh",
+		URL:       "https://staging.example.invalid/dead-link",
+		CreatedAt: f.now.Add(-72 * time.Hour), ExpiresAt: f.now.Add(-24 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, body = f.get(c, "/api/v1/manage/releases/beta/invites")
+	if strings.Contains(body, "dead-link") {
+		t.Fatalf("an expired invite's command is still offered: %s", body)
+	}
+	if !strings.Contains(body, `"live":false`) {
+		t.Fatalf("the expired invite is not marked dead: %s", body)
+	}
+}
+
+func TestMintRefusesUnknownRowsAndUnmintableStates(t *testing.T) {
+	f := newFixture(t)
+	c := f.client()
+	csrf := f.login(c)
+
+	resp, body := f.postJSON(c, "/api/v1/manage/releases/beta/install-url",
+		`{"component":"clawee","version":"9.9.9"}`, csrf)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown version: HTTP %d %s", resp.StatusCode, body)
+	}
+	resp, body = f.postJSON(c, "/api/v1/manage/releases/nightly/install-url",
+		`{"component":"clawee","version":"0.3.0"}`, csrf)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown channel: HTTP %d %s", resp.StatusCode, body)
+	}
+
+	// A yanked row is never mintable: withdrawing it was a decision.
+	id := f.stageWithArtifacts(catalog.ComponentCLI, catalog.ChannelStable, stableStamp, f.now)
+	if err := f.st.Promote(id, f.now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.Yank(id, f.now); err != nil {
+		t.Fatal(err)
+	}
+	resp, body = f.postJSON(c, "/api/v1/manage/releases/stable/install-url",
+		`{"component":"clawee","version":"0.3.0"}`, csrf)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("yanked row: HTTP %d %s, want 409", resp.StatusCode, body)
+	}
+}
+
+// Without a staging store the mint fails CLOSED and names the gap: it is a
+// configuration problem, not a bad row.
+func TestMintWithoutAStagingStoreIs503(t *testing.T) {
+	f := newFixture(t)
+	f.server.Close()
+	srv, err := New(f.st, f.auth, mustIntake(t, f), Backends{}, slog.New(slog.DiscardHandler),
+		func() time.Time { return f.now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.server = httptest.NewServer(srv.Handler())
+	defer f.server.Close()
+
+	c := f.client()
+	csrf := f.login(c)
+	resp, body := f.postJSON(c, "/api/v1/manage/releases/beta/install-url",
+		`{"component":"clawee","version":"0.3.0"}`, csrf)
+	if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body, "staging store") {
+		t.Fatalf("HTTP %d %s, want 503 naming the missing store", resp.StatusCode, body)
+	}
+}
+
+func TestMintButtonOnThePageMintsAndRedirects(t *testing.T) {
+	f := newFixture(t)
+	c := f.client()
+	csrf := f.login(c)
+	id := f.stageWithArtifacts(catalog.ComponentCLI, catalog.ChannelBeta, betaStamp, f.now)
+
+	resp, err := c.PostForm(f.server.URL+"/manage/releases/"+itoa(id)+"/mint",
+		url.Values{"csrf_token": {csrf}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/manage/invites" {
+		t.Fatalf("mint button: HTTP %d Location %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	_, body := f.get(c, "/manage/invites")
+	if !strings.Contains(body, "curl -fsSL") {
+		t.Fatalf("the invites page does not offer the command:\n%s", body)
 	}
 }

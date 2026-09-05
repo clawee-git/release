@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/clawee-git/release/internal/manage/auth"
+	"github.com/clawee-git/release/internal/manage/backend"
 	"github.com/clawee-git/release/internal/manage/catalog"
 	"github.com/clawee-git/release/internal/manage/intake"
 	"github.com/clawee-git/release/internal/manage/store"
@@ -38,27 +39,40 @@ import (
 //go:embed templates
 var templateFS embed.FS
 
+// Backends carries the remote-store seams. Each may be nil, and each nil one
+// disables exactly the operation that needs it — with a 503 that names the
+// missing piece, never a silent no-op. A manage service with no GitHub
+// publisher can still show the catalog and mint invites; what it cannot do is
+// promote, and it says so.
+type Backends struct {
+	Staging backend.Staging
+	Public  backend.Public
+	GitHub  backend.GitHub
+}
+
 // Server holds the surface's dependencies.
 type Server struct {
-	Store  *store.Store
-	Auth   *auth.Service
-	Intake *intake.Handler
-	Log    *slog.Logger
-	Now    func() time.Time
+	Store    *store.Store
+	Auth     *auth.Service
+	Intake   *intake.Handler
+	Backends Backends
+	Log      *slog.Logger
+	Now      func() time.Time
 
 	pages map[string]*template.Template
 }
 
 // New builds the server and parses the templates. A template that fails to
 // parse is a startup error, not a 500 the first operator to visit discovers.
-func New(st *store.Store, a *auth.Service, in *intake.Handler, log *slog.Logger, now func() time.Time) (*Server, error) {
+func New(st *store.Store, a *auth.Service, in *intake.Handler, backends Backends, log *slog.Logger, now func() time.Time) (*Server, error) {
 	if now == nil {
 		now = time.Now
 	}
 	if log == nil {
 		log = slog.Default()
 	}
-	s := &Server{Store: st, Auth: a, Intake: in, Log: log, Now: now, pages: map[string]*template.Template{}}
+	s := &Server{Store: st, Auth: a, Intake: in, Backends: backends, Log: log, Now: now,
+		pages: map[string]*template.Template{}}
 	for _, name := range []string{"login", "totp", "index", "history", "invites", "public"} {
 		t, err := template.ParseFS(templateFS, "templates/layout.html", "templates/"+name+".html")
 		if err != nil {
@@ -88,8 +102,8 @@ func (s *Server) Handler() http.Handler {
 	// ── Batch B's write API. These exist NOW, answering 501, so the pages
 	// that link to them are final and the routing split is complete.
 	mux.HandleFunc("PATCH /api/v1/manage/releases/{id}", s.apiGuard(s.handleNotImplementedAPI))
-	mux.HandleFunc("POST /api/v1/manage/releases/{channel}/install-url", s.apiGuard(s.handleNotImplementedAPI))
-	mux.HandleFunc("GET /api/v1/manage/releases/{channel}/invites", s.apiGuard(s.handleNotImplementedAPI))
+	mux.HandleFunc("POST /api/v1/manage/releases/{channel}/install-url", s.apiGuard(s.handleInstallURL))
+	mux.HandleFunc("GET /api/v1/manage/releases/{channel}/invites", s.apiGuard(s.handleInvitesAPI))
 
 	// Everything else under the manage API. It exists so an unauthenticated
 	// request to ANY /api/v1/manage/* path is a 401 rather than a 404 that
@@ -109,7 +123,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /manage/{$}", s.pageGuard(s.handleIndexPage))
 	mux.HandleFunc("GET /manage/invites", s.pageGuard(s.handleInvitesPage))
 	mux.HandleFunc("GET /manage/releases/{comp}", s.pageGuard(s.handleHistoryPage))
-	for _, action := range []string{"promote", "yank", "mint"} {
+	mux.HandleFunc("POST /manage/releases/{id}/mint", s.pageGuard(s.handleMintPage))
+	for _, action := range []string{"promote", "yank"} {
 		mux.HandleFunc("POST /manage/releases/{id}/"+action, s.pageGuard(s.handleNotImplementedPage))
 	}
 	// Anything else under /manage/ goes through the guard too, so an anonymous

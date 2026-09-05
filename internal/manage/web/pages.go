@@ -9,6 +9,7 @@ import (
 
 	"github.com/clawee-git/release/internal/manage/auth"
 	"github.com/clawee-git/release/internal/manage/catalog"
+	"github.com/clawee-git/release/internal/manage/invite"
 	"github.com/clawee-git/release/internal/manage/store"
 )
 
@@ -311,7 +312,7 @@ type invitesPage struct {
 type inviteView struct {
 	Stamp     string
 	MintedBy  string
-	URL       string
+	Command   string
 	CreatedAt string
 	ExpiresAt string
 	Live      bool
@@ -333,11 +334,11 @@ func (s *Server) handleInvitesPage(w http.ResponseWriter, r *http.Request, sess 
 			MintedBy: inv.MintedBy, CreatedAt: inv.CreatedAt.Format(timeFormat),
 			ExpiresAt: inv.ExpiresAt.Format(timeFormat), Live: inv.Live(now),
 		}
-		// The URL is served ONLY while the link is live. Offering copy-again
-		// for a dead link hands an operator a URL that answers 403 and makes
-		// the invitee think the build is broken.
+		// The command is served ONLY while the link is live. Offering
+		// copy-again for a dead link hands an operator a URL that answers 403
+		// and makes the invitee think the build is broken.
 		if v.Live {
-			v.URL = inv.URL
+			v.Command = invite.Command(inv.URL)
 		}
 		if row, err := s.Store.Get(inv.RowID); err == nil {
 			v.Stamp = row.Component + " " + row.Stamp

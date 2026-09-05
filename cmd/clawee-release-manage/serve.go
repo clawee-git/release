@@ -93,7 +93,7 @@ func runServe(e *env, n *node, args []string) error {
 	if err != nil {
 		return err
 	}
-	srv, err := web.New(st, authSvc, in, log, nil)
+	srv, err := web.New(st, authSvc, in, web.Backends{}, log, nil)
 	if err != nil {
 		return err
 	}

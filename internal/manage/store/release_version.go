@@ -323,3 +323,24 @@ func (s *Store) tx(fn func(*sql.Tx) error) error {
 func isUniqueViolation(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
+
+// ByVersion resolves the newest row for (component, channel, version).
+//
+// Newest rather than "the one", because `version` is the human semver and a
+// re-cut of the same semver is a second row with a different stamp. The invite
+// mint addresses a build by the version an operator reads off the page, so it
+// gets the most recent one — and the mint records the row ID, so what was
+// minted stays unambiguous afterwards.
+func (s *Store) ByVersion(component, channel, version string) (*ReleaseVersion, error) {
+	rows, err := queryVersions(s.db, `
+		SELECT `+versionCols+` FROM release_versions
+		WHERE component = ? AND channel = ? AND version = ?
+		ORDER BY created_at DESC, id DESC LIMIT 1`, component, channel, version)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("%w: %s %s on %s", ErrNotFound, component, version, channel)
+	}
+	return &rows[0], nil
+}

@@ -14,7 +14,7 @@ surface.</p>
       <td>{{.MintedBy}}</td>
       <td>{{.CreatedAt}}</td>
       <td>{{.ExpiresAt}}</td>
-      <td>{{if .Live}}<code>curl -fsSL '{{.URL}}' | sh</code>{{else}}<span class="dim">expired</span>{{end}}</td>
+      <td>{{if .Live}}<code>{{.Command}}</code>{{else}}<span class="dim">expired</span>{{end}}</td>
     </tr>
   {{end}}
   </tbody>

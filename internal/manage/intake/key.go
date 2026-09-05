@@ -75,3 +75,21 @@ func parseMinisignPublicKey(contents string) (ed25519.PublicKey, string, error) 
 	copy(pub, raw[pubKeyIDOffset+pubKeyIDLen:])
 	return pub, keyID, nil
 }
+
+// ReleasePubkeyLine returns the bare minisign key line of the baked release
+// public key — exactly what `minisign -V -P <line>` expects inline.
+//
+// It lives here because this package already owns the embedded copy and the
+// test that keeps it identical to the repo root's. The invite mint renders it
+// into every generated install.sh, so a second embed would be a second thing
+// to keep in step with a key rotation.
+func ReleasePubkeyLine() (string, error) {
+	for _, line := range strings.Split(releasePubKey, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "untrusted comment:") {
+			continue
+		}
+		return line, nil
+	}
+	return "", fmt.Errorf("embedded clawee-release.pub has no minisign key line")
+}

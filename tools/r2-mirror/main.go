@@ -41,7 +41,7 @@ import (
 	"strings"
 	"time"
 
-	"clawee-release-r2-mirror/r2"
+	"github.com/clawee-git/release/internal/r2"
 )
 
 const (
