@@ -1,0 +1,293 @@
+package auth
+
+import (
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/clawee-git/release/internal/manage/store"
+	"github.com/clawee-git/release/internal/manage/totp"
+)
+
+var base = time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+
+const goodPassword = "correct-horse-battery"
+
+type fixture struct {
+	svc *Service
+	st  *store.Store
+	now time.Time
+}
+
+func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	sealer, err := LoadSealer(filepath.Join(dir, SecretKeyFile))
+	if err != nil {
+		t.Fatalf("LoadSealer: %v", err)
+	}
+	f := &fixture{st: st, now: base}
+	f.svc = New(st, sealer, false, func() time.Time { return f.now })
+	return f
+}
+
+// login runs the password step and returns the response recorder, so a test
+// can read the cookies the service set.
+func (f *fixture) login(t *testing.T, name, password string) (*httptest.ResponseRecorder, *Enrolment, error) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/manage/login", nil)
+	r.RemoteAddr = "192.0.2.10:5555"
+	enrol, err := f.svc.StartLogin(w, r, name, password)
+	return w, enrol, err
+}
+
+// authed returns a request carrying the cookies from w.
+func authed(method, path string, w *httptest.ResponseRecorder) *http.Request {
+	r := httptest.NewRequest(method, path, nil)
+	r.RemoteAddr = "192.0.2.10:5555"
+	for _, c := range w.Result().Cookies() {
+		r.AddCookie(c)
+	}
+	return r
+}
+
+func cookie(w *httptest.ResponseRecorder, name string) *http.Cookie {
+	for _, c := range w.Result().Cookies() {
+		if c.Name == name {
+			return c
+		}
+	}
+	return nil
+}
+
+func TestFirstLoginEnrolsAndSecondFactorIsRequired(t *testing.T) {
+	f := newFixture(t)
+	if err := f.svc.AddAdmin("ada", goodPassword); err != nil {
+		t.Fatalf("AddAdmin: %v", err)
+	}
+
+	w, enrol, err := f.login(t, "ada", goodPassword)
+	if err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	if enrol == nil {
+		t.Fatal("first login returned no enrolment — the secret is shown once or never")
+	}
+	if !strings.Contains(enrol.OTPAuthURL, "otpauth://totp/Clawee%20Release:ada") {
+		t.Fatalf("otpauth URL = %q", enrol.OTPAuthURL)
+	}
+
+	sc := cookie(w, SessionCookie)
+	if sc == nil || !sc.HttpOnly || sc.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("session cookie = %+v; want HttpOnly, SameSite=Lax", sc)
+	}
+	cc := cookie(w, CSRFCookie)
+	if cc == nil || cc.HttpOnly {
+		t.Fatalf("CSRF cookie = %+v; the page's script must be able to read it", cc)
+	}
+
+	// The password alone buys nothing: the session is not a session until the
+	// code lands.
+	if _, err := f.svc.Session(authed(http.MethodGet, "/manage", w)); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("half-authenticated session accepted: err = %v", err)
+	}
+
+	code, _ := totp.Code(enrol.Secret, f.now)
+	if err := f.svc.CompleteTOTP(authed(http.MethodPost, "/manage/login/totp", w), code); err != nil {
+		t.Fatalf("CompleteTOTP: %v", err)
+	}
+	sess, err := f.svc.Session(authed(http.MethodGet, "/manage", w))
+	if err != nil || sess.Admin != "ada" {
+		t.Fatalf("Session after TOTP = %v, %v", sess, err)
+	}
+
+	// A second login does not re-enrol: the secret exists exactly once.
+	w2, enrol2, err := f.login(t, "ada", goodPassword)
+	if err != nil {
+		t.Fatalf("second StartLogin: %v", err)
+	}
+	if enrol2 != nil {
+		t.Fatal("second login re-enrolled — a password alone would then fit a new second factor")
+	}
+	code2, _ := totp.Code(enrol.Secret, f.now.Add(time.Minute))
+	f.now = f.now.Add(time.Minute)
+	if err := f.svc.CompleteTOTP(authed(http.MethodPost, "/x", w2), code2); err != nil {
+		t.Fatalf("second CompleteTOTP: %v", err)
+	}
+}
+
+func TestTOTPCodeIsSingleUse(t *testing.T) {
+	f := newFixture(t)
+	if err := f.svc.AddAdmin("ada", goodPassword); err != nil {
+		t.Fatal(err)
+	}
+	w, enrol, err := f.login(t, "ada", goodPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _ := totp.Code(enrol.Secret, f.now)
+	if err := f.svc.CompleteTOTP(authed(http.MethodPost, "/x", w), code); err != nil {
+		t.Fatal(err)
+	}
+	// Same code, a fresh password step, same time step: rejected by the
+	// watermark, which is what makes an intercepted code worthless.
+	w2, _, err := f.login(t, "ada", goodPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.CompleteTOTP(authed(http.MethodPost, "/x", w2), code); !errors.Is(err, ErrBadCode) {
+		t.Fatalf("replayed code: err = %v, want ErrBadCode", err)
+	}
+}
+
+func TestWrongPasswordAndUnknownAccountAreIndistinguishable(t *testing.T) {
+	f := newFixture(t)
+	if err := f.svc.AddAdmin("ada", goodPassword); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.login(t, "ada", "wrong-password-here"); !errors.Is(err, ErrBadCredentials) {
+		t.Fatalf("wrong password: err = %v", err)
+	}
+	if _, _, err := f.login(t, "nobody", goodPassword); !errors.Is(err, ErrBadCredentials) {
+		t.Fatalf("unknown account: err = %v", err)
+	}
+}
+
+func TestLoginIsRateLimitedPerIPAndName(t *testing.T) {
+	f := newFixture(t)
+	if err := f.svc.AddAdmin("ada", goodPassword); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < loginMaxFailures; i++ {
+		if _, _, err := f.login(t, "ada", "nope-nope-nope"); !errors.Is(err, ErrBadCredentials) {
+			t.Fatalf("attempt %d: err = %v", i, err)
+		}
+	}
+	// The RIGHT password is now refused too: the limit is on attempts, not on
+	// wrong answers, or an attacker learns when they got it right.
+	if _, _, err := f.login(t, "ada", goodPassword); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("after %d failures: err = %v, want ErrRateLimited", loginMaxFailures, err)
+	}
+	// Another account from the same IP is unaffected: a per-IP-only limit
+	// would let one bad run lock out every admin.
+	if err := f.svc.AddAdmin("bob", goodPassword); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.login(t, "bob", goodPassword); err != nil {
+		t.Fatalf("second account locked out by the first account's failures: %v", err)
+	}
+	// The window ages out.
+	f.now = f.now.Add(loginWindow + time.Minute)
+	if _, _, err := f.login(t, "ada", goodPassword); err != nil {
+		t.Fatalf("after the window: %v", err)
+	}
+}
+
+func TestSessionExpiresWithTheTTL(t *testing.T) {
+	f := newFixture(t)
+	if err := f.svc.AddAdmin("ada", goodPassword); err != nil {
+		t.Fatal(err)
+	}
+	w, enrol, _ := f.login(t, "ada", goodPassword)
+	code, _ := totp.Code(enrol.Secret, f.now)
+	if err := f.svc.CompleteTOTP(authed(http.MethodPost, "/x", w), code); err != nil {
+		t.Fatal(err)
+	}
+	f.now = f.now.Add(SessionTTL - time.Minute)
+	if _, err := f.svc.Session(authed(http.MethodGet, "/manage", w)); err != nil {
+		t.Fatalf("session just inside the TTL: %v", err)
+	}
+	f.now = f.now.Add(2 * time.Minute)
+	if _, err := f.svc.Session(authed(http.MethodGet, "/manage", w)); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("session past the TTL: err = %v", err)
+	}
+}
+
+func TestLogoutEndsTheSession(t *testing.T) {
+	f := newFixture(t)
+	if err := f.svc.AddAdmin("ada", goodPassword); err != nil {
+		t.Fatal(err)
+	}
+	w, enrol, _ := f.login(t, "ada", goodPassword)
+	code, _ := totp.Code(enrol.Secret, f.now)
+	if err := f.svc.CompleteTOTP(authed(http.MethodPost, "/x", w), code); err != nil {
+		t.Fatal(err)
+	}
+	r := authed(http.MethodPost, "/manage/logout", w)
+	f.svc.Logout(httptest.NewRecorder(), r)
+	if _, err := f.svc.Session(authed(http.MethodGet, "/manage", w)); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("session survived logout: err = %v", err)
+	}
+}
+
+func TestCheckCSRF(t *testing.T) {
+	f := newFixture(t)
+	if err := f.svc.AddAdmin("ada", goodPassword); err != nil {
+		t.Fatal(err)
+	}
+	w, enrol, _ := f.login(t, "ada", goodPassword)
+	code, _ := totp.Code(enrol.Secret, f.now)
+	if err := f.svc.CompleteTOTP(authed(http.MethodPost, "/x", w), code); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := f.svc.Session(authed(http.MethodGet, "/manage", w))
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := cookie(w, CSRFCookie).Value
+
+	// A GET is never gated.
+	if err := f.svc.CheckCSRF(authed(http.MethodGet, "/manage", w), sess); err != nil {
+		t.Fatalf("GET was CSRF-gated: %v", err)
+	}
+	// A POST with no token is refused — this is the cross-origin form case.
+	if err := f.svc.CheckCSRF(authed(http.MethodPost, "/manage/promote", w), sess); !errors.Is(err, ErrCSRF) {
+		t.Fatalf("POST without a token: err = %v, want ErrCSRF", err)
+	}
+	// A POST echoing the cookie in the header passes.
+	r := authed(http.MethodPost, "/manage/promote", w)
+	r.Header.Set(CSRFHeader, token)
+	if err := f.svc.CheckCSRF(r, sess); err != nil {
+		t.Fatalf("POST with the header token: %v", err)
+	}
+	// A well-formed token that is not this session's is refused.
+	r = authed(http.MethodPost, "/manage/promote", w)
+	r.Header.Set(CSRFHeader, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	if err := f.svc.CheckCSRF(r, sess); !errors.Is(err, ErrCSRF) {
+		t.Fatalf("foreign token: err = %v, want ErrCSRF", err)
+	}
+	// Every non-safe method is gated, including the ones no handler serves yet.
+	for _, m := range []string{http.MethodPost, http.MethodPatch, http.MethodPut, http.MethodDelete} {
+		if err := f.svc.CheckCSRF(authed(m, "/manage/x", w), sess); !errors.Is(err, ErrCSRF) {
+			t.Fatalf("%s was not CSRF-gated", m)
+		}
+	}
+}
+
+func TestAdminNameAndPasswordValidation(t *testing.T) {
+	f := newFixture(t)
+	for _, bad := range []string{"a", "Ada", "ada bob", strings.Repeat("a", 33), "ada/../root"} {
+		if err := f.svc.AddAdmin(bad, goodPassword); err == nil {
+			t.Fatalf("admin name %q accepted", bad)
+		}
+	}
+	if err := f.svc.AddAdmin("ada", "short"); err == nil {
+		t.Fatal("a five-character password was accepted")
+	}
+	if err := f.svc.AddAdmin("ada", goodPassword); err != nil {
+		t.Fatalf("AddAdmin: %v", err)
+	}
+	if err := f.svc.AddAdmin("ada", goodPassword); !errors.Is(err, store.ErrAlreadyExists) {
+		t.Fatalf("duplicate admin: err = %v", err)
+	}
+}
