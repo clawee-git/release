@@ -111,6 +111,16 @@ func TestSecretKeyPathIsValidatedAtItsWriter(t *testing.T) {
 	if _, err := LoadSealer(short); err == nil {
 		t.Fatal("a short secret key was accepted")
 	}
+
+	// A LONGER file is equally not ours: taking its first 32 bytes would
+	// silently derive a key from an unrelated file.
+	long := filepath.Join(dir, "long.key")
+	if err := os.WriteFile(long, bytes.Repeat([]byte{7}, secretKeyLen+8), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadSealer(long); err == nil {
+		t.Fatal("an over-long secret key was accepted")
+	}
 }
 
 func TestPasswordHashRoundTrip(t *testing.T) {

@@ -112,6 +112,10 @@ func (s *Server) Handler() http.Handler {
 	for _, action := range []string{"promote", "yank", "mint"} {
 		mux.HandleFunc("POST /manage/releases/{id}/"+action, s.pageGuard(s.handleNotImplementedPage))
 	}
+	// Anything else under /manage/ goes through the guard too, so an anonymous
+	// visitor gets the login form rather than a 404 that maps which manage
+	// pages exist. It is the page half of the same rule the manage API keeps.
+	mux.HandleFunc("/manage/", s.pageGuard(s.handleNotFoundPage))
 
 	// ── Public ────────────────────────────────────────────────────────────
 	mux.HandleFunc("GET /{$}", s.handlePublicIndex)
@@ -182,4 +186,11 @@ func channelParam(r *http.Request) (string, error) {
 
 func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "not found", http.StatusNotFound)
+}
+
+// handleNotFoundPage is the 404 an AUTHENTICATED operator gets for a manage
+// path that does not exist. An anonymous one never reaches it: pageGuard sent
+// them to the login form first.
+func (s *Server) handleNotFoundPage(w http.ResponseWriter, r *http.Request, _ *store.Session) {
+	http.Error(w, "no such manage page", http.StatusNotFound)
 }

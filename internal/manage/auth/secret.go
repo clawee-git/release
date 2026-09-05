@@ -6,7 +6,9 @@ import (
 	"crypto/hkdf"
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -94,15 +96,24 @@ func readSecretKey(path string) ([]byte, error) {
 	if perm := info.Mode().Perm(); perm&0o077 != 0 {
 		return nil, fmt.Errorf("secret key %q is mode %04o; it must not be readable by group or other — run: chmod 600 %s", path, perm, path)
 	}
-	key := make([]byte, secretKeyLen+1)
-	n, err := f.Read(key)
-	if err != nil && n == 0 {
+	// io.ReadFull, not a bare Read: a single Read may legally return fewer
+	// bytes than asked for, and a short read here would be read as "the file
+	// is the wrong length" — sending an operator to replace a key file that
+	// is perfectly good, which invalidates every enrolled second factor.
+	key := make([]byte, secretKeyLen)
+	if _, err := io.ReadFull(f, key); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return nil, fmt.Errorf("secret key %q is shorter than %d bytes — it was not written by this service", path, secretKeyLen)
+		}
 		return nil, fmt.Errorf("read secret key %q: %w", path, err)
 	}
-	if n != secretKeyLen {
-		return nil, fmt.Errorf("secret key %q is %d bytes, want exactly %d — it was not written by this service", path, n, secretKeyLen)
+	// One byte of overshoot: a LONGER file is equally not ours, and accepting
+	// its first 32 bytes would silently pick a key out of an unrelated file.
+	var probe [1]byte
+	if n, err := f.Read(probe[:]); n > 0 || (err != nil && !errors.Is(err, io.EOF)) {
+		return nil, fmt.Errorf("secret key %q is longer than %d bytes — it was not written by this service", path, secretKeyLen)
 	}
-	return key[:secretKeyLen], nil
+	return key, nil
 }
 
 // createSecretKey mints the root secret on first run. O_EXCL means two

@@ -253,7 +253,11 @@ func TestRegistrationEndpointsNeedNoSession(t *testing.T) {
 func TestManagePagesRedirectToLoginWhenAnonymous(t *testing.T) {
 	f := newFixture(t)
 	c := f.client()
-	for _, path := range []string{"/manage", "/manage/invites", "/manage/releases/clawee"} {
+	for _, path := range []string{"/manage", "/manage/invites", "/manage/releases/clawee",
+		// An unknown manage path too: a 404 here would tell an anonymous
+		// visitor which manage pages are real, which is exactly what the API
+		// half refuses to do.
+		"/manage/no-such-page"} {
 		resp, _ := f.get(c, path)
 		if resp.StatusCode != http.StatusSeeOther {
 			t.Errorf("%s: HTTP %d, want 303 to the login form", path, resp.StatusCode)
@@ -623,6 +627,19 @@ func TestPublicIndexShowsOnlyPromotedRows(t *testing.T) {
 func TestUnknownPathIs404(t *testing.T) {
 	f := newFixture(t)
 	resp, _ := f.get(f.client(), "/nope")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("HTTP %d, want 404", resp.StatusCode)
+	}
+}
+
+// An operator who IS signed in gets a plain 404 for a manage path that does
+// not exist — the redirect is for anonymous visitors, not a way to hide the
+// answer from someone entitled to it.
+func TestUnknownManagePathIs404WhenSignedIn(t *testing.T) {
+	f := newFixture(t)
+	c := f.client()
+	f.login(c)
+	resp, _ := f.get(c, "/manage/no-such-page")
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("HTTP %d, want 404", resp.StatusCode)
 	}
