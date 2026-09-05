@@ -1,17 +1,27 @@
-// Command r2-mirror publishes a per-stamp release dist directory to the public
-// Cloudflare R2 bucket behind downloads.clawee.org (the install-time fallback
-// mirror for GitHub Releases). It uploads every top-level *.zip plus
-// SHA256SUMS.txt + SHA256SUMS.txt.minisig from the stage dir to
-// <comp>/<stamp>/<file>, then writes <comp>/latest.json pointing at them.
+// Command r2-mirror uploads a per-stamp release dist directory to a
+// Cloudflare R2 bucket. It uploads every top-level *.zip plus SHA256SUMS.txt +
+// SHA256SUMS.txt.minisig from the stage dir to <comp>/[<prefix>/]<stamp>/<file>,
+// and — unless --no-manifest — writes <comp>/latest.json pointing at them.
 //
-// R2 is a MIRROR: GitHub Releases stay primary. The release script invokes this
-// after a successful GitHub publish and treats any failure here as non-fatal.
+// TWO CALLERS, TWO POSTURES. The bucket, the key prefix and the manifest are
+// all flags because a cut and a go-live are different acts
+// (~/.agents/guidelines/release-management.md §3):
+//
+//   - the CUT stages into the PRIVATE bucket under <comp>/<channel>/<stamp>/
+//     with --no-manifest — nothing public changes, so nothing may name the new
+//     stamp as current;
+//   - PROMOTE copies the same bytes into the PUBLIC bucket under the public
+//     layout and writes latest.json, which is what makes a release reachable.
+//
+// A manifest write is therefore the go-live, not a bookkeeping detail: writing
+// one from the cut path would publish a staged build to every installer.
 //
 // Usage:
 //
-//	r2-mirror --account <id> --bucket clawee-downloads --stage-dir dist/<stamp> \
+//	r2-mirror --account <id> --bucket <bucket> --stage-dir dist/<stamp> \
 //	          --comp <clawee|claweed> --version <X.Y.Z> --stamp <v…stamp> \
-//	          --creds ~/.burrowee/release/r2.key [--dry-run]
+//	          [--prefix <channel>] [--no-manifest] \
+//	          --creds <r2.key> [--dry-run]
 //
 // The S3 credentials (access_key_id + secret_access_key) are read from the TOML
 // file at --creds and are NEVER printed. --dry-run prints the planned keys and
@@ -23,6 +33,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -57,9 +68,24 @@ type config struct {
 	stageDir string
 	comp     string
 	version  string
-	stamp    string
-	creds    string
-	dryRun   bool
+	stamp      string
+	prefix     string
+	noManifest bool
+	creds      string
+	dryRun     bool
+}
+
+// keyBase is the object-key directory this cut's artifacts land in:
+// <comp>/<stamp> with no prefix (the public layout), <comp>/<prefix>/<stamp>
+// with one (the staging layout, where prefix is the channel). Surrounding
+// slashes on --prefix are tolerated so a caller passing "beta/" or "/beta"
+// cannot produce a doubled or leading separator in a key.
+func (c config) keyBase() string {
+	prefix := strings.Trim(strings.TrimSpace(c.prefix), "/")
+	if prefix == "" {
+		return c.comp + "/" + c.stamp
+	}
+	return c.comp + "/" + prefix + "/" + c.stamp
 }
 
 func main() {
@@ -77,10 +103,18 @@ func run() error {
 	flag.StringVar(&cfg.comp, "comp", "", "component name (clawee | claweed)")
 	flag.StringVar(&cfg.version, "version", "", "human semver, e.g. 0.1.66")
 	flag.StringVar(&cfg.stamp, "stamp", "", "full release stamp, e.g. v0.1.66.2026.06.28.12e6b0fc")
+	flag.StringVar(&cfg.prefix, "prefix", "", "key prefix between component and stamp (e.g. the channel: stable | beta); empty = the flat public layout")
+	flag.BoolVar(&cfg.noManifest, "no-manifest", false, "upload the artifacts only — do not write <comp>/latest.json (a manifest write is the go-live)")
 	flag.StringVar(&cfg.creds, "creds", "", "path to the r2.key TOML (access_key_id + secret_access_key)")
 	flag.BoolVar(&cfg.dryRun, "dry-run", false, "print the planned keys and upload nothing")
 	flag.Parse()
 
+	return execute(cfg, os.Stdout)
+}
+
+// execute is run() past flag parsing, with the progress stream injected so the
+// tests can read what a dry-run planned instead of scraping os.Stdout.
+func execute(cfg config, out io.Writer) error {
 	if err := cfg.validate(); err != nil {
 		return err
 	}
@@ -90,20 +124,32 @@ func run() error {
 		return err
 	}
 
-	manifest := buildManifest(cfg, zips)
-	manifestBody, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode latest.json: %w", err)
-	}
-	manifestBody = append(manifestBody, '\n')
+	base := cfg.keyBase()
+	var manifestBody []byte
 	manifestKey := cfg.comp + "/latest.json"
+	if !cfg.noManifest {
+		manifest := buildManifest(cfg, zips)
+		manifestBody, err = json.MarshalIndent(manifest, "", "  ")
+		if err != nil {
+			return fmt.Errorf("encode latest.json: %w", err)
+		}
+		manifestBody = append(manifestBody, '\n')
+	}
 
 	if cfg.dryRun {
-		fmt.Printf("dry-run: would upload %d objects to bucket %q:\n", len(artifacts)+1, cfg.bucket)
-		for _, name := range artifacts {
-			fmt.Printf("  %s  (%s)\n", cfg.comp+"/"+cfg.stamp+"/"+name, contentType(name))
+		planned := len(artifacts)
+		if !cfg.noManifest {
+			planned++
 		}
-		fmt.Printf("  %s  (%s)\n", manifestKey, contentType(manifestKey))
+		fmt.Fprintf(out, "dry-run: would upload %d objects to bucket %q:\n", planned, cfg.bucket)
+		for _, name := range artifacts {
+			fmt.Fprintf(out, "  %s  (%s)\n", base+"/"+name, contentType(name))
+		}
+		if cfg.noManifest {
+			fmt.Fprintf(out, "  (no manifest: %s is NOT written)\n", manifestKey)
+		} else {
+			fmt.Fprintf(out, "  %s  (%s)\n", manifestKey, contentType(manifestKey))
+		}
 		return nil
 	}
 
@@ -116,7 +162,7 @@ func run() error {
 	client := r2.New(cfg.account, cfg.bucket, accessKeyID, secret, nil)
 
 	for _, name := range artifacts {
-		key := cfg.comp + "/" + cfg.stamp + "/" + name
+		key := base + "/" + name
 		body, err := os.ReadFile(filepath.Join(cfg.stageDir, name))
 		if err != nil {
 			return fmt.Errorf("read %s: %w", name, err)
@@ -124,14 +170,18 @@ func run() error {
 		if err := client.Put(ctx, key, body, contentType(name)); err != nil {
 			return err
 		}
-		fmt.Printf("  uploaded %s (%d bytes)\n", key, len(body))
+		fmt.Fprintf(out, "  uploaded %s (%d bytes)\n", key, len(body))
 	}
 
+	if cfg.noManifest {
+		fmt.Fprintf(out, "✓ staged %s %s to bucket %q under %s/ (no manifest written)\n", cfg.comp, cfg.stamp, cfg.bucket, base)
+		return nil
+	}
 	if err := client.Put(ctx, manifestKey, manifestBody, contentType(manifestKey)); err != nil {
 		return err
 	}
-	fmt.Printf("  uploaded %s (%d bytes)\n", manifestKey, len(manifestBody))
-	fmt.Printf("✓ mirrored %s %s to bucket %q\n", cfg.comp, cfg.stamp, cfg.bucket)
+	fmt.Fprintf(out, "  uploaded %s (%d bytes)\n", manifestKey, len(manifestBody))
+	fmt.Fprintf(out, "✓ mirrored %s %s to bucket %q\n", cfg.comp, cfg.stamp, cfg.bucket)
 	return nil
 }
 
@@ -213,7 +263,7 @@ func collectArtifacts(stageDir string) (artifacts, zips []string, err error) {
 }
 
 func buildManifest(cfg config, zips []string) latestManifest {
-	base := cfg.comp + "/" + cfg.stamp
+	base := cfg.keyBase()
 	return latestManifest{
 		Component:  cfg.comp,
 		Version:    cfg.version,
