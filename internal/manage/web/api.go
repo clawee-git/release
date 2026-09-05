@@ -165,8 +165,14 @@ func (s *Server) apiError(w http.ResponseWriter, r *http.Request, err error) {
 	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "the catalog could not be read"})
 }
 
+// writeJSON answers every route in this package, all of which live under
+// /api/v1/manage/ — session-gated reads of unpromoted rows, plus the 401s and
+// 403s that refuse them. None of it may sit in a shared cache or come back
+// out of a browser's history after a logout, so no-store is set here rather
+// than at each call site.
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
 }

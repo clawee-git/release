@@ -33,6 +33,13 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, sta
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// no-store on EVERY rendered page, not just the sensitive ones. The
+	// enrolment page carries the one-time TOTP secret inline, the manage pages
+	// carry live CSRF tokens and the stamps of cuts nobody has promoted yet,
+	// and the login page carries a token too. A list of "the pages that need
+	// it" is a list something eventually gets left off, and the public
+	// placeholder is small enough that not caching it costs nothing.
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	if err := t.ExecuteTemplate(w, "layout", data); err != nil {
 		s.Log.Error("render", "template", name, "err", err, "path", r.URL.Path)

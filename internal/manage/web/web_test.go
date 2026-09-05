@@ -639,3 +639,57 @@ func itoa(n int64) string {
 	}
 	return string(b)
 }
+
+// Authenticated pages and JSON must not be cacheable: the enrolment page shows
+// the one-time TOTP secret inline, and the manage surfaces carry live CSRF
+// tokens and the stamps of cuts nobody has promoted.
+func TestAuthenticatedResponsesAreNotCacheable(t *testing.T) {
+	f := newFixture(t)
+	c := f.client()
+
+	// The login POST response is the one that renders the enrolment secret.
+	if err := f.auth.AddAdmin(adminName, adminPassword); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.PostForm(f.server.URL+"/manage/login", url.Values{
+		"name": {adminName}, "password": {adminPassword}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("the enrolment page's Cache-Control = %q, want no-store", got)
+	}
+
+	admin, _ := f.st.Admin(adminName)
+	secret, err := f.sealer.Open(admin.TOTPSecretEnc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _ := totp.Code(string(secret), f.now)
+	resp, err = c.PostForm(f.server.URL+"/manage/login/totp", url.Values{
+		"code": {code}, "csrf_token": {f.csrfFrom(c)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	for _, path := range []string{
+		"/manage", "/manage/invites", "/manage/releases/clawee",
+		"/api/v1/manage/releases/stable/versions",
+		"/api/v1/manage/releases/stable/versions/clawee",
+	} {
+		got, _ := f.get(c, path)
+		if cc := got.Header.Get("Cache-Control"); cc != "no-store" {
+			t.Errorf("%s: Cache-Control = %q, want no-store", path, cc)
+		}
+	}
+
+	// The refusals too: a cached 401 is a 401 served to a session that has
+	// since signed in, and a cached 403 hides a rotated CSRF token.
+	anon := f.client()
+	got, _ := f.get(anon, "/api/v1/manage/releases/stable/versions")
+	if cc := got.Header.Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("401 refusal: Cache-Control = %q, want no-store", cc)
+	}
+}
