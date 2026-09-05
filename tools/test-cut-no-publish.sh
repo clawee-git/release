@@ -161,19 +161,36 @@ printf '  ✓ dry-run printed the staging keys and the register payload\n'
 say "PART C: --channel derives from the branch and refuses a false claim"
 git -C "${FAKE_SRC}" checkout -q -b beta
 
+# THIS PART RUNS AGAINST A THROWAWAY CLONE, for the reason PART E does and one
+# more: the beta cases need an OPEN CYCLE, and seeding versions/clawee.beta.stamp
+# in this checkout would collide with a real one the moment an operator opens a
+# cycle — the suite would go red for a correct tree. The clone's marker is ours
+# to write and ours to throw away.
+#
+# The live tools/ and versions/ are copied over the clone's committed content so
+# the cases drive the WORKING TREE's release.sh, and the fabricated dist/<stamp>/
+# is copied in because --distribute-only reads it from its own repo root.
+KIT_C="${WORK}/kit-c"
+git clone -q --no-hardlinks "${REPO_ROOT}" "${KIT_C}" 2>/dev/null \
+    || die "could not clone the repo into a throwaway kit for PART C"
+cp -R "${REPO_ROOT}/tools/." "${KIT_C}/tools/"
+cp -R "${REPO_ROOT}/versions/." "${KIT_C}/versions/"
+mkdir -p "${KIT_C}/dist"
+cp -R "${STAGE}" "${KIT_C}/dist/"
+BETA_STAMP_FILE="${KIT_C}/versions/clawee.beta.stamp"
+rm -f "${BETA_STAMP_FILE}"
+
 run_cut() {
-    ( cd "${REPO_ROOT}" && PATH="${STUBS}:${PATH}" \
+    ( cd "${KIT_C}" && PATH="${STUBS}:${PATH}" \
         CLAWEE_R2_CONFIG="${WORK}/no-such-config.toml" \
         CLAWEE_MANAGE_URL="https://manage.invalid" \
         CLAWEE_SRC_CLAWEE="${FAKE_SRC}" \
-        bash "${RELEASE_SH}" --distribute-only clawee "${STAMP}" "$@" --dry-run 2>&1 )
+        bash "${KIT_C}/tools/release.sh" --distribute-only clawee "${STAMP}" "$@" --dry-run 2>&1 )
 }
 
 # A beta cut needs an OPEN CYCLE. The permanent `beta` branch says nothing
 # about whether one is open; versions/<comp>.beta.stamp is what does (beta.md
 # §3), so a beta cut without it must refuse rather than invent a line.
-BETA_STAMP_FILE="${REPO_ROOT}/versions/clawee.beta.stamp"
-[ -e "${BETA_STAMP_FILE}" ] && die "refusing to overwrite an existing ${BETA_STAMP_FILE}"
 set +e
 out="$(run_cut)"; rc=$?
 set -e
@@ -185,10 +202,9 @@ ${out}"
 printf '  ✓ a beta cut with no open cycle is refused
 '
 
-# Open one for the rest of PART C, and take it away again afterwards — this
-# writes into the real checkout, so the trap has to reclaim it even on a die.
+# Open one for the rest of PART C. It lives in the clone, which the EXIT trap
+# already removes with ${WORK}.
 printf '0.3.0\n' > "${BETA_STAMP_FILE}"
-trap 'rm -rf "${WORK}" "${STAGE}"; rm -f "${BETA_STAMP_FILE}"' EXIT
 
 out="$(run_cut)" || die "a beta-branch dry-run failed: ${out}"
 echo "${out}" | grep -q "clawee/beta/${STAMP}/" \
