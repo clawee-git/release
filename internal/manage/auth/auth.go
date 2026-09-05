@@ -102,18 +102,23 @@ func (s *Service) AddAdmin(name, password string) error {
 }
 
 // ValidAdminName bounds what an account may be called. The name reaches an
-// otpauth:// URI and every audit line, so it is restricted to a shape that
-// needs no escaping anywhere it is rendered.
+// otpauth:// URI (path-escaped there) and every audit line, so it is
+// restricted to a shape that renders verbatim everywhere else. '@' is allowed
+// so an account can be an address, the console convention (system@<domain>);
+// at most one, and never at either end.
 func ValidAdminName(name string) error {
-	if len(name) < 2 || len(name) > 32 {
-		return fmt.Errorf("admin name must be 2–32 characters, got %d", len(name))
+	if len(name) < 2 || len(name) > 64 {
+		return fmt.Errorf("admin name must be 2–64 characters, got %d", len(name))
 	}
 	for _, r := range name {
 		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_', r == '.', r == '@':
 		default:
-			return fmt.Errorf("admin name %q may only contain lowercase letters, digits, '-', '_' and '.'", name)
+			return fmt.Errorf("admin name %q may only contain lowercase letters, digits, '-', '_', '.' and one '@'", name)
 		}
+	}
+	if at := strings.Count(name, "@"); at > 1 || (at == 1 && (name[0] == '@' || name[len(name)-1] == '@')) {
+		return fmt.Errorf("admin name %q: '@' may appear once, between a local part and a domain", name)
 	}
 	return nil
 }

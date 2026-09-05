@@ -73,6 +73,9 @@ func cookie(w *httptest.ResponseRecorder, name string) *http.Cookie {
 
 func TestFirstLoginEnrolsAndSecondFactorIsRequired(t *testing.T) {
 	f := newFixture(t)
+	if err := f.svc.AddAdmin("system@clawee.org", goodPassword); err != nil {
+		t.Fatalf("address-style admin name refused: %v", err)
+	}
 	if err := f.svc.AddAdmin("ada", goodPassword); err != nil {
 		t.Fatalf("AddAdmin: %v", err)
 	}
@@ -294,7 +297,7 @@ func TestCheckCSRF(t *testing.T) {
 
 func TestAdminNameAndPasswordValidation(t *testing.T) {
 	f := newFixture(t)
-	for _, bad := range []string{"a", "Ada", "ada bob", strings.Repeat("a", 33), "ada/../root"} {
+	for _, bad := range []string{"a", "Ada", "ada bob", strings.Repeat("a", 65), "ada/../root", "@clawee.org", "system@", "a@b@c"} {
 		if err := f.svc.AddAdmin(bad, goodPassword); err == nil {
 			t.Fatalf("admin name %q accepted", bad)
 		}
