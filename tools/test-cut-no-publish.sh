@@ -196,16 +196,10 @@ set -e
 [ "${rc}" -eq 2 ] || die "--channel nonsense should be a usage error (got ${rc})"
 printf '  ✓ an unknown channel is a usage error\n'
 
-# ---- PART E: the cut origin is channel-aware -------------------------------
-# The guard used to be `branch = main`, full stop, which made the entire beta
-# path unreachable on a full cut: resolve_channel could derive `beta` and
-# --channel beta was accepted, but the only branch either could have come from
-# was rejected. `main` is not THE cut origin, it is the STABLE one.
-#
-# These cases need the pre-flight to get PAST the manage-URL check (PART D's
-# subject), so a URL is supplied; the refusal under test is the branch one.
-say "PART E: stable cuts from main, beta from beta, nothing cuts from elsewhere"
-
+# ---- shared setup for the non-dry-run pre-flight cases (PARTs D and E) -----
+# The pre-flight only checks that these commands and the age-sealed key FILE
+# exist; none of them runs before the refusals under test, so a stub that exits
+# 0 is enough and nothing is ever built.
 PREFLIGHT_STUBS="${WORK}/preflight"; mkdir -p "${PREFLIGHT_STUBS}"
 for cmd in zip unzip minisign age; do
     printf '#!/usr/bin/env bash\nexit 0\n' > "${PREFLIGHT_STUBS}/${cmd}"
@@ -214,78 +208,18 @@ done
 FAKE_DP="${WORK}/dp"; mkdir -p "${FAKE_DP}"
 : > "${FAKE_DP}/clawee-release.key.age"
 
-# run_preflight <src-branch> [extra release.sh args...]
-run_preflight() {
-    local branch="$1"; shift
-    git -C "${FAKE_SRC}" checkout -q -B "${branch}"
-    ( cd "${REPO_ROOT}" && PATH="${PREFLIGHT_STUBS}:${STUBS}:${PATH}" \
-        DP_DIR="${FAKE_DP}" \
-        CLAWEE_R2_CONFIG="${WORK}/no-such-config.toml" \
-        CLAWEE_MANAGE_URL="https://manage.invalid" \
-        CLAWEE_SRC_CLAWEE="${FAKE_SRC}" \
-        bash "${RELEASE_SH}" clawee "$@" </dev/null 2>&1 )
-}
-
-set +e
-out="$(run_preflight feature-x)"; rc=$?
-set -e
-[ "${rc}" -ne 0 ] || die "a cut from a branch that is no cut origin succeeded"
-echo "${out}" | grep -q 'no cut origin at all' \
-    || die "the refusal does not say the branch is no cut origin:
-${out}"
-printf '  ✓ a branch that is neither main nor beta is refused\n'
-
-set +e
-out="$(run_preflight beta --channel stable)"; rc=$?
-set -e
-[ "${rc}" -ne 0 ] || die "--channel stable from a beta branch passed the pre-flight"
-echo "${out}" | grep -qi 'mislabel' \
-    || die "the channel/branch mismatch refusal lost its explanation:
-${out}"
-printf '  ✓ --channel stable from a beta branch is refused before any build\n'
-
-# On a correctly-paired source branch the SOURCE guard passes and the next
-# refusal is THIS repo's own branch — a project worktree is not a cut origin
-# either, which is the other half of the rule.
-set +e
-out="$(run_preflight beta --channel beta)"; rc=$?
-set -e
-[ "${rc}" -ne 0 ] || die "a cut from this project worktree succeeded — the release repo is not a cut origin"
-echo "${out}" | grep -q 'the release repo is on branch' \
-    || die "the release repo's own branch is not guarded:
-${out}"
-echo "${out}" | grep -q 'clawee source is on branch' \
-    && die "the source guard refused a correctly-paired beta branch:
-${out}"
-printf '  ✓ a beta source passes and the release repo is guarded by the same rule\n'
-
-git -C "${FAKE_SRC}" checkout -q -B beta
-
 # ---- PART D: the NON-dry-run pre-flight actually runs ----------------------
-# Every other case here stays on the --dry-run path, and that is how a real cut
-# shipped broken: require_manage_url was called from the pre-flight and defined
-# 180 lines below it, so bash had not read the name yet and every non-dry-run
-# cut died "command not found", exit 127, before the first build. A grep cannot
-# see that — the call and the definition both exist — so this case EXECUTES the
-# pre-flight and demands the refusal it is supposed to produce.
+# Every dry-run case above leaves the pre-flight's non-dry branch unexecuted,
+# and that is how a real cut shipped broken: require_manage_url was called from
+# the pre-flight and defined 180 lines below it, so bash had not read the name
+# yet and every non-dry-run cut died "command not found", exit 127, before the
+# first build. A grep cannot see that — the call and the definition both exist,
+# only their order is wrong — so this case EXECUTES the pre-flight and demands
+# the refusal it is supposed to produce.
 #
-# The cut is steered into refusing at the manage-URL check (the last pre-flight
-# step) so nothing is ever built: what is asserted is that the run reached that
-# check and said the right thing, not that it got further.
+# The manage-URL check is the LAST pre-flight step before the component loop, so
+# refusing there proves the whole pre-flight ran and nothing was built.
 say "PART D: a non-dry-run pre-flight reaches the manage-URL refusal"
-
-PREFLIGHT_STUBS="${WORK}/preflight"; mkdir -p "${PREFLIGHT_STUBS}"
-# The pre-flight only checks these exist; none of them runs before the refusal.
-for cmd in zip unzip minisign age; do
-    printf '#!/usr/bin/env bash
-exit 0
-' > "${PREFLIGHT_STUBS}/${cmd}"
-    chmod +x "${PREFLIGHT_STUBS}/${cmd}"
-done
-# A stand-in for the age-sealed signing key: the pre-flight tests for the file,
-# it does not decrypt it until later.
-FAKE_DP="${WORK}/dp"; mkdir -p "${FAKE_DP}"
-: > "${FAKE_DP}/clawee-release.key.age"
 
 set +e
 out="$(cd "${REPO_ROOT}" && PATH="${PREFLIGHT_STUBS}:${STUBS}:${PATH}" \
@@ -298,13 +232,140 @@ rc=$?
 set -e
 
 echo "${out}" | grep -qi 'command not found' \
-    && die "the pre-flight called a function defined later in the file:\n${out}"
-[ "${rc}" -ne 127 ] || die "the cut exited 127 (unresolved command) — a function is used before it is defined:\n${out}"
+    && die "the pre-flight called a function defined later in the file:
+${out}"
+[ "${rc}" -ne 127 ] || die "the cut exited 127 (unresolved command) — a function is used before it is defined:
+${out}"
 [ "${rc}" -ne 0 ] || die "a cut with no manage URL configured succeeded"
 echo "${out}" | grep -qi 'no manage service URL configured' \
-    || die "the pre-flight did not reach the manage-URL refusal (rc=${rc}):\n${out}"
+    || die "the pre-flight did not reach the manage-URL refusal (rc=${rc}):
+${out}"
 echo "${out}" | grep -q 'manage_url' \
-    || die "the refusal does not name the config key:\n${out}"
+    || die "the refusal does not name the config key:
+${out}"
 printf '  ✓ non-dry-run pre-flight refuses on the manage URL, naming the key\n'
+
+# ---- PART E: the cut origin is channel-aware -------------------------------
+# The guard used to be `branch = main`, full stop, which made the entire beta
+# path unreachable on a full cut: resolve_channel could derive `beta` and
+# --channel beta was accepted, but the only branch either could have come from
+# was rejected. `main` is not THE cut origin, it is the STABLE one.
+#
+# BOTH SIDES OF THE GUARD ARE FORCED STRUCTURALLY. The guard reads two
+# directories — the component source and the release repo (REPO_ROOT) — and
+# REPO_ROOT is derived from release.sh's own path, so running the checked-out
+# copy would make every outcome depend on the branch the reviewer happens to be
+# on. It did: an earlier version of case 3 "passed" only because this worktree's
+# project branch failed the release-repo guard, and on a checkout of `beta` both
+# guards would have passed and the suite would have walked on into real builds
+# with a passthrough git stub. So these cases run a THROWAWAY CLONE of the repo
+# whose branch each case sets, exactly as they already do for the source.
+#
+# A URL is supplied so the pre-flight gets past PART D's subject; the refusal
+# under test here is the branch one.
+say "PART E: stable cuts from main, beta from beta, nothing cuts from elsewhere"
+
+# The clone carries the repo's committed content; the live tools/ and versions/
+# are copied over it so the case drives the WORKING TREE's release.sh rather
+# than the last commit's.
+KIT="${WORK}/kit"
+git clone -q --no-hardlinks "${REPO_ROOT}" "${KIT}" 2>/dev/null \
+    || die "could not clone the repo into a throwaway kit"
+cp -R "${REPO_ROOT}/tools/." "${KIT}/tools/"
+cp -R "${REPO_ROOT}/versions/." "${KIT}/versions/"
+
+# run_preflight <src-branch> <repo-branch> [extra release.sh args...]
+run_preflight() {
+    local src_branch="$1" repo_branch="$2"; shift 2
+    git -C "${FAKE_SRC}" checkout -q -B "${src_branch}"
+    git -C "${KIT}" checkout -q -B "${repo_branch}"
+    ( cd "${KIT}" && PATH="${PREFLIGHT_STUBS}:${STUBS}:${PATH}" \
+        DP_DIR="${FAKE_DP}" \
+        CLAWEE_R2_CONFIG="${WORK}/no-such-config.toml" \
+        CLAWEE_MANAGE_URL="https://manage.invalid" \
+        CLAWEE_SRC_CLAWEE="${FAKE_SRC}" \
+        bash "${KIT}/tools/release.sh" clawee "$@" </dev/null 2>&1 )
+}
+
+# 1. The SOURCE is on a branch that maps to no channel. The repo is on `main`,
+#    so it is not what refuses — the source is.
+set +e
+out="$(run_preflight feature-x main)"; rc=$?
+set -e
+[ "${rc}" -ne 0 ] || die "a cut from a source branch that is no cut origin succeeded"
+echo "${out}" | grep -q 'clawee source is on branch' \
+    || die "the SOURCE guard is not what refused (repo was on main):
+${out}"
+echo "${out}" | grep -q 'no cut origin at all' \
+    || die "the refusal does not say the branch is no cut origin:
+${out}"
+printf '  ✓ a source branch that is neither main nor beta is refused\n'
+
+# 2. The flag contradicts the source branch. resolve_channel refuses before
+#    either guard runs, so the repo's branch is irrelevant here.
+set +e
+out="$(run_preflight beta main --channel stable)"; rc=$?
+set -e
+[ "${rc}" -ne 0 ] || die "--channel stable from a beta source passed the pre-flight"
+echo "${out}" | grep -qi 'mislabel' \
+    || die "the channel/branch mismatch refusal lost its explanation:
+${out}"
+printf '  ✓ --channel stable from a beta source is refused before any build\n'
+
+# 3. The source is a correct beta origin and the REPO is not. This is the half
+#    that used to depend on the reviewer's branch; the repo is now pinned to
+#    `main`, which is the stable origin, so the mismatch is forced.
+set +e
+out="$(run_preflight beta main --channel beta)"; rc=$?
+set -e
+[ "${rc}" -ne 0 ] || die "a beta cut from a repo checked out on main succeeded"
+echo "${out}" | grep -q 'the release repo is on branch' \
+    || die "the release repo's own branch is not guarded:
+${out}"
+echo "${out}" | grep -q 'the stable cut origin' \
+    || die "the refusal does not name which channel the repo's branch IS for:
+${out}"
+echo "${out}" | grep -q 'clawee source is on branch' \
+    && die "the source guard refused a correctly-paired beta branch:
+${out}"
+printf '  ✓ a beta source with the repo on main is refused by the repo guard\n'
+
+# 4. A project worktree can never cut: its branch maps to no channel. Same
+#    guard, the other flavour of refusal, and the case AGENTS.md calls out.
+set +e
+out="$(run_preflight main 2026-09-04-some-project)"; rc=$?
+set -e
+[ "${rc}" -ne 0 ] || die "a cut from a project worktree succeeded"
+echo "${out}" | grep -q 'the release repo is on branch' \
+    || die "a project branch was not refused by the release-repo guard:
+${out}"
+echo "${out}" | grep -q 'no cut origin at all' \
+    || die "a project branch should be no cut origin at all:
+${out}"
+printf '  ✓ a project worktree can never cut\n'
+
+# 5. THE POSITIVE PATH. Both sides correctly paired for beta, so both guards
+#    must PASS — and the run must still stop before it builds anything, because
+#    this suite never executes a real cut. The dirty-source check is the very
+#    next step after the guards, so a deliberately dirty source is what stops
+#    it: reaching THAT refusal is proof both guards let the run through.
+# The source must be made dirty BEFORE the run, not after: a clean, correctly
+# paired source would sail past the guards and on into module_gate and a real
+# build, which is precisely what this suite must never do.
+printf 'dirt\n' > "${FAKE_SRC}/dirty-on-purpose"
+set +e
+out="$(run_preflight beta beta --channel beta)"; rc=$?
+set -e
+rm -f "${FAKE_SRC}/dirty-on-purpose"
+[ "${rc}" -ne 0 ] || die "the run continued past the pre-flight — this suite must never execute a real cut"
+echo "${out}" | grep -q 'cut origin' \
+    && die "a correctly-paired beta cut was refused by a cut-origin guard:
+${out}"
+echo "${out}" | grep -qi 'worktree is dirty' \
+    || die "expected the dirty-source refusal (proving both guards passed), got:
+${out}"
+printf '  ✓ beta/beta passes both guards and stops at the next check\n'
+
+git -C "${FAKE_SRC}" checkout -q -B beta
 
 printf '\n✓ cut-no-publish PASSED\n'
