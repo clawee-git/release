@@ -271,9 +271,15 @@ func (s *Server) handlePublicDownloads(w http.ResponseWriter, r *http.Request) {
 // same manifest.PublicBase, because a download page that computed the layout
 // itself would 404 the day the layout moved.
 //
-// An EXPIRED row gets no links at all. Retention has pruned its bytes; a link
-// to them is a 404 that reads as a broken site rather than as the deliberate
-// end of that build's life.
+// Neither an EXPIRED nor a YANKED row gets links, for two different reasons
+// that land in the same place. Retention has pruned an expired row's bytes, so
+// a link to them is a 404 that reads as a broken site rather than as the
+// deliberate end of that build's life. A yanked row's bytes are usually still
+// there — yank withdraws the release, it does not delete the objects or the
+// GitHub release — and that is exactly why the links must go: a withdrawn
+// build is one somebody decided nobody should install, and a public page that
+// still hands out its zip and its signature is offering it anyway. The row
+// stays visible and marked, because hiding it would rewrite the record.
 func (s *Server) releaseView(rv *store.ReleaseVersion) releaseView {
 	v := releaseView{
 		Version: rv.Version, Stamp: rv.Stamp,
@@ -283,7 +289,7 @@ func (s *Server) releaseView(rv *store.ReleaseVersion) releaseView {
 	if !rv.PromotedAt.IsZero() {
 		v.PromotedAt = rv.PromotedAt.Format(dateFormat)
 	}
-	if v.Expired {
+	if v.Expired || v.Yanked {
 		return v
 	}
 	if base := s.objectBase(rv); base != "" {

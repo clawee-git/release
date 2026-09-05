@@ -119,19 +119,40 @@ func TestNoStagedRowReachesAnyPublicPage(t *testing.T) {
 	}
 }
 
-func TestExpiredRowsAreShownWithoutLinksAndYankedRowsAreMarked(t *testing.T) {
+func TestExpiredAndYankedRowsAreShownWithoutOfferingTheirBytes(t *testing.T) {
 	f := newFixture(t)
 	seedCatalog(f)
 	_, body := f.get(f.client(), "/downloads?channel=stable")
 
-	if !strings.Contains(body, "v0.2.1.2026.09.01.aaaaaaaa") {
-		t.Error("the expired release is missing from the history; it happened, and hiding it rewrites the record")
-	}
-	if strings.Contains(body, "zip-a.zip") {
-		t.Error("the expired release links its bytes; retention pruned them and the link is a 404")
+	// Both stay VISIBLE: they happened, and hiding them rewrites the record.
+	for _, stamp := range []string{"v0.2.1.2026.09.01.aaaaaaaa", "v0.2.3.2026.09.03.cccccccc"} {
+		if !strings.Contains(body, stamp) {
+			t.Errorf("%s is missing from the history", stamp)
+		}
 	}
 	if !strings.Contains(body, "yanked") {
 		t.Error("the yanked release is not marked; a withdrawn build must not read as an ordinary old one")
+	}
+
+	// Neither offers its bytes. Retention pruned the expired one's, so a link
+	// would 404; the yanked one's are usually still in the bucket and on the
+	// GitHub release, which is precisely why the page must not hand them out —
+	// somebody decided nobody should install that build.
+	for _, gone := range []string{
+		"zip-a.zip", // the expired release's artifact
+		"zip-c.zip", // the yanked release's
+		testPublicConfig.DownloadsBase + "/clawee/v0.2.1.2026.09.01.aaaaaaaa",
+		testPublicConfig.DownloadsBase + "/clawee/v0.2.3.2026.09.03.cccccccc",
+		"releases/tag/clawee/v0.2.3.2026.09.03.cccccccc",
+	} {
+		if strings.Contains(body, gone) {
+			t.Errorf("the page still offers %q for a build that is expired or withdrawn", gone)
+		}
+	}
+	// The build the channel IS serving is still fully linked, so the checks
+	// above are about state and not about the page having stopped working.
+	if !strings.Contains(body, testPublicConfig.DownloadsBase+"/clawee/v0.2.2.2026.09.02.bbbbbbbb/zip-b.zip") {
+		t.Error("the current release lost its download links")
 	}
 }
 

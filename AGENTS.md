@@ -265,7 +265,17 @@ per-channel badge JSONP. They embed no version — the bootstraps resolve one at
 install time — and a static file cannot be affected by whether the service is
 up. The badge is generated from the channel manifest and **only** from it: an
 unreachable manifest writes an empty badge rather than falling back to
-`versions/<comp>`, which is the number the NEXT cut will carry. `internal/staticsurface` is the one list of them; `publish-static` copies
+`versions/<comp>`, which is the number the NEXT cut will carry. The committed
+`<comp>/version.js` and `<comp>/beta.version.js` are the generator's own bytes —
+if you ever need to correct one, run `tools/gen-version-jsonp.sh` against a
+manifest carrying the values you want rather than editing the file, so its shape
+stays the one thing that produces it.
+
+A **yanked** row keeps its place in the download history and loses its links.
+Its bytes are usually still in the bucket and on the GitHub release — yank
+withdraws the release, it does not delete the objects — which is exactly why the
+page must not hand them out: a withdrawn build is one somebody decided nobody
+should install. `internal/staticsurface` is the one list of them; `publish-static` copies
 exactly that list and the site's link check will not let a page link outside it.
 
 ### `publish-static`

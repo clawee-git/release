@@ -66,6 +66,14 @@ func runPublishStatic(e *env, n *node, args []string) error {
 	if strings.TrimSpace(o.dest) == "" {
 		return usagef(n, "--dest is required; the host and path live in the sealed release config, never in this binary")
 	}
+	// A trailing colon is a host with no directory, and joinDest would then
+	// build "host:/clawee/install.sh" — the remote FILESYSTEM ROOT. The typo
+	// is one keystroke from the correct spelling and its result is a bootstrap
+	// written outside the web root, where nginx cannot serve it and the
+	// operator has no reason to look.
+	if _, dir := splitDest(o.dest); strings.TrimSpace(dir) == "" {
+		return usagef(n, "--dest %q names a host with no directory; the files would land at the remote filesystem root, not in the static root", o.dest)
+	}
 	root, err := filepath.Abs(o.root)
 	if err != nil {
 		return fmt.Errorf("resolve --root: %w", err)

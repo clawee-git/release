@@ -46,7 +46,7 @@
         <td>{{.Version}}{{if .Yanked}} <span class="yanked">yanked</span>{{end}}</td>
         <td class="stamp">{{.Stamp}}</td>
         <td class="muted">{{.PromotedAt}}</td>
-        <td>{{if .Expired}}<span class="muted">removed by retention</span>{{else}}{{if .SumsURL}}<a href="{{.SumsURL}}">SHA256SUMS.txt</a>{{end}}{{if .GitHubURL}} · <a href="{{.GitHubURL}}">GitHub</a>{{end}}{{end}}</td>
+        <td>{{if .Expired}}<span class="muted">removed by retention</span>{{else if .Yanked}}<span class="muted">withdrawn — not offered</span>{{else}}{{if .SumsURL}}<a href="{{.SumsURL}}">SHA256SUMS.txt</a>{{end}}{{if .GitHubURL}} · <a href="{{.GitHubURL}}">GitHub</a>{{end}}{{end}}</td>
       </tr>
       {{end}}
       </tbody>

@@ -150,6 +150,20 @@ func TestPublishStaticWithNoHostCopiesLocally(t *testing.T) {
 	}
 }
 
+// "host:" is one keystroke from "host:/srv/static" and lands every file at the
+// remote filesystem root — outside the web root, where nginx cannot serve them
+// and nobody thinks to look.
+func TestPublishStaticRefusesAHostWithNoDirectory(t *testing.T) {
+	var out bytes.Buffer
+	e := &env{stdout: &out, stderr: &out}
+	if got := run(e, []string{"publish-static", "--root", ".", "--dest", "release-host:"}); got != exitUsage {
+		t.Fatalf("exit %d, want %d", got, exitUsage)
+	}
+	if !strings.Contains(out.String(), "no directory") {
+		t.Errorf("the refusal does not say what is wrong:\n%s", out.String())
+	}
+}
+
 func TestPublishStaticRequiresItsTwoFlags(t *testing.T) {
 	n, _, _ := find([]string{"publish-static"})
 	if n == nil {
