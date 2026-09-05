@@ -303,8 +303,11 @@ CC="/Volumes/MacintoshED/Workstation/Coding/Clawee"
 SRC_CLAWEE="${CLAWEE_SRC_CLAWEE:-${CC}/cli/code/main}"
 SRC_CLAWEED="${CLAWEE_SRC_CLAWEED:-${CC}/daemon/code/main}"
 
-# the canonical claweed inner-installer template (rendered per-build with the stamp)
+# the canonical claweed inner-installer template (rendered per-build with the
+# stamp, the gateway floor and the channel names) plus the daemon repo's single
+# source for that floor.
 CLAWEED_INSTALLER_IN="${SRC_CLAWEED}/install/install.sh.in"
+CLAWEED_FLOOR_SH="${SRC_CLAWEED}/install/gateway_floor.sh"
 
 TARGETS=(
     "darwin arm64"
@@ -320,16 +323,37 @@ src_for() {
     esac
 }
 
-# binary list per component (used at assembly time to copy into the zip).
-# Must match tools/build.sh's MAP exactly — a name here that build.sh does not
-# produce fails the cut at the copy step, after the version bump. claweed is TWO
-# binaries: the setuid-root clawee-spawn helper is retired (the daemon runs as
-# root and forks its own per-user children) and its package is gone.
+# bins_for <comp> <channel> — the binary list for that component on that
+# channel, used at assembly time to copy into the zip.
+#
+# It must match tools/build.sh's output names exactly — a name here that
+# build.sh does not produce fails the cut at the copy step, after the version
+# bump — so it comes from the SAME table build.sh reads, ./cmd/channel-names,
+# rather than from a second literal list here. The old literal list was correct
+# for stable and silently wrong for every beta cut.
+#
+# claweed is TWO binaries: the setuid-root clawee-spawn helper is retired (the
+# daemon runs as root and forks its own per-user children) and its package is
+# gone.
 bins_for() {
-    case "$1" in
-        clawee)   printf '%s' "clawee clawee-updater" ;;
-        claweed)  printf '%s' "claweed claweed-updater" ;;
+    local comp="$1" channel="$2" names
+    local CLIENT CLIENT_UPDATER DAEMON DAEMON_UPDATER
+    names="$( cd "${REPO_ROOT}" && "${GO_BIN}" run ./cmd/channel-names "${channel}" )" \
+        || { echo "✗ could not read the ${channel} names out of core/channel" >&2; exit 1; }
+    eval "${names}"
+    case "${comp}" in
+        clawee)   printf '%s' "${CLIENT} ${CLIENT_UPDATER}" ;;
+        claweed)  printf '%s' "${DAEMON} ${DAEMON_UPDATER}" ;;
     esac
+}
+
+# version_file_for <comp> <channel> — the repo-relative version file that
+# channel's line is kept in. The beta line has its OWN file: it climbs its own
+# patch through the cycle, and the stable line must not move while it does
+# (beta.md §5). The file's PRESENCE is also the open-cycle marker — see
+# tools/version.sh.
+version_file_for() {
+    if [ "$2" = beta ]; then printf 'versions/%s.beta.stamp' "$1"; else printf 'versions/%s' "$1"; fi
 }
 
 # ---- staging + registration -------------------------------------------------
@@ -722,15 +746,14 @@ resolve_sign_key
 fi # DISTRIBUTE_ONLY != 1 (pre-flight)
 
 # ---- inner installer resolution ---------------------------------------------
-# clawee ships the repo-committed inner/clawee/install.sh. claweed ships the
-# daemon repo's canonical install/install.sh.in, rendered per-build with the
-# stamp — it is the ONLY source, so the served installer cannot drift. There is
-# deliberately no inner/claweed copy in this repo: one used to sit there
-# "kept current for shellcheck + reference", nothing could enforce that from a
-# repo that cannot see the private canonical file, and it drifted 600+ lines
-# while still documenting a retired setuid tier. A second copy of a file this
-# repo does not own is a lie waiting to happen — read the daemon repo instead.
-# render_inner <comp> <stamp> <dest> writes install.sh.
+# clawee ships the repo-committed TEMPLATE inner/clawee/install.sh.in. claweed
+# ships the daemon repo's canonical install/install.sh.in — it is the ONLY
+# source, so the served installer cannot drift. There is deliberately no
+# inner/claweed copy in this repo: one used to sit there "kept current for
+# shellcheck + reference", nothing could enforce that from a repo that cannot
+# see the private canonical file, and it drifted 600+ lines while still
+# documenting a retired setuid tier. A second copy of a file this repo does not
+# own is a lie waiting to happen — read the daemon repo instead.
 # stage_migrations_for <comp> <assemble-dir> — put claweed's migration ladder in
 # the zip, beside install.sh.
 #
@@ -768,18 +791,78 @@ stage_migrations_for() {
     echo "✓ migrations/ (${n} files) → ${assemble##*/}" >&2
 }
 
+# render_inner <comp> <stamp> <channel> <goos> <dest> writes install.sh.
+#
+# BOTH inner installers are CHANNEL-RENDERED templates now, and the channel
+# substitutions come from ONE read of core/channel (./cmd/channel-names) rather
+# than a `case` table spelled here — the same rule build.sh follows for the
+# binary names, and for the same reason: the installer's names and the binary's
+# own derivations have to be the same table or a beta kit writes into stable's
+# tree.
+#
+# The OS is an argument because the daemon's RUN_DIR is per-platform
+# (/var/run/claweed on darwin, /run/claweed elsewhere). This is why the render
+# happens inside the per-target loop and not once per component: one rendered
+# installer for four targets would stamp the build host's run dir into a linux
+# kit. (cmd/rkit renders once per component and therefore cannot ship the
+# daemon's placeholders correctly — see the guard in renderInstall.)
+#
+# The daemon's template also carries __GATEWAY_FLOOR__, extracted from its own
+# internal/gateway_probe by install/gateway_floor.sh — the daemon repo's single
+# source for it, sourced here rather than re-implemented, exactly as
+# build-local.sh and install_test.sh do. A cut that left it as a literal shipped
+# an installer whose gateway floor check compared against the string
+# "__GATEWAY_FLOOR__".
 render_inner() {
-    local comp="$1" stamp="$2" dest="$3"
+    local comp="$1" stamp="$2" channel="$3" goos="$4" dest="$5" names floor
+    names="$( cd "${REPO_ROOT}" && "${GO_BIN}" run ./cmd/channel-names "${channel}" "${goos}" )" \
+        || { echo "✗ could not read the ${channel} names out of core/channel" >&2; exit 1; }
+    # Read in a subshell-free way but keep the names LOCAL to this function, so
+    # a later component's render cannot inherit an earlier channel's values.
+    local CHANNEL CLIENT CLIENT_UPDATER DAEMON DAEMON_UPDATER SERVICE \
+          CLIENT_CONFIG_FILE USER_DIR USER_DATA_DIR SYSTEM_ROOT SYSTEM_ETC \
+          SYSTEM_BIN LABEL SYSTEMD_UNIT RUN_DIR
+    eval "${names}"
     case "${comp}" in
         clawee)
-            cp "${REPO_ROOT}/inner/clawee/install.sh" "${dest}"
+            [ -n "${CLIENT}" ] && [ -n "${CLIENT_UPDATER}" ] \
+                || { echo "✗ incomplete ${channel} name set for the clawee installer" >&2; exit 1; }
+            sed -e "s|@CLIENT@|${CLIENT}|g" -e "s|@CLIENT_UPDATER@|${CLIENT_UPDATER}|g" \
+                "${REPO_ROOT}/inner/clawee/install.sh.in" > "${dest}"
             ;;
         claweed)
             [ -f "${CLAWEED_INSTALLER_IN}" ] \
                 || { echo "✗ canonical claweed installer template missing: ${CLAWEED_INSTALLER_IN} (set CLAWEE_SRC_CLAWEED)" >&2; exit 1; }
-            sed "s/__CLAWEED_VERSION__/${stamp}/g" "${CLAWEED_INSTALLER_IN}" > "${dest}"
+            [ -f "${CLAWEED_FLOOR_SH}" ] \
+                || { echo "✗ ${CLAWEED_FLOOR_SH} missing — cannot read the gateway version floor (set CLAWEE_SRC_CLAWEED)" >&2; exit 1; }
+            # shellcheck source=/dev/null
+            . "${CLAWEED_FLOOR_SH}"
+            floor="$(gateway_floor_from_repo "${SRC_CLAWEED}")" \
+                || { echo "✗ could not read MinGatewayVersion out of ${SRC_CLAWEED}" >&2; exit 1; }
+            [ -n "${floor}" ] \
+                || { echo "✗ the gateway version floor read back empty from ${SRC_CLAWEED}" >&2; exit 1; }
+            [ -n "${DAEMON}" ] && [ -n "${LABEL}" ] && [ -n "${SYSTEMD_UNIT}" ] \
+                && [ -n "${SYSTEM_ETC}" ] && [ -n "${SYSTEM_BIN}" ] && [ -n "${RUN_DIR}" ] \
+                || { echo "✗ incomplete ${channel} name set for the claweed installer" >&2; exit 1; }
+            sed -e "s/__CLAWEED_VERSION__/${stamp}/g" -e "s/__GATEWAY_FLOOR__/${floor}/g" \
+                -e "s|@CHANNEL@|${CHANNEL}|g" -e "s|@DAEMON@|${DAEMON}|g" \
+                -e "s|@LABEL@|${LABEL}|g" -e "s|@SYSTEMD_UNIT@|${SYSTEMD_UNIT}|g" \
+                -e "s|@SYSTEM_ETC@|${SYSTEM_ETC}|g" -e "s|@SYSTEM_BIN@|${SYSTEM_BIN}|g" \
+                -e "s|@RUN_DIR@|${RUN_DIR}|g" \
+                "${CLAWEED_INSTALLER_IN}" > "${dest}"
             ;;
     esac
+    # A SURVIVING placeholder is fatal, and it is checked on the rendered file
+    # rather than trusted from the sed list: the templates live in another repo
+    # (claweed) and in a file this one only half-owns (clawee), so the set of
+    # names to fill can grow without this script hearing about it. An installer
+    # that ships `@SYSTEMD_UNIT@` writes a unit file called that.
+    if grep -qE '@[A-Z_]+@|__[A-Z_]+__' "${dest}"; then
+        echo "✗ the rendered ${comp} installer still carries an unsubstituted placeholder:" >&2
+        grep -nE '@[A-Z_]+@|__[A-Z_]+__' "${dest}" | head -5 >&2
+        rm -f "${dest}"
+        exit 1
+    fi
     chmod 0755 "${dest}"
 }
 
@@ -787,32 +870,44 @@ render_inner() {
 do_release() {
     local comp="$1"
     local src; src="$(src_for "${comp}")"
-    local bins; bins="$(bins_for "${comp}")"
+
+    # THE CHANNEL IS RESOLVED FIRST, before anything is stamped or built. It
+    # used to be resolved after the last zip was signed, which was survivable
+    # only while nothing upstream of that point depended on it — and now three
+    # things do: which version file is bumped, what the binaries are called, and
+    # what the inner installer says. A cut that learned its own channel after
+    # building would have built the wrong thing and then filed it correctly.
+    resolve_channel "${comp}" || exit 2
+    local channel="${RESOLVED_CHANNEL}"
+    local bins; bins="$(bins_for "${comp}" "${channel}")"
+    local version_file; version_file="$(version_file_for "${comp}" "${channel}")"
 
     echo
-    echo "=== clawee ${comp} release ==="
+    echo "=== clawee ${comp} ${channel} release ==="
 
     # (1) stamp — bump unless dry-run.
     local old_semver new_semver stamp
-    old_semver="$(SRC_DIR="${src}" bash "${REPO_ROOT}/tools/version.sh" "${comp}" --semver)"
+    old_semver="$(CHANNEL="${channel}" SRC_DIR="${src}" bash "${REPO_ROOT}/tools/version.sh" "${comp}" --semver)"
     if [ "${DRY_RUN}" = 1 ]; then
-        stamp="$(SRC_DIR="${src}" bash "${REPO_ROOT}/tools/version.sh" "${comp}" --stamp)"
+        stamp="$(CHANNEL="${channel}" SRC_DIR="${src}" bash "${REPO_ROOT}/tools/version.sh" "${comp}" --stamp)"
         new_semver="${old_semver}"
     else
         case "${BUMP_KIND}" in
-            patch) SRC_DIR="${src}" bash "${REPO_ROOT}/tools/version.sh" "${comp}" --bump-patch >/dev/null ;;
-            minor) SRC_DIR="${src}" bash "${REPO_ROOT}/tools/version.sh" "${comp}" --bump-minor >/dev/null ;;
-            major) SRC_DIR="${src}" bash "${REPO_ROOT}/tools/version.sh" "${comp}" --bump-major >/dev/null ;;
+            patch) CHANNEL="${channel}" SRC_DIR="${src}" bash "${REPO_ROOT}/tools/version.sh" "${comp}" --bump-patch >/dev/null ;;
+            minor) CHANNEL="${channel}" SRC_DIR="${src}" bash "${REPO_ROOT}/tools/version.sh" "${comp}" --bump-minor >/dev/null ;;
+            major) CHANNEL="${channel}" SRC_DIR="${src}" bash "${REPO_ROOT}/tools/version.sh" "${comp}" --bump-major >/dev/null ;;
         esac
-        new_semver="$(SRC_DIR="${src}" bash "${REPO_ROOT}/tools/version.sh" "${comp}" --semver)"
-        stamp="$(SRC_DIR="${src}" bash "${REPO_ROOT}/tools/version.sh" "${comp}" --stamp)"
+        new_semver="$(CHANNEL="${channel}" SRC_DIR="${src}" bash "${REPO_ROOT}/tools/version.sh" "${comp}" --semver)"
+        stamp="$(CHANNEL="${channel}" SRC_DIR="${src}" bash "${REPO_ROOT}/tools/version.sh" "${comp}" --stamp)"
     fi
 
-    # From here the versions/<comp> file may be modified. Any failure (or the
-    # dry-run completion) reverts it.
+    # From here the channel's version file may be modified. Any failure (or the
+    # dry-run completion) reverts it. It is the BETA file on a beta cut: a beta
+    # cut that reverted versions/<comp> would leave the beta line bumped and
+    # restore a stable file nothing had touched.
     revert_version() {
-        git restore --staged "versions/${comp}" 2>/dev/null || true
-        git checkout -- "versions/${comp}" 2>/dev/null || true
+        git restore --staged "${version_file}" 2>/dev/null || true
+        git checkout -- "${version_file}" 2>/dev/null || true
     }
     trap 'revert_version; shred_key' ERR
 
@@ -834,7 +929,7 @@ do_release() {
 
         # component bins
         COMP="${comp}" SRC_DIR="${src}" TARGETOS="${os}" TARGETARCH="${arch}" \
-            STAMP="${stamp}" OUT_DIR="${out_bins}" GO_BIN="${GO_BIN}" \
+            STAMP="${stamp}" OUT_DIR="${out_bins}" GO_BIN="${GO_BIN}" CHANNEL="${channel}" \
             bash "${REPO_ROOT}/tools/build.sh" >&2
 
         # env-config guard: no freshly built binary may embed a forbidden
@@ -853,7 +948,7 @@ do_release() {
         mkdir -p "${assemble}"
         # shellcheck disable=SC2086  # ${bins} is an intentional space-list of bin names from bins_for(); word-splitting is the point.
         for b in ${bins}; do cp "${out_bins}/${b}" "${assemble}/${b}"; done
-        render_inner "${comp}" "${stamp}" "${assemble}/install.sh"
+        render_inner "${comp}" "${stamp}" "${channel}" "${os}" "${assemble}/install.sh"
         stage_migrations_for "${comp}" "${assemble}"
 
         asset="clawee-${comp}-${os}-${arch}.zip"
@@ -905,9 +1000,6 @@ do_release() {
     # shellcheck disable=SC2012  # cosmetic listing of our own controlled asset names (no untrusted filenames); ls keeps the plain one-per-line format.
     ( cd "${stage}" && ls -1 clawee-"${comp}"-*.zip SHA256SUMS.txt SHA256SUMS.txt.minisig | sed 's/^/    /' )
 
-    resolve_channel "${comp}" || exit 2
-    local channel="${RESOLVED_CHANNEL}"
-
     if [ "${DRY_RUN}" = 1 ]; then
         echo
         echo "--- staging keys (${channel}) ---"
@@ -947,8 +1039,39 @@ do_release() {
     # on the website's version badge.
     bash "${REPO_ROOT}/tools/gen-bootstraps.sh" >&2
 
-    git add "versions/${comp}" "${comp}/install.sh" "${comp}/upgrade.sh"
-    git commit -m "[RELEASED: ${comp}] $(date -u +%Y-%m-%d) ${stamp} (staged)"
+    # The channel's OWN files: a beta cut records the beta version file and the
+    # beta bootstraps, and must not stage a stable bootstrap gen-bootstraps.sh
+    # happened to rewrite identically — that would put a stable-looking change
+    # in a beta marker commit.
+    if [ "${channel}" = beta ]; then
+        git add "${version_file}" "${comp}/beta.install.sh" "${comp}/beta.upgrade.sh"
+    else
+        git add "${version_file}" "${comp}/install.sh" "${comp}/upgrade.sh"
+    fi
+    git commit -m "[RELEASED: ${comp}/${channel}] $(date -u +%Y-%m-%d) ${stamp} (staged)"
+
+    # THE OTHER CHANNEL'S BOOTSTRAPS. gen-bootstraps.sh regenerates all four
+    # unconditionally — it is one template, and rendering only half of it would
+    # be a belief about which channels exist that nothing keeps in step. So a
+    # beta cut can legitimately rewrite the STABLE scripts, and those must not
+    # ride along in a beta marker commit: a stable-looking change filed under a
+    # beta stamp is a change nobody can date.
+    #
+    # But leaving them uncommitted is not free either. The cut-origin guard
+    # refuses a dirty repo, so the next cut would stop on "the release repo is
+    # dirty" and name files this cut deliberately left behind — a refusal that
+    # reads like a mistake. Say so HERE, while the reason is still on screen.
+    leftover="$(git status --porcelain -- "${comp}/install.sh" "${comp}/upgrade.sh" \
+        "${comp}/beta.install.sh" "${comp}/beta.upgrade.sh" | awk '{print $NF}')"
+    if [ -n "${leftover}" ]; then
+        echo
+        echo "! the generator also rewrote the other channel's bootstraps, which this"
+        echo "  ${channel} marker commit deliberately does not carry:"
+        # shellcheck disable=SC2086  # ${leftover} is an intentional newline-list of our own path names; word-splitting is the point.
+        printf '      %s\n' ${leftover}
+        echo "  Commit them on their OWN channel's branch. Until you do, this repo is"
+        echo "  dirty and the next cut's cut-origin guard will refuse."
+    fi
 
     echo "✓ staged ${comp} ${stamp} on the ${channel} channel"
     echo "  Promote it from the manage service: ${MANAGE_URL}"
@@ -989,9 +1112,12 @@ distribute_only() {
     local src semver channel
     src="$(src_for "${comp}")"
     [ -d "${src}" ] || { echo "✗ ${comp} source worktree missing: ${src}" >&2; exit 1; }
-    semver="$(SRC_DIR="${src}" bash "${REPO_ROOT}/tools/version.sh" "${comp}" --semver)"
+    # Channel BEFORE semver: the two channels keep separate version files, and
+    # reading the stable one for a beta re-stage would file the row under the
+    # beta channel carrying the stable line's semver.
     resolve_channel "${comp}" || exit 2
     channel="${RESOLVED_CHANNEL}"
+    semver="$(CHANNEL="${channel}" SRC_DIR="${src}" bash "${REPO_ROOT}/tools/version.sh" "${comp}" --semver)"
     if [ "${DRY_RUN}" != 1 ]; then
         cut_origin_guard "${comp} source" "${src}" "${channel}" || exit 1
         cut_origin_guard "the release repo" "${REPO_ROOT}" "${channel}" || exit 1
@@ -1021,8 +1147,39 @@ distribute_only() {
 
     bash "${REPO_ROOT}/tools/gen-bootstraps.sh" >&2
 
-    git add "versions/${comp}" "${comp}/install.sh" "${comp}/upgrade.sh"
-    git commit -m "[RELEASED: ${comp}] $(date -u +%Y-%m-%d) ${stamp} (staged)"
+    # The channel's OWN files: a beta cut records the beta version file and the
+    # beta bootstraps, and must not stage a stable bootstrap gen-bootstraps.sh
+    # happened to rewrite identically — that would put a stable-looking change
+    # in a beta marker commit.
+    if [ "${channel}" = beta ]; then
+        git add "${version_file}" "${comp}/beta.install.sh" "${comp}/beta.upgrade.sh"
+    else
+        git add "${version_file}" "${comp}/install.sh" "${comp}/upgrade.sh"
+    fi
+    git commit -m "[RELEASED: ${comp}/${channel}] $(date -u +%Y-%m-%d) ${stamp} (staged)"
+
+    # THE OTHER CHANNEL'S BOOTSTRAPS. gen-bootstraps.sh regenerates all four
+    # unconditionally — it is one template, and rendering only half of it would
+    # be a belief about which channels exist that nothing keeps in step. So a
+    # beta cut can legitimately rewrite the STABLE scripts, and those must not
+    # ride along in a beta marker commit: a stable-looking change filed under a
+    # beta stamp is a change nobody can date.
+    #
+    # But leaving them uncommitted is not free either. The cut-origin guard
+    # refuses a dirty repo, so the next cut would stop on "the release repo is
+    # dirty" and name files this cut deliberately left behind — a refusal that
+    # reads like a mistake. Say so HERE, while the reason is still on screen.
+    leftover="$(git status --porcelain -- "${comp}/install.sh" "${comp}/upgrade.sh" \
+        "${comp}/beta.install.sh" "${comp}/beta.upgrade.sh" | awk '{print $NF}')"
+    if [ -n "${leftover}" ]; then
+        echo
+        echo "! the generator also rewrote the other channel's bootstraps, which this"
+        echo "  ${channel} marker commit deliberately does not carry:"
+        # shellcheck disable=SC2086  # ${leftover} is an intentional newline-list of our own path names; word-splitting is the point.
+        printf '      %s\n' ${leftover}
+        echo "  Commit them on their OWN channel's branch. Until you do, this repo is"
+        echo "  dirty and the next cut's cut-origin guard will refuse."
+    fi
 
     echo "✓ staged ${comp} ${stamp} on the ${channel} channel"
     echo "  Promote it from the manage service: ${MANAGE_URL}"
