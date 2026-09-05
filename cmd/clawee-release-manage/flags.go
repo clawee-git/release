@@ -80,6 +80,7 @@ var registrars = map[string]func(*flag.FlagSet){
 	"serve":          func(fs *flag.FlagSet) { new(serveOpts).register(fs) },
 	"retain":         func(fs *flag.FlagSet) { new(retainOpts).register(fs) },
 	"publish-static": func(fs *flag.FlagSet) { new(publishStaticOpts).register(fs) },
+	"ops render":     func(fs *flag.FlagSet) { new(opsRenderOpts).register(fs) },
 	"admin add":      func(fs *flag.FlagSet) { new(adminAddOpts).register(fs) },
 	"admin list":     func(fs *flag.FlagSet) { new(adminListOpts).register(fs) },
 	"admin remove":   func(fs *flag.FlagSet) { new(adminRemoveOpts).register(fs) },

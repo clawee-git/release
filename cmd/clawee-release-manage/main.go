@@ -35,6 +35,7 @@ var dispatch = map[string]handler{
 	"serve":          runServe,
 	"retain":         runRetain,
 	"publish-static": runPublishStatic,
+	"ops render":     runOpsRender,
 	"admin add":      runAdminAdd,
 	"admin list":     runAdminList,
 	"admin remove":   runAdminRemove,

@@ -89,6 +89,16 @@ var root = &node{
 			summary: "copy the kit's generated static files to the release host — run when the KIT changes, not per cut",
 		},
 		{
+			name:    "ops",
+			summary: "the deployment artefacts — rendered here, installed by the operator",
+			children: []*node{
+				{
+					name:    "render",
+					summary: "write the systemd units, the retention timer and the nginx vhost to a directory",
+				},
+			},
+		},
+		{
 			name:    "version",
 			summary: "print the build stamp, and the applied migrations when a data dir is named",
 		},
