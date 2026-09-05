@@ -64,6 +64,13 @@ func mustIntake(t *testing.T, f *fixture) *intake.Handler {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
+	return newFixtureWithPublic(t, testPublicConfig)
+}
+
+// newFixtureWithPublic is the same fixture with a different public
+// configuration, for the tests that care what an unwired deployment renders.
+func newFixtureWithPublic(t *testing.T, public PublicConfig) *fixture {
+	t.Helper()
 	dir := t.TempDir()
 	st, err := store.Open(dir)
 	if err != nil {
@@ -89,7 +96,7 @@ func newFixture(t *testing.T) *fixture {
 	f.intake = in
 	f.rec = &backendtest.Recorder{}
 	f.staging = backendtest.NewStaging(f.rec, "clawee-staging")
-	srv, err := New(st, f.auth, in, Backends{Staging: f.staging}, testPublicConfig, slog.New(slog.DiscardHandler), func() time.Time { return f.now })
+	srv, err := New(st, f.auth, in, Backends{Staging: f.staging}, public, slog.New(slog.DiscardHandler), func() time.Time { return f.now })
 	if err != nil {
 		t.Fatalf("web.New: %v", err)
 	}

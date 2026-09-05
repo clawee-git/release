@@ -18,18 +18,21 @@
 #
 #   __claweeVersion({"component":"clawee","channel":"stable","version":"0.1.80","stamp":"v0.1.80.…"});
 #
-# A BETA FILE IS ALWAYS WRITTEN, with an EMPTY version and stamp when that
-# channel is serving nothing. The alternative — omitting the file — makes "no
-# beta is open" indistinguishable from "the badge script failed to load", and
-# leaves whatever a previous cycle published sitting on the host forever. An
-# empty version is a statement; a missing file is a question.
+# A FILE IS ALWAYS WRITTEN FOR BOTH CHANNELS, with an EMPTY version and stamp
+# when that channel is serving nothing. The alternative — omitting the file —
+# makes "nothing is promoted here" indistinguishable from "the badge script
+# failed to load", and leaves whatever was published last sitting on the host
+# forever. An empty version is a statement; a missing file is a question.
 #
-# Source of truth: the channel manifest, which is what promote writes as the
-# go-live — so this file can never announce a version no operator approved.
-# versions/<comp> is a STABLE-only offline fallback (it is the number the NEXT
-# cut will carry, which is close enough for a badge and wrong for anything
-# else); beta has no such fallback, because there is no local record of what a
-# beta channel is serving.
+# THE CHANNEL MANIFEST IS THE ONLY SOURCE. It is what promote writes as the
+# go-live, so the badge says exactly what promote said and nothing else.
+#
+# There is deliberately NO fallback to versions/<comp>. That file is the number
+# the NEXT cut will carry — it is bumped at cut time, before anyone promotes —
+# so falling back to it put an unpromoted, possibly still-staged version on the
+# public badge the moment the manifest host hiccuped. A badge that says nothing
+# is correct; a badge that announces a build no operator approved is the same
+# defect this whole feature removed from the site.
 #
 # Usage:
 #   tools/gen-version-jsonp.sh                # both components, both channels
@@ -92,7 +95,11 @@ for comp in ${COMPS}; do
         # propagate verbatim. On mismatch, fall back as if it were absent.
         if [ -n "${version}" ] && ! printf '%s' "${version}" | grep -Eq '^[0-9][0-9A-Za-z.+-]*$'; then
             echo "⚠ ${comp}/${channel}: malformed manifest version '${version}' — ignoring it" >&2
-            version=""
+            # The stamp goes with it. A badge carrying a stamp and no version
+            # is a badge asserting half of something it just refused to
+            # believe, and the consumer's "is anything promoted here" test is
+            # the version field.
+            version=""; stamp=""
         fi
         if [ -n "${stamp}" ] && ! printf '%s' "${stamp}" | grep -Eq '^v[0-9A-Za-z.]*$'; then
             echo "⚠ ${comp}/${channel}: malformed manifest stamp '${stamp}' — omitting stamp" >&2
@@ -108,13 +115,11 @@ for comp in ${COMPS}; do
                 beta:*)          echo "⚠ ${comp}/beta: manifest names the stable stamp '${stamp}' — ignoring it" >&2; version=""; stamp="" ;;
             esac
         fi
-        # Offline fallback, STABLE only: the local marketing version, no stamp.
-        if [ -z "${version}" ] && [ "${channel}" = stable ]; then
-            version="$(cat "${ROOT}/versions/${comp}" 2>/dev/null || true)"
-        fi
-        if [ -z "${version}" ] && [ "${channel}" = stable ]; then
-            echo "✗ no stable version for ${comp} (manifest + versions/${comp} both empty)" >&2
-            exit 1
+        # No fallback, and no refusal either: an unreachable manifest and a
+        # channel serving nothing are both "this badge has nothing to say", and
+        # the file says so rather than guessing or failing the operator's run.
+        if [ -z "${version}" ]; then
+            echo "⚠ ${comp}/${channel}: the manifest named no version — writing an empty badge" >&2
         fi
 
         out="$(out_path "${comp}" "${channel}")"

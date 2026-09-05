@@ -211,7 +211,12 @@ func TestTheStableInstallLineAndVersionBadgeAreRenderedPerChannel(t *testing.T) 
 // hrefRe pulls every href out of a rendered page. It is deliberately dumb: the
 // pages are ours, and a parser here would be a second HTML implementation to
 // keep in step with html/template's escaping.
-var hrefRe = regexp.MustCompile(`href="([^"]+)"`)
+//
+// The quantifier is `*`, not `+`, and that is the point rather than a detail.
+// With `+` an <a href=""> — a link whose URL was never configured — matched
+// nothing at all, so the one malformed href this check exists to find was the
+// one shape it could not see.
+var hrefRe = regexp.MustCompile(`href="([^"]*)"`)
 
 func TestNoPublicPageLinksSomewhereThatDoesNotExist(t *testing.T) {
 	f := newFixture(t)
@@ -222,6 +227,15 @@ func TestNoPublicPageLinksSomewhereThatDoesNotExist(t *testing.T) {
 		_, body := f.get(c, page)
 		for _, m := range hrefRe.FindAllStringSubmatch(body, -1) {
 			href := m[1]
+			// An EMPTY href is the worst of the three: it is not absolute, so
+			// a "check only the relative ones" rule skips it, and in a browser
+			// it reloads the page the reader is already on. It means a URL the
+			// template expected was not configured, and the guard around it is
+			// missing.
+			if href == "" {
+				t.Errorf("%s emits an empty href — a link whose URL was never configured", page)
+				continue
+			}
 			if !strings.HasPrefix(href, "/") || strings.HasPrefix(href, "//") {
 				continue // absolute links leave this deployment; not ours to check
 			}
@@ -237,6 +251,33 @@ func TestNoPublicPageLinksSomewhereThatDoesNotExist(t *testing.T) {
 					page, href, resp.StatusCode)
 			}
 		}
+	}
+}
+
+// A deployment can be brought up before its buckets are wired, and the public
+// site must come up with it. What it must NOT do is render links to a base it
+// was never given: an <a href=""> reloads the page the reader is on, and it
+// passes any link check that only inspects the relative ones.
+func TestAnUnconfiguredDeploymentRendersNoLinksRatherThanEmptyOnes(t *testing.T) {
+	f := newFixtureWithPublic(t, PublicConfig{BaseURL: "https://release.example.invalid"})
+	seedCatalog(f)
+	c := f.client()
+	for _, page := range publicPaths {
+		resp, body := f.get(c, page)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: HTTP %d with no bucket or repo configured", page, resp.StatusCode)
+		}
+		for _, m := range hrefRe.FindAllStringSubmatch(body, -1) {
+			if m[1] == "" {
+				t.Errorf("%s emits an empty href with no --public-base-url set", page)
+			}
+		}
+	}
+	// And the install lines still work, because the bootstraps are served from
+	// this service's own host rather than from the bucket.
+	_, install := f.get(c, "/")
+	if !strings.Contains(install, "/clawee/install.sh") {
+		t.Error("the install command is missing on an otherwise unconfigured deployment")
 	}
 }
 

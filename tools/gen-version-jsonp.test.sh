@@ -81,17 +81,22 @@ has '"channel":"beta","version":"","stamp":""' "${empty}" \
     || die "claweed has no beta manifest; the snippet must say so rather than be absent or stale: ${empty}"
 printf '  OK: %s\n' "${empty}"
 
-# ---- (3) the stable offline fallback ----------------------------------------
-say "with the manifest host unreachable, stable falls back to versions/<comp>"
+# ---- (3) an unreachable manifest says NOTHING, it does not guess -------------
+say "with the manifest host unreachable, BOTH channels go empty"
+# versions/<comp> is right there and is deliberately not consulted: it is the
+# number the NEXT cut will carry, bumped at cut time before anyone promotes, so
+# using it would put an unpromoted — possibly still staged — version on the
+# public badge the moment the manifest host hiccuped.
 DEAD="http://127.0.0.1:$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
 gen "${DEAD}" clawee >/dev/null 2>&1 || die "the generator failed with the manifest host down"
-out="$(cat "${SANDBOX}/clawee/version.js")"
-has '"channel":"stable","version":"0.4.7","stamp":""' "${out}" \
-    || die "the offline fallback did not use versions/clawee (and must carry no stamp): ${out}"
-out="$(cat "${SANDBOX}/clawee/beta.version.js")"
-has '"channel":"beta","version":"","stamp":""' "${out}" \
-    || die "beta has no offline fallback — there is no local record of what a beta channel serves: ${out}"
-printf '  OK: stable fell back, beta went empty\n'
+for f in clawee/version.js clawee/beta.version.js; do
+    out="$(cat "${SANDBOX}/${f}")"
+    has '"version":"","stamp":""' "${out}" \
+        || die "${f} announced a version the manifest never gave it: ${out}"
+done
+has "0.4.7" "$(cat "${SANDBOX}/clawee/version.js")" \
+    && die "the stable badge fell back to versions/clawee — that is the NEXT cut's number, not a promoted one: $(cat "${SANDBOX}/clawee/version.js")"
+printf '  OK: both channels went empty rather than guessing\n'
 
 # ---- (4) a manifest naming the other channel's stamp ------------------------
 say "a stable stamp in the beta manifest is refused, not repeated"
@@ -118,7 +123,8 @@ out="$(cat "${SANDBOX}/clawee/version.js")"
 has "alert(1)" "${out}" \
     && die "a manifest value was embedded verbatim into a file clawee.org EXECUTES: ${out}"
 has "malformed manifest version" "${log}" || die "the malformed value was not reported: ${log}"
-has '"version":"0.4.7"' "${out}" || die "the fallback did not take over: ${out}"
-printf '  OK: rejected, fell back to versions/clawee\n'
+has '"version":"","stamp":""' "${out}" \
+    || die "a rejected value must leave the badge empty, not fall back to a number nobody promoted: ${out}"
+printf '  OK: rejected, and the badge says nothing\n'
 
 printf '\nALL OK — the badge reports both channels, from the manifest, or says nothing\n'

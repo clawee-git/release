@@ -13,16 +13,22 @@
     {{if .Current}}
       {{with .Current}}
       <span class="badge"><b>{{.Version}}</b> · promoted {{.PromotedAt}}</span>
+      {{if .Assets}}
       <div class="scroll">
       <table>
         <thead><tr><th>file</th><th>platform</th></tr></thead>
         <tbody>
         {{range .Assets}}<tr><td><a href="{{.URL}}">{{.Name}}</a></td><td class="muted">{{.Platform}}</td></tr>{{end}}
-        <tr><td><a href="{{.SumsURL}}">SHA256SUMS.txt</a></td><td class="muted">checksums</td></tr>
-        <tr><td><a href="{{.MinisigURL}}">SHA256SUMS.txt.minisig</a></td><td class="muted">signature</td></tr>
+        {{if .SumsURL}}<tr><td><a href="{{.SumsURL}}">SHA256SUMS.txt</a></td><td class="muted">checksums</td></tr>{{end}}
+        {{if .MinisigURL}}<tr><td><a href="{{.MinisigURL}}">SHA256SUMS.txt.minisig</a></td><td class="muted">signature</td></tr>{{end}}
         </tbody>
       </table>
       </div>
+      {{else}}
+      <p class="muted">This deployment publishes no download base, so the files are
+        not linked here. The release is on GitHub, and the installer resolves it
+        from the channel manifest either way.</p>
+      {{end}}
       <p class="faint">Stamp <code>{{.Stamp}}</code>{{if .GitHubURL}} · <a href="{{.GitHubURL}}">GitHub release</a>{{end}}</p>
       {{end}}
     {{else}}
@@ -40,7 +46,7 @@
         <td>{{.Version}}{{if .Yanked}} <span class="yanked">yanked</span>{{end}}</td>
         <td class="stamp">{{.Stamp}}</td>
         <td class="muted">{{.PromotedAt}}</td>
-        <td>{{if .Expired}}<span class="muted">removed by retention</span>{{else}}<a href="{{.SumsURL}}">SHA256SUMS.txt</a>{{if .GitHubURL}} · <a href="{{.GitHubURL}}">GitHub</a>{{end}}{{end}}</td>
+        <td>{{if .Expired}}<span class="muted">removed by retention</span>{{else}}{{if .SumsURL}}<a href="{{.SumsURL}}">SHA256SUMS.txt</a>{{end}}{{if .GitHubURL}} · <a href="{{.GitHubURL}}">GitHub</a>{{end}}{{end}}</td>
       </tr>
       {{end}}
       </tbody>

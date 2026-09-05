@@ -263,7 +263,9 @@ What is still static, and why: the bootstraps (`<comp>/install.sh`,
 `<comp>/upgrade.sh` and their `beta.*` twins), the signing pubkey, and the
 per-channel badge JSONP. They embed no version — the bootstraps resolve one at
 install time — and a static file cannot be affected by whether the service is
-up. `internal/staticsurface` is the one list of them; `publish-static` copies
+up. The badge is generated from the channel manifest and **only** from it: an
+unreachable manifest writes an empty badge rather than falling back to
+`versions/<comp>`, which is the number the NEXT cut will carry. `internal/staticsurface` is the one list of them; `publish-static` copies
 exactly that list and the site's link check will not let a page link outside it.
 
 ### `publish-static`
