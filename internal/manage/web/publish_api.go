@@ -184,10 +184,9 @@ func (l *lineWriter) flush() {
 }
 
 // retain is the retention pass promote runs at the end. A method rather than a
-// closure so the "no public store" case is answered in exactly one place.
+// closure so the "cannot prune" case is answered in exactly one place — and it
+// is answered by publish.Retain itself, which refuses rather than expiring
+// rows whose bytes it could not remove.
 func (s *Server) retain(ctx context.Context, component, channel string) []publish.Event {
-	if s.Backends.Public == nil {
-		return nil
-	}
 	return publish.Retain(ctx, s.publishDeps(), component, channel)
 }

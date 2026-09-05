@@ -173,17 +173,22 @@ func TestRetainRefusesAHalfConfiguredStore(t *testing.T) {
 	}
 }
 
-// retain with no store flags at all runs — it just prunes nothing, because
-// every seam is absent. That is the "catalog only" deployment.
-func TestRetainWithNoStoresRunsAndSaysWhatIsMissing(t *testing.T) {
+// The seam summary is still what a refusal reports: an operator who runs
+// retain on a catalog-only deployment needs to see WHICH store is missing, not
+// just that something is.
+//
+// This replaces an earlier test that asserted retain ran happily with no
+// stores at all. That behaviour was the defect: it expired rows it could not
+// prune, and expiry is one-way, so their bytes were orphaned for good.
+func TestRetainNamesTheMissingSeamsWhenItRefuses(t *testing.T) {
 	dir := t.TempDir()
-	out, errb, code := exec(t, "retain", "--data-dir", dir)
-	if code != 0 {
-		t.Fatalf("code %d, stderr %q", code, errb)
+	_, errb, code := exec(t, "retain", "--data-dir", dir)
+	if code != 1 {
+		t.Fatalf("code %d, want 1", code)
 	}
 	for _, want := range []string{"staging: ABSENT", "public: ABSENT", "github: ABSENT"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("the summary does not report %q:\n%s", want, out)
+		if !strings.Contains(errb, want) {
+			t.Errorf("the refusal does not report %q:\n%s", want, errb)
 		}
 	}
 }
@@ -217,5 +222,29 @@ func TestServerDoesNotBoundTheWholeResponse(t *testing.T) {
 		if err := checkServerTimeouts(bad); err == nil {
 			t.Fatalf("an unbounded idle/header wait was accepted: %+v", bad)
 		}
+	}
+}
+
+// The real retain pass refuses without the stores, because expiring a row it
+// cannot prune orphans the bytes permanently. --dry-run stays usable: it
+// touches neither the buckets nor the catalog.
+func TestRetainRefusesToExpireWhatItCannotPrune(t *testing.T) {
+	dir := t.TempDir()
+	_, errb, code := exec(t, "retain", "--data-dir", dir)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1", code)
+	}
+	for _, want := range []string{"orphans them permanently", "public: ABSENT", "--dry-run"} {
+		if !strings.Contains(errb, want) {
+			t.Errorf("the refusal is missing %q:\n%s", want, errb)
+		}
+	}
+
+	out, errb, code := exec(t, "retain", "--data-dir", dir, "--dry-run")
+	if code != 0 {
+		t.Fatalf("--dry-run refused too: code %d, stderr %q", code, errb)
+	}
+	if strings.Contains(out, "orphans") {
+		t.Fatalf("--dry-run took the refusal path:\n%s", out)
 	}
 }

@@ -2,6 +2,7 @@ package publish
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -207,5 +208,77 @@ func TestKeepCounts(t *testing.T) {
 	// costs disk, under-keeping deletes releases.
 	if KeepFor("nightly") != KeepStable {
 		t.Fatal("an unknown channel does not fall back to the stable count")
+	}
+}
+
+// TestRetentionRefusesWhenItCannotPrune is the leak this gate exists for.
+// Expiring a row is ONE-WAY — ExpireOldVersions returns only the rows it newly
+// transitions — so a row marked expired while the buckets were unwired is
+// never revisited by a later, wired pass, and its objects and GitHub release
+// are orphaned for good. Marking without pruning is a permanent leak, not a
+// degraded pass.
+func TestRetentionRefusesWhenItCannotPrune(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		drop func(d *Deps)
+	}{
+		{"no public store", func(d *Deps) { d.Public = nil }},
+		{"no GitHub publisher", func(d *Deps) { d.GitHub = nil }},
+		{"neither", func(d *Deps) { d.Public, d.GitHub = nil, nil }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			ids := f.promoteN(catalog.ChannelBeta, 3)
+			deps := f.deps
+			c.drop(&deps)
+
+			events := Retain(context.Background(), deps, catalog.ComponentCLI, catalog.ChannelBeta)
+			if len(events) != 1 || events[0].Status != "error" {
+				t.Fatalf("events = %+v; want a single refusal", events)
+			}
+			if !strings.Contains(events[0].Error, "orphans them permanently") {
+				t.Fatalf("the refusal does not say why: %q", events[0].Error)
+			}
+			// The catalog is untouched: nothing was expired, so a later wired
+			// pass still sees these rows.
+			for _, id := range ids {
+				row, _ := f.st.Get(id)
+				if row.State == catalog.StateExpired {
+					t.Fatalf("row %d was expired by a pass that could not prune it", id)
+				}
+			}
+		})
+	}
+}
+
+// …and once the stores are wired, the same rows are expired and pruned. The
+// refusal defers the work rather than losing it.
+func TestRetentionResumesOnceTheStoresAreWired(t *testing.T) {
+	f := newFixture(t)
+	ids := f.promoteN(catalog.ChannelBeta, 3)
+
+	unwired := f.deps
+	unwired.Public = nil
+	Retain(context.Background(), unwired, catalog.ComponentCLI, catalog.ChannelBeta)
+
+	events := Retain(context.Background(), f.deps, catalog.ComponentCLI, catalog.ChannelBeta)
+	if events[len(events)-1].Status != "ok" {
+		t.Fatalf("the wired pass did not succeed: %+v", events)
+	}
+	row, _ := f.st.Get(ids[0])
+	if row.State != catalog.StateExpired {
+		t.Fatalf("the deferred row was never expired: %s", row.State)
+	}
+}
+
+func TestCanRetain(t *testing.T) {
+	f := newFixture(t)
+	if err := CanRetain(f.deps); err != nil {
+		t.Fatalf("a fully wired Deps was refused: %v", err)
+	}
+	d := f.deps
+	d.GitHub = nil
+	if !errors.Is(CanRetain(d), ErrNoStoresForRetention) {
+		t.Fatal("a missing publisher was accepted")
 	}
 }

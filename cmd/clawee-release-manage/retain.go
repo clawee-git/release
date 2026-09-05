@@ -64,8 +64,17 @@ func runRetain(e *env, n *node, args []string) error {
 	if o.dryRun {
 		// A dry run must not reach the STORE either, not just the buckets:
 		// ExpireOldVersions writes the state change, and "print what would
-		// happen" that changed the catalog would be the worst of both.
+		// happen" that changed the catalog would be the worst of both. It is
+		// therefore safe — and useful — before the buckets are wired.
 		return dryRunRetention(e, st)
+	}
+
+	// Refused up front, the way the promote route's preflight refuses, and for
+	// a sharper reason: expiring a row is one-way, so a pass that marked rows
+	// without pruning them would orphan their bytes permanently.
+	if err := publish.CanRetain(deps); err != nil {
+		return fmt.Errorf("%w\n  seams: %s\n  `%s retain --dry-run` reports what a real pass would expire and changes nothing",
+			err, o.describe(backends), toolName)
 	}
 	fmt.Fprintf(e.stdout, "%s\n", o.describe(backends))
 	for _, ev := range publish.RetainAll(context.Background(), deps) {

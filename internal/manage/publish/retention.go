@@ -20,6 +20,7 @@ package publish
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -46,16 +47,46 @@ func KeepFor(channel string) int {
 	return KeepStable
 }
 
+// ErrNoStoresForRetention is Retain's refusal when it has nowhere to prune.
+//
+// Expiring a row is ONE-WAY: ExpireOldVersions returns only the rows it newly
+// transitioned, so a row marked expired while the buckets were unwired is
+// never revisited by a later, wired pass — its objects and its GitHub release
+// are orphaned for good. Marking without pruning is therefore not a degraded
+// retention pass, it is a permanent leak, and the only safe answer is to
+// refuse and say which piece is missing.
+var ErrNoStoresForRetention = errors.New(
+	"publish: retention needs both a public store and a GitHub publisher; " +
+		"expiring a row without pruning its bytes orphans them permanently, " +
+		"because a later pass only ever sees rows it expires itself")
+
+// CanRetain reports whether a retention pass can run without orphaning bytes.
+func CanRetain(d Deps) error {
+	if d.Public == nil || d.GitHub == nil {
+		return ErrNoStoresForRetention
+	}
+	return nil
+}
+
 // Retain runs one retention pass and returns the progress events.
 //
-// It never returns an error. Every failure it can have is a pruning failure,
-// and a pruning failure must not fail the promote it runs at the end of: the
-// release is live, the catalog is correct, and an orphaned object in a bucket
-// is a tidiness problem. The events carry what went wrong so an operator
-// watching the stream sees it.
+// It never returns an error. Every failure it can have AFTER the gate is a
+// pruning failure, and a pruning failure must not fail the promote it runs at
+// the end of: the release is live, the catalog is correct, and an orphaned
+// object in a bucket is a tidiness problem. The events carry what went wrong
+// so an operator watching the stream sees it.
+//
+// The one thing it will not do is expire rows it cannot prune — see
+// ErrNoStoresForRetention. That refusal is reported as an event and leaves the
+// catalog untouched.
 func Retain(ctx context.Context, d Deps, component, channel string) []Event {
 	var events []Event
 	send := func(e Event) { events = append(events, e) }
+
+	if err := CanRetain(d); err != nil {
+		send(Event{Step: "retention", Status: "error", Error: err.Error()})
+		return events
+	}
 
 	keep := KeepFor(channel)
 	send(Event{Step: "retention", Status: "start",
