@@ -146,6 +146,41 @@ component repos (`clawee-git/cli`, `clawee-git/daemon`) are published as
 can't be `curl`'d anonymously). The static bootstrap scripts are mirrored to
 `release.clawee.org` (nginx + Cloudflare).
 
+### A cut does not publish
+
+Cutting a release and making it downloadable are **two separate acts**, and
+only the first is automated:
+
+```
+tools/release.sh <comp>
+  stamp → build → SHA256SUMS.txt → minisign
+    → upload to the PRIVATE staging bucket at <comp>/<channel>/<stamp>/
+    → register a `staged` catalog row with the manage service
+    → regenerate the bootstraps + a "[RELEASED: <comp>] … (staged)" marker commit
+```
+
+That is the whole chain. A cut creates **no** release tag, **no** GitHub
+Release, writes nothing to the public bucket, updates no `latest.json` and
+copies nothing to the static host — so nothing anyone can download changes
+when a release is cut.
+
+**Promote** is the second act, taken by an operator in the manage service once
+they have tested the staged build. It copies the same verified bytes to the
+public surface, creates the GitHub Release, writes the channel manifest and
+flips the row `public`. Promote is a copy, not a rebuild: the bytes an operator
+tested are the bytes that go live, which is why a cut signs and notarizes in
+full even though nothing is published yet.
+
+`--channel stable|beta` files the row. It defaults to `beta` when the component
+source is on a beta branch and `stable` otherwise; asking for `--channel
+stable` from a beta branch is refused rather than filing beta bytes as stable.
+
+A cut refuses **before** uploading when the manage URL is unconfigured, and
+fails **after** uploading when the service refuses the registration — staged
+bytes with no catalog row are a stranded artifact nobody can find or promote.
+The two configuration keys it needs (`<staging bucket>`, `<manage URL>`) live
+in the sealed config; see `AGENTS.md`.
+
 ```
 clawee/    claweed/        ← per-component outer bootstrap (install.sh + upgrade.sh, generated)
 inner/clawee/install.sh     ← clawee's inner installer, repo-committed (ships
@@ -157,7 +192,18 @@ versions/<comp>             ← per-component SemVer source of truth
 site/index.html             ← release.clawee.org landing page
 tools/                      ← version.sh, build.sh, gen-bootstraps.sh, release.sh,
                               prune-releases.sh, test-e2e.sh, verify-no-env.sh,
-                              test-r2-mirror-fail-closed.sh, test-upgrade-bootstrap.sh
+                              test-stage-fail-closed.sh, test-cut-no-publish.sh,
+                              test-upgrade-bootstrap.sh
+tools/r2-mirror/             ← uploads a dist/<stamp>/ to a bucket. --prefix puts
+                              the channel in the key, --no-manifest withholds
+                              latest.json: the cut uses both, promote uses
+                              neither
+cmd/clawee-release-register/ ← registers the `staged` catalog row (nonce → sign
+                              with the release key → POST). internal/register/
+                              holds the payload, the key reader and the client
+tools/test-cut-no-publish.sh ← proves the cut publishes nothing: a static scan
+                              for publish verbs plus a run of the stage half
+                              under a stubbed PATH that logs every command
 tools/modules/               ← shared bootstrap trust-chain modules (Task 10,
                               2026-08-25): SHARED WITH BURROWEE, spliced into
                               tools/bootstrap.template.sh at generation time by
