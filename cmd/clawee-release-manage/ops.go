@@ -285,7 +285,10 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
-RestrictAddressFamilies=AF_INET AF_INET6
+# AF_UNIX is listed because a cgo build resolves names through NSS over a
+# unix socket; without it the service would fail every outbound lookup, and
+# the symptom reads as a DNS outage. Harmless for the pure-Go build.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 LockPersonality=yes
 UMask=0077
 
@@ -320,7 +323,10 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
-RestrictAddressFamilies=AF_INET AF_INET6
+# AF_UNIX is listed because a cgo build resolves names through NSS over a
+# unix socket; without it the service would fail every outbound lookup, and
+# the symptom reads as a DNS outage. Harmless for the pure-Go build.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 LockPersonality=yes
 UMask=0077
 `))
@@ -424,6 +430,11 @@ server {
         proxy_http_version 1.1;
         proxy_set_header   Host              $host;
         proxy_set_header   X-Forwarded-Proto $scheme;
+        # Host and the scheme, and deliberately NOT X-Forwarded-For: the
+        # service's login rate limit reads RemoteAddr only, so a forwarded
+        # client address would be an unauthenticated header the limit could be
+        # steered by. Believing a proxy is a decision taken explicitly, not a
+        # header added here (ops/README.md, "A note on the trusted proxy").
         # Promote streams NDJSON progress for the whole publish — several
         # hundred megabytes of copying. Buffering it would hand the operator
         # the entire log at the end, which is exactly the "is it hung?"
