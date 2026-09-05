@@ -3,11 +3,13 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/clawee-git/release/internal/manage/auth"
+	"github.com/clawee-git/release/internal/manage/store"
 )
 
 // dataDirWithKey is a host that has been provisioned but has no stores wired
@@ -21,13 +23,32 @@ func dataDirWithKey(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(dir, auth.SecretKeyFile), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// The catalog is created by `admin add` or the first start, which is why
+	// the runbook runs doctor after provisioning — doctor itself opens it
+	// read-only and creates nothing.
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
 	return dir
+}
+
+// currentUserName is the account this test process runs as: the one user that
+// is certain to resolve on any host the suite runs on.
+func currentUserName(t *testing.T) string {
+	t.Helper()
+	u, err := user.Current()
+	if err != nil {
+		t.Skipf("no current user: %v", err)
+	}
+	return u.Username
 }
 
 // Exit 0 with the stores unwired: the local half is checked, the rest is
 // reported as skipped, and a host being brought up in stages is not red.
 func TestDoctorExitsZeroOnAProvisionedHostWithNoStoresYet(t *testing.T) {
-	stdout, stderr, code := exec(t, "doctor", "--data-dir", dataDirWithKey(t))
+	stdout, stderr, code := exec(t, "doctor", "--data-dir", dataDirWithKey(t), "--user", currentUserName(t))
 	if code != 0 {
 		t.Fatalf("doctor exited %d: %s\n%s", code, stdout, stderr)
 	}
@@ -41,8 +62,8 @@ func TestDoctorExitsZeroOnAProvisionedHostWithNoStoresYet(t *testing.T) {
 // Exit 1, not 2: the checks ran and the deployment is wrong, which is not the
 // same thing as a mistyped invocation.
 func TestDoctorExitsOneWhenACheckFails(t *testing.T) {
-	dir := t.TempDir() // no secret key
-	stdout, _, code := exec(t, "doctor", "--data-dir", dir)
+	dir := t.TempDir() // no secret key, no catalog
+	stdout, _, code := exec(t, "doctor", "--data-dir", dir, "--user", currentUserName(t))
 	if code != 1 {
 		t.Fatalf("doctor exited %d, want 1:\n%s", code, stdout)
 	}
@@ -52,7 +73,7 @@ func TestDoctorExitsOneWhenACheckFails(t *testing.T) {
 }
 
 func TestDoctorJSONIsParseableAndCarriesEveryCheck(t *testing.T) {
-	stdout, _, code := exec(t, "doctor", "--data-dir", dataDirWithKey(t), "--json")
+	stdout, _, code := exec(t, "doctor", "--data-dir", dataDirWithKey(t), "--user", currentUserName(t), "--json")
 	if code != 0 {
 		t.Fatalf("doctor --json exited %d:\n%s", code, stdout)
 	}
@@ -92,11 +113,55 @@ func TestDoctorRefusesWithoutADataDir(t *testing.T) {
 // pass for a deployment that cannot promote.
 func TestDoctorRefusesAHalfConfiguredStore(t *testing.T) {
 	_, stderr, code := exec(t, "doctor", "--data-dir", dataDirWithKey(t),
-		"--staging-bucket", "staging-example")
+		"--user", currentUserName(t), "--staging-bucket", "staging-example")
 	if code != exitUsage {
 		t.Fatalf("exited %d, want %d: %s", code, exitUsage, stderr)
 	}
 	if !strings.Contains(stderr, "r2-account") {
 		t.Errorf("the refusal does not name the missing flag: %s", stderr)
+	}
+}
+
+// The catalog check goes through the REAL opener, and this is what it must do
+// with a data dir that has no catalog: fail, name the path, and leave nothing
+// behind. Through the migrating opener it did the opposite — sqlite created
+// catalog.db for the mistyped path and doctor reported ✓ for a deployment that
+// did not exist a second earlier.
+func TestDoctorDoesNotCreateACatalogForAMistypedDataDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, auth.SecretKeyFile), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, code := exec(t, "doctor", "--data-dir", dir, "--user", currentUserName(t))
+	if code != 1 {
+		t.Fatalf("doctor exited %d for a data dir with no catalog, want 1:\n%s", code, stdout)
+	}
+	if !strings.Contains(stdout, "cannot read the catalog") {
+		t.Errorf("the report does not say the catalog is unreadable:\n%s", stdout)
+	}
+	if _, err := os.Stat(filepath.Join(dir, store.DBFile)); !os.IsNotExist(err) {
+		t.Fatalf("doctor CREATED %s; it must open the catalog read-only", store.DBFile)
+	}
+}
+
+// Which account was compared is part of the answer. Against a user that does
+// not exist on this host the check still runs — against the invoking account —
+// and every line says that is what happened, so a vacuous pass cannot be
+// mistaken for a real one.
+func TestDoctorNamesTheAccountItComparedAgainst(t *testing.T) {
+	dir := dataDirWithKey(t)
+
+	stdout, _, _ := exec(t, "doctor", "--data-dir", dir, "--user", currentUserName(t))
+	if !strings.Contains(stdout, currentUserName(t)+" (uid ") {
+		t.Errorf("the report does not name the service account it compared:\n%s", stdout)
+	}
+
+	stdout, _, _ = exec(t, "doctor", "--data-dir", dir, "--user", "no-such-account-here")
+	if !strings.Contains(stdout, "NOT the service account") {
+		t.Errorf("an unresolvable --user is not disclosed:\n%s", stdout)
 	}
 }

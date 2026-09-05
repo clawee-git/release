@@ -17,7 +17,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/clawee-git/release/internal/manage/auth"
@@ -32,6 +34,7 @@ type doctorOpts struct {
 	storeOpts
 	secretKey  string
 	kitRoot    string
+	user       string
 	checkWrite bool
 	asJSON     bool
 }
@@ -41,6 +44,8 @@ func (o *doctorOpts) register(fs *flag.FlagSet) {
 	o.storeOpts.register(fs)
 	fs.StringVar(&o.secretKey, "secret-key", "",
 		"`path` to the service secret key; defaults to secret.key inside --data-dir")
+	fs.StringVar(&o.user, "user", defaultServiceUser,
+		"the `user` the service runs as; the data dir and the secret key must be owned by it, not by whoever runs this command")
 	fs.StringVar(&o.kitRoot, "kit-root", "",
 		"a release kit checkout `dir` on this host; the signing key is compared against its pubkey and bootstraps")
 	fs.BoolVar(&o.checkWrite, "check-write", false,
@@ -104,9 +109,14 @@ func (o *doctorOpts) deps(n *node) (doctor.Deps, error) {
 		KitRoot:        o.kitRoot,
 		EmbeddedKey:    key,
 		WantMigrations: store.LatestMigration(),
-		UID:            os.Getuid(),
+		// The catalog is opened READ-ONLY and never migrated. The ordinary
+		// opener creates catalog.db when it is absent and applies the pending
+		// rungs before returning, so a doctor wired to it answered ✓ for a
+		// mistyped --data-dir it had just created, migrated a production
+		// catalog as a side effect of being inspected, and could never see the
+		// behind-the-binary ledger it exists to report.
 		Catalog: func() ([]string, error) {
-			st, err := store.Open(o.dataDir)
+			st, err := store.OpenReadOnly(o.dataDir)
 			if err != nil {
 				return nil, err
 			}
@@ -114,6 +124,7 @@ func (o *doctorOpts) deps(n *node) (doctor.Deps, error) {
 			return st.AppliedMigrations()
 		},
 	}
+	d.UID, d.UIDLabel = serviceUID(o.user)
 
 	backends, err := o.backends(n)
 	if err != nil {
@@ -135,6 +146,28 @@ func (o *doctorOpts) deps(n *node) (doctor.Deps, error) {
 		}
 	}
 	return d, nil
+}
+
+// serviceUID resolves the account the SERVICE runs as, which is the only
+// account the ownership checks care about.
+//
+// os.Getuid() was wrong in both directions: under `sudo` it is root, so a data
+// dir correctly owned by the service user failed; run AS root against a
+// root-owned tree it passed while proving nothing. Either way the operator saw
+// a verdict about the wrong account.
+//
+// When the user does not exist on this host — a laptop, a container, a
+// deployment that named it something else — the check falls back to the
+// invoking account and SAYS SO in every line it prints, because a comparison
+// whose subject is invisible cannot be told apart from a vacuous one.
+func serviceUID(name string) (int, string) {
+	if u, err := user.Lookup(name); err == nil {
+		if uid, err := strconv.Atoi(u.Uid); err == nil {
+			return uid, fmt.Sprintf("%s (uid %d)", name, uid)
+		}
+	}
+	uid := os.Getuid()
+	return uid, fmt.Sprintf("the invoking account (uid %d) — there is no user %q on this host, so this is NOT the service account", uid, name)
 }
 
 // anonGet asks the bucket what it says to a caller holding NOTHING: no

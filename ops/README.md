@@ -136,6 +136,20 @@ sudo systemctl enable --now clawee-release-manage.service
 
 Leave the timer until step 7 — there is nothing to retain yet.
 
+Once it is running, check that the unit can actually resolve a name before the
+first promote — the hardening restricts the address families the service may
+use, and a lookup failure reads as a bucket outage rather than as a unit
+setting:
+
+```sh
+# OPERATOR, on <RELEASE_HOST>:
+systemctl status clawee-release-manage.service     # active, no restart loop
+journalctl -u clawee-release-manage -n 50          # the startup line names the live seams
+```
+
+The startup line prints which seams are configured and which will refuse, so a
+missing bucket or token is visible here rather than at the first promote.
+
 ## 5. The edge
 
 ```sh
@@ -184,12 +198,24 @@ followed by `admin add`, and their sessions cascade away with the account.
 Then check the deployment:
 
 ```sh
-clawee-release-manage doctor --data-dir <DATA_DIR> \
+clawee-release-manage doctor --data-dir <DATA_DIR> --user clawee-release \
     --r2-account <R2_ACCOUNT> --r2-creds <R2_CREDS> \
     --staging-bucket <STAGING_BUCKET> --public-bucket <PUBLIC_BUCKET> \
     --github-repo <ORG>/<REPO> --github-token-file <GH_TOKEN_FILE> \
     --kit-root <KIT_CHECKOUT> --check-write
 ```
+
+`--user` is the account the service runs as, and it is what the ownership
+checks compare against — not whoever typed the command. Run `doctor` under
+`sudo` without it and a correctly owned data root would be reported wrong; run
+it as root against a root-owned tree and the check would pass while proving
+nothing. If the user does not resolve on this host, every line says which
+account was compared instead.
+
+`doctor` opens the catalog **read-only** and never migrates it, so it must be
+run after the catalog exists — `admin add` or the first service start creates
+it. A data dir with no catalog is a failure naming the path, which is what a
+mistyped `--data-dir` looks like; nothing is created for it.
 
 Run it with the **same flags the unit carries** — a doctor pointed at different
 buckets is a doctor checking a different deployment. Exit 0 means every check
@@ -198,9 +224,9 @@ prints the same report for a monitor.
 
 | Check | Fails when |
 |---|---|
-| `catalog` | the catalog will not open, or its migration ledger and the binary disagree in either direction |
-| `data-dir` | the data root is readable by group or other, or owned by another account |
-| `secret-key` | the key is missing, is not 0600, or is owned by another account |
+| `catalog` | there is no catalog at `<DATA_DIR>`, it will not open, or its migration ledger and the binary disagree in either direction. Read-only: a missing catalog is never created, and a pending migration is reported, never applied |
+| `data-dir` | the data root is readable by group or other, or is not owned by `--user` |
+| `secret-key` | the key is missing, is not 0600, or is not owned by `--user` |
 | `release-key` | the baked signing key, `<KIT_CHECKOUT>/clawee-release.pub` and the generated bootstraps do not all agree. Skipped with no `--kit-root` |
 | `staging-bucket` | the private bucket is not reachable with these credentials |
 | `staging-private` | **the staging bucket served an unauthenticated GET.** Fix it before promoting anything: remove the public access policy and any custom domain |

@@ -100,6 +100,9 @@ Commands:
                   [--secret-key <path>]          path to the service secret key; defaults to
                                                  secret.key inside --data-dir
                   [--staging-bucket <bucket>]    the PRIVATE staging bucket a cut uploads to
+                  [--user <user>]                the user the service runs as; the data dir and the
+                                                 secret key must be owned by it, not by whoever runs
+                                                 this command
   ops                                            the deployment artefacts — rendered here, installed
                                                  by the operator
     render                                       write the systemd units, the retention timer and
@@ -331,6 +334,8 @@ Commands:
           [--secret-key <path>]         path to the service secret key; defaults to secret.key
                                         inside --data-dir
           [--staging-bucket <bucket>]   the PRIVATE staging bucket a cut uploads to
+          [--user <user>]               the user the service runs as; the data dir and the secret
+                                        key must be owned by it, not by whoever runs this command
 ```
 
 ### `clawee-release-manage ops`

@@ -218,8 +218,8 @@ clawee-release-manage retain --data-dir <DATA_DIR> --dry-run
 
 ```sh
 # check a deployment before promoting anything through it
-clawee-release-manage doctor --data-dir <DATA_DIR> <the same store flags> \
-    --kit-root <KIT_CHECKOUT> --check-write
+clawee-release-manage doctor --data-dir <DATA_DIR> --user clawee-release \
+    <the same store flags> --kit-root <KIT_CHECKOUT> --check-write
 
 # the deployment artefacts. It renders and stops — installing them is the
 # operator's step (ops/README.md)
@@ -356,7 +356,19 @@ build since the day it was created, and nothing else in this system can notice.
 A transport error is also a failure, because the absence of an answer is not
 privacy; an empty bucket passes and says the probe was weaker than it looks.
 
-`doctor` **writes nothing** — no probe object, no draft release. `--check-write`
+`doctor` **writes nothing** — no probe object, no draft release, and no
+catalog: it opens the catalog through `store.OpenReadOnly`, which creates
+nothing and migrates nothing. Wired to the ordinary opener it created
+`catalog.db` for a mistyped `--data-dir` and reported it healthy, migrated a
+production catalog as a side effect of being inspected, and could never observe
+the behind-the-binary ledger it exists to report.
+
+Ownership is compared against `--user` (default `clawee-release`, the same
+account `ops render` writes into the unit), never against whoever ran the
+command: under `sudo` that was root, so a correctly owned data root failed, and
+run as root against a root-owned tree it passed vacuously. An unresolvable
+`--user` still runs the check against the invoking account and says so in every
+line. `--check-write`
 reads the repo's permissions rather than creating a release, which is what
 makes the verb safe to run against production.
 
