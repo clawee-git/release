@@ -141,6 +141,8 @@ runtime.
 clawee-release-manage serve --data-dir <dir> --base-url https://<host> [--listen 127.0.0.1:8787]
 clawee-release-manage admin add|list|remove <name> --data-dir <dir>
 clawee-release-manage publish-static --root <kit> --dest <[user@host:]dir> [--dry-run]
+clawee-release-manage doctor --data-dir <dir> <the same store flags> [--kit-root <kit>] [--check-write] [--json]
+clawee-release-manage ops render --out <dir> --host <host> --static-dir <dir> --data-dir <dir> --base-url <url>
 clawee-release-manage version [--data-dir <dir>]
 clawee-release-manage docs > docs/cli-help.md
 ```
@@ -156,6 +158,7 @@ in the same change as any surface move (`~/.agents/guidelines/cli-help.md`).
 | `internal/manage/auth` | password (argon2id), sealed TOTP secrets, sessions, CSRF, login rate limiting |
 | `internal/manage/intake` | the nonce and register endpoints; verifies against the baked `clawee-release.pub` |
 | `internal/manage/web` | routing split, read API, operator pages, and the PUBLIC pages (`internal/manage/web/public.go`) |
+| `internal/manage/doctor` | the deployment pre-flight: every check behind a seam, and no write anywhere in the package |
 | `internal/staticsurface` | the one list of files the host still serves as static bytes — read by `publish-static` and by the site's link check |
 
 **Ported from, not imported:** the surface follows
@@ -211,6 +214,18 @@ clawee-release-manage retain --data-dir <DATA_DIR> <the same store flags>
 # what a real pass WOULD expire. Touches neither the buckets nor the catalog,
 # so it is safe — and useful — before the stores are wired.
 clawee-release-manage retain --data-dir <DATA_DIR> --dry-run
+```
+
+```sh
+# check a deployment before promoting anything through it
+clawee-release-manage doctor --data-dir <DATA_DIR> <the same store flags> \
+    --kit-root <KIT_CHECKOUT> --check-write
+
+# the deployment artefacts. It renders and stops — installing them is the
+# operator's step (ops/README.md)
+clawee-release-manage ops render --out <DIR> --host <RELEASE_HOST> \
+    --static-dir <STATIC_DIR> --data-dir <DATA_DIR> --base-url <MANAGE_URL> \
+    <the same store flags>
 ```
 
 **The real `retain` pass REFUSES without a public store and a GitHub
@@ -324,6 +339,59 @@ still being handed to every installer.
 **Retention** keeps 10 stable / 1 beta per component on both surfaces, never the
 current row, and runs at the end of every promote plus from `retain`. Pruning is
 best effort: the catalog is the source of truth and bytes are reconciled to it.
+
+### `doctor`
+
+Eight named checks, each behind a seam with fakes, over the things whose
+failure is silent until it is expensive: the catalog and its migration ledger,
+the data root's and the secret key's mode and owner, the three copies of the
+signing key (baked, `clawee-release.pub`, and the generated bootstraps), both
+buckets, and the GitHub token.
+
+**The one it exists for is `staging-private`.** It performs an
+*unauthenticated* GET — through a seam of its own, so it cannot reuse the
+credentials the rest of the pass carries — and a 2xx is a loud refusal: a
+staging bucket that answers anonymously has been publishing every unpromoted
+build since the day it was created, and nothing else in this system can notice.
+A transport error is also a failure, because the absence of an answer is not
+privacy; an empty bucket passes and says the probe was weaker than it looks.
+
+`doctor` **writes nothing** — no probe object, no draft release. `--check-write`
+reads the repo's permissions rather than creating a release, which is what
+makes the verb safe to run against production.
+
+Three statuses, not two: a store the operator has not wired yet is **skipped**,
+not passed and not failed. The service comes up in stages, and a doctor that
+went red on a stage nobody reached is one nobody reads. Exit 0 all pass, 1 any
+fail, 2 usage; `--json` prints the same report.
+
+### `ops render`
+
+The systemd unit, the nightly retain timer and its oneshot, and the nginx
+vhost. It renders into `--out` and **stops** — nothing copies to a host,
+reloads nginx or enables a unit, because activating a service on a production
+host is the operator's act (`~/.agents/guidelines/release.md` §11).
+
+Every value is a flag and nothing is read from the environment: the data root,
+the buckets and the token path are the deployment's, and a unit generator that
+inherited them from whoever ran it would render a unit for the wrong one.
+
+The **units are not committed** — their `ExecStart` carries the bucket names
+and credential paths. The **vhost is**: it names no secret, so
+`ops/nginx/release.clawee.org.conf` is the template's own output and a suite
+test byte-diffs it, exactly like `docs/cli-help.md`. Edit the template in
+`cmd/clawee-release-manage/ops.go` and regenerate; a hand edit fails the build.
+
+The unit's hardening is the reason it is rendered rather than described:
+`User=` (unset means a publishing service running as **root**),
+`ProtectSystem=strict` with `ReadWritePaths=` naming the data dir and nothing
+else, `NoNewPrivileges`. Each is a line whose absence looks like a working
+service.
+
+**The runbook is `ops/README.md`** — buckets, sealed keys, the service user,
+the unit, the edge, admin provisioning and TOTP enrolment, `doctor`, the timer,
+`publish-static`, the first promote and what to check after it, and rollback by
+yank.
 
 ### Known gaps
 
