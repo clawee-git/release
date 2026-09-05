@@ -283,19 +283,27 @@ func renderInstall(comp, stamp, srcDir, repoDir, dst string) error {
 		}
 		return os.WriteFile(dst, []byte(out), 0o755)
 	case "claweed":
-		in := filepath.Join(srcDir, "install", "install.sh.in")
-		data, err := os.ReadFile(in)
-		if err != nil {
-			return fmt.Errorf("claweed installer template %s: %w", in, err)
-		}
-		out := strings.ReplaceAll(string(data), "__CLAWEED_VERSION__", stamp)
-		if m := placeholderRe.FindString(out); m != "" {
-			return fmt.Errorf("the rendered claweed installer still carries %s — "+
-				"this path fills only the version stamp; cut claweed through "+
-				"tools/release.sh, which renders the channel names and the gateway "+
-				"floor per target", m)
-		}
-		return os.WriteFile(dst, []byte(out), 0o755)
+		// RKIT CANNOT BUILD THE DAEMON, and says so here rather than eight
+		// lines later as a mystery about a leftover placeholder.
+		//
+		// The daemon's install.sh.in is rendered from core/channel per TARGET —
+		// RUN_DIR is /var/run/claweed on darwin and /run/claweed elsewhere, and
+		// it carries five more channel names plus a __GATEWAY_FLOOR__ read out
+		// of the daemon's own internal/gateway_probe. renderInstall runs ONCE
+		// per component, before the target loop, so there is no OS to render
+		// for: the shape of this function is what makes the daemon
+		// unbuildable here, not a missing substitution.
+		//
+		// This is a capability this path used to appear to have. It did not:
+		// it filled __CLAWEED_VERSION__ and shipped the rest verbatim, which
+		// on the current template means an installer that writes a unit file
+		// called "@SYSTEMD_UNIT@" and compares a gateway version against the
+		// string "__GATEWAY_FLOOR__". Refusing is the honest form of what was
+		// already true.
+		return fmt.Errorf("rkit cannot render the daemon installer: %s is rendered "+
+			"from core/channel per target (RUN_DIR differs by OS) and rkit renders "+
+			"install.sh once per component. Cut claweed through tools/release.sh",
+			filepath.Join(srcDir, "install", "install.sh.in"))
 	}
 	return fmt.Errorf("renderInstall: unknown component %q", comp)
 }

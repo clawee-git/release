@@ -505,29 +505,25 @@ func TestRenderInstall(t *testing.T) {
 		}
 	})
 
-	t.Run("claweed sed substitution", func(t *testing.T) {
+	// rkit refuses the daemon outright, and says why at the top of the branch
+	// rather than as a mystery about a leftover placeholder. The daemon's
+	// installer is rendered per TARGET (RUN_DIR differs by OS) and this path
+	// renders once per component, so the refusal is structural — it is not a
+	// substitution somebody forgot to add.
+	t.Run("claweed is refused, and the message says where to go", func(t *testing.T) {
 		srcDir := t.TempDir()
 		mustWriteFile(t, filepath.Join(srcDir, "install", "install.sh.in"),
-			"VERSION=\"__CLAWEED_VERSION__\"\necho done\n")
+			"VERSION=\"__CLAWEED_VERSION__\"\nUNIT=\"@SYSTEMD_UNIT@\"\n")
 		dst := filepath.Join(t.TempDir(), "out", "install.sh")
-		stamp := "v0.1.34.2026.07.14.deadbeef"
-		if err := renderInstall("claweed", stamp, srcDir, "/unused/repo", dst); err != nil {
-			t.Fatal(err)
+		err := renderInstall("claweed", "v0.1.34.2026.07.14.deadbeef", srcDir, "/unused/repo", dst)
+		if err == nil {
+			t.Fatal("rkit rendered a daemon installer it cannot render correctly")
 		}
-		got, err := os.ReadFile(dst)
-		if err != nil {
-			t.Fatal(err)
+		if !strings.Contains(err.Error(), "tools/release.sh") {
+			t.Fatalf("error = %v, want it to name the path that CAN cut claweed", err)
 		}
-		want := "VERSION=\"" + stamp + "\"\necho done\n"
-		if string(got) != want {
-			t.Fatalf("claweed install.sh = %q, want %q", got, want)
-		}
-		fi, err := os.Stat(dst)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if fi.Mode().Perm() != 0o755 {
-			t.Fatalf("mode = %v, want 0755", fi.Mode().Perm())
+		if _, statErr := os.Stat(dst); statErr == nil {
+			t.Fatal("a refused rendering still wrote install.sh")
 		}
 	})
 

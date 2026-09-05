@@ -5,6 +5,32 @@ recorded by their `[RELEASED: <comp>]` commits, not here.
 
 ## Unreleased
 
+### Changed — beta twins, and a capability `rkit` never really had
+
+- **`tools/build.sh` takes `CHANNEL`** (`stable` default). It passes
+  `-X main.channel` and names its outputs from `core/channel`, read through the
+  new `cmd/channel-names`. `internal/relconfig.Bins` takes a channel for the
+  same reason and now emits `-X main.channel` too: `core/channel.Parse` refuses
+  an empty string, so binaries built without it fail to start.
+- **Two version lines.** `versions/<comp>.beta.stamp` holds the beta line and
+  its presence is the open-cycle marker; `tools/version.sh <comp> --seed-beta
+  X.Y.0` opens a cycle and refuses to re-open one.
+- **Both inner installers are channel-rendered.** `inner/clawee/install.sh` is
+  now `install.sh.in`, and `render_inner` fills the daemon's channel
+  placeholders and `__GATEWAY_FLOOR__` as well — inside the per-target loop,
+  because `RUN_DIR` differs by OS.
+
+**`rkit build claweed` now refuses**, naming `tools/release.sh`. This reads as
+a capability loss on the stable path and is worth being explicit about: what it
+actually lost was the appearance of one. `renderInstall` filled
+`__CLAWEED_VERSION__` and shipped the rest of the daemon's template verbatim,
+which against the current `install.sh.in` means an installer that writes a unit
+file called `@SYSTEMD_UNIT@` and compares a gateway version against the string
+`__GATEWAY_FLOOR__`. The refusal is structural, not a missing substitution:
+`renderInstall` runs once per component and the daemon's installer is rendered
+per target. `rkit build clawee` is unaffected. Cut the daemon through
+`tools/release.sh`, which every documented cut chain already uses.
+
 ### Added — `clawee-release-manage`, the publish-management service
 
 A cut stages privately and registers a row; going live is now a separate,
