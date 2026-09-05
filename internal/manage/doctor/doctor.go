@@ -407,7 +407,13 @@ func checkStagingPrivate(ctx context.Context, d Deps) Result {
 	case status >= 200 && status < 400:
 		return fail(name, "%s SERVED %q to an unauthenticated GET (HTTP %d). Every staged, unpromoted build in this bucket is public. Remove the bucket's public access and any custom domain before promoting anything",
 			d.Staging.Name, key, status)
-	case status == 401 || status == 403 || status == 404:
+	case status == 400 || status == 401 || status == 403 || status == 404:
+		// 400 is R2's S3 endpoint refusing an UNSIGNED request outright
+		// (InvalidArgument, before any bucket policy is consulted). It is a
+		// refusal, not a miss. Note what this probe cannot see: R2 serves
+		// public access through r2.dev or a custom domain, never through
+		// this endpoint, so a bucket with either enabled still answers 400
+		// here. The dashboard is the authority on those two switches.
 		if !real {
 			return ok(name, "%s answers HTTP %d anonymously — but it is empty, so the probe used a key that never existed and the check is weaker than it looks",
 				d.Staging.Name, status)
