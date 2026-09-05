@@ -550,6 +550,7 @@ for t in tools/test-*.sh tools/*.test.sh; do bash "$t"; done
 | `tools/gen-bootstraps.test.sh` | the beta twin is the stable script with one value changed, and bakes its own channel |
 | `tools/test-beta-cut.sh` | a full `--channel beta` dry-run cut: beta stamp shape, `<comp>/beta/<stamp>/` prefix, twin binaries, twin-rendered inner installer, stable line untouched |
 | `tools/test-e2e-twins.sh` | stable then beta into one sandbox prefix: both present, every stable file byte-identical |
+| `tools/render-inner.test.sh` | the shell survivor guard: a template with a name `render_inner` does not fill is fatal, and leaves no file behind |
 
 `test-e2e.sh` and `verify-no-env.test.sh` need the component source worktrees on
 disk; they fail with a "source worktree missing" message on a machine that has
