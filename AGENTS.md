@@ -232,6 +232,13 @@ the manifest is the go-live. Progress streams as NDJSON (`PATCH
 /api/v1/manage/releases/{id}`) and as plain text from the page buttons, both
 rendered from the same event stream.
 
+The service runs with **`WriteTimeout: 0`**. It bounds the whole response, and
+a promote's response is a progress stream open for the entire publish; at 60
+seconds it truncated the operator's log mid-publish while the promote carried
+on invisibly. What can wedge is bounded instead at the phases
+(`ReadHeaderTimeout`, `IdleTimeout`) and inside the outbound clients, which
+carry no blanket timeout for the same reason (`internal/r2/r2.go`).
+
 **Yank inverts the order** — manifest first, then the row flips — because a
 failure between the two must leave the withdrawn build *unserved* rather than
 still being handed to every installer.

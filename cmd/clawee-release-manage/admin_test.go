@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/clawee-git/release/internal/manage/auth"
 	"github.com/clawee-git/release/internal/manage/store"
@@ -182,6 +184,38 @@ func TestRetainWithNoStoresRunsAndSaysWhatIsMissing(t *testing.T) {
 	for _, want := range []string{"staging: ABSENT", "public: ABSENT", "github: ABSENT"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the summary does not report %q:\n%s", want, out)
+		}
+	}
+}
+
+// The server must not bound the whole response. Promote's response is a
+// progress stream open for the entire publish — four ~11 MB verifies, six
+// copies, six GitHub uploads — and a WriteTimeout cut the operator's log off
+// mid-publish while the promote carried on invisibly. That is precisely the
+// "is it hung?" ambiguity the stream exists to remove, and it is the same
+// lesson as the outbound clients', from the server side.
+func TestServerDoesNotBoundTheWholeResponse(t *testing.T) {
+	intended := func() *http.Server {
+		// Built fresh each time: http.Server carries a noCopy, so a struct
+		// copy is a vet failure rather than a shortcut.
+		return &http.Server{ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
+	}
+	if err := checkServerTimeouts(intended()); err != nil {
+		t.Fatalf("the intended configuration was rejected: %v", err)
+	}
+	withWrite := intended()
+	withWrite.WriteTimeout = 60 * time.Second
+	if err := checkServerTimeouts(withWrite); err == nil {
+		t.Fatal("a WriteTimeout was accepted; it would truncate every long promote stream")
+	}
+	// …but a client that connects and says nothing is still bounded, or the
+	// fix is a leak wearing a fix's name.
+	for _, bad := range []*http.Server{
+		{IdleTimeout: time.Minute},
+		{ReadHeaderTimeout: time.Second},
+	} {
+		if err := checkServerTimeouts(bad); err == nil {
+			t.Fatalf("an unbounded idle/header wait was accepted: %+v", bad)
 		}
 	}
 }
