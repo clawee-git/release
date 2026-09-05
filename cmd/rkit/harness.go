@@ -51,18 +51,17 @@ func runHarness(args []string) error {
 	if comp == "" {
 		return fmt.Errorf("--component is required")
 	}
-	srcDir := srcDirFor(comp)
+	repoAbs, err := filepath.Abs(repo)
+	if err != nil {
+		return err
+	}
+	srcDir := srcDirFor(repoAbs, comp)
 	if srcDir == "" {
 		return fmt.Errorf("unknown component %q (harness covers clawee|claweed)", comp)
 	}
 
 	ctx := context.Background()
 	if err := reproducibilityGuard(ctx); err != nil {
-		return err
-	}
-
-	repoAbs, err := filepath.Abs(repo)
-	if err != nil {
 		return err
 	}
 	if out == "" {
