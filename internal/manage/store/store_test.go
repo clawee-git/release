@@ -498,3 +498,55 @@ func TestGetMissing(t *testing.T) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }
+
+// PlanExpiry and ExpireOldVersions must agree exactly: the dry run previews
+// the pass, and a preview that can disagree with what follows is worse than no
+// preview, because an operator acts on it.
+func TestPlanExpiryMatchesWhatExpireActuallyDoes(t *testing.T) {
+	s := open(t)
+	var ids []int64
+	for i := 1; i <= 5; i++ {
+		id := stage(t, s, catalog.ComponentCLI, catalog.ChannelStable, i, base.Add(time.Duration(i)*time.Hour))
+		if err := s.Promote(id, base.Add(time.Duration(i)*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	// A yank in the mix, so the plan has to get the awkward case right too.
+	successor, _ := s.NewestPublicExcept(catalog.ComponentCLI, catalog.ChannelStable, ids[4])
+	if err := s.Yank(ids[4], successor.ID, base.Add(9*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	planned, retained, err := s.PlanExpiry(catalog.ComponentCLI, catalog.ChannelStable, 2)
+	if err != nil {
+		t.Fatalf("PlanExpiry: %v", err)
+	}
+	if len(planned)+len(retained) == 0 {
+		t.Fatal("the plan is empty; the test would prove nothing")
+	}
+	// The plan changed nothing.
+	for _, id := range ids {
+		row, _ := s.Get(id)
+		if row.State == catalog.StateExpired {
+			t.Fatalf("PlanExpiry expired row %d", id)
+		}
+	}
+
+	actual, err := s.ExpireOldVersions(catalog.ComponentCLI, catalog.ChannelStable, 2, base.Add(10*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(actual) != len(planned) {
+		t.Fatalf("plan expired %d rows, the pass expired %d", len(planned), len(actual))
+	}
+	want := map[int64]bool{}
+	for _, rv := range planned {
+		want[rv.ID] = true
+	}
+	for _, rv := range actual {
+		if !want[rv.ID] {
+			t.Errorf("the pass expired row %d, which the plan did not name", rv.ID)
+		}
+	}
+}

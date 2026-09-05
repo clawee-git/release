@@ -95,28 +95,31 @@ func runRetain(e *env, n *node, args []string) error {
 }
 
 // dryRunRetention reports what a real pass would expire, touching nothing.
+//
+// It asks the STORE for the plan rather than re-deriving the keep rule: a dry
+// run that re-implemented it would eventually disagree with the pass it claims
+// to preview, and the disagreement would be found by an operator who trusted
+// the preview.
 func dryRunRetention(e *env, st *store.Store) error {
-	for _, comp := range componentsAndChannels() {
-		keep := publish.KeepFor(comp.channel)
-		rows, err := st.ListByComponent(comp.component, comp.channel)
+	for _, cc := range componentsAndChannels() {
+		keep := publish.KeepFor(cc.channel)
+		expire, retain, err := st.PlanExpiry(cc.component, cc.channel, keep)
 		if err != nil {
 			return err
 		}
-		kept := 0
-		for _, row := range rows {
-			if row.State != "public" && row.State != "yanked" {
-				continue
-			}
+		for _, row := range retain {
+			note := ""
 			if row.IsCurrent {
-				fmt.Fprintf(e.stdout, "keep    %s/%s %s (current)\n", comp.component, comp.channel, row.Stamp)
-				continue
+				note = " (current)"
 			}
-			if kept < keep {
-				kept++
-				fmt.Fprintf(e.stdout, "keep    %s/%s %s\n", comp.component, comp.channel, row.Stamp)
-				continue
+			fmt.Fprintf(e.stdout, "keep    %s/%s %s%s\n", cc.component, cc.channel, row.Stamp, note)
+		}
+		for _, row := range expire {
+			note := ""
+			if row.State == "yanked" {
+				note = " (yanked)"
 			}
-			fmt.Fprintf(e.stdout, "EXPIRE  %s/%s %s\n", comp.component, comp.channel, row.Stamp)
+			fmt.Fprintf(e.stdout, "EXPIRE  %s/%s %s%s\n", cc.component, cc.channel, row.Stamp, note)
 		}
 	}
 	return nil

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -246,5 +247,59 @@ func TestRetainRefusesToExpireWhatItCannotPrune(t *testing.T) {
 	}
 	if strings.Contains(out, "orphans") {
 		t.Fatalf("--dry-run took the refusal path:\n%s", out)
+	}
+}
+
+// The dry run reports the plan, marks the current row and yanked rows, and
+// changes nothing in the catalog.
+func TestRetainDryRunPreviewsThePlan(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []int64
+	for i := 1; i <= 3; i++ {
+		at := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC).Add(time.Duration(i) * time.Hour)
+		id, err := st.Stage(store.ReleaseVersion{
+			Component: "clawee", Channel: "beta", Version: fmt.Sprintf("0.3.%d", i),
+			Stamp:         fmt.Sprintf("v0.3.%d.beta.2026.09.04.%08x", i, i),
+			ArtifactsJSON: "[]", CreatedAt: at,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.Promote(id, at); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	st.Close()
+
+	out, errb, code := exec(t, "retain", "--data-dir", dir, "--dry-run")
+	if code != 0 {
+		t.Fatalf("code %d, stderr %q", code, errb)
+	}
+	if !strings.Contains(out, "(current)") {
+		t.Errorf("the plan does not mark the current row:\n%s", out)
+	}
+	if !strings.Contains(out, "EXPIRE") {
+		t.Errorf("three beta rows and a keep of 1: something should be expired:\n%s", out)
+	}
+
+	// Nothing moved.
+	st2, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st2.Close()
+	for _, id := range ids {
+		row, err := st2.Get(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if row.State == "expired" {
+			t.Fatalf("--dry-run expired row %d", id)
+		}
 	}
 }

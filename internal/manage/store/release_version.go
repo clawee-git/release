@@ -234,21 +234,7 @@ func (s *Store) ExpireOldVersions(component, channel string, keep int, at time.T
 		if e != nil {
 			return e
 		}
-		kept := 0
-		for _, rv := range candidates {
-			if rv.IsCurrent {
-				// Never expired, and never counted against the window either:
-				// the current row is not one of the N most recent releases,
-				// it is the one the channel serves.
-				continue
-			}
-			// A yanked row skips the window entirely and falls through to be
-			// expired: it holds no slot, because a withdrawn build outranking
-			// a serving one is exactly the bug this guard exists for.
-			if rv.State == catalog.StatePublic && kept < keep {
-				kept++
-				continue
-			}
+		for _, rv := range planExpiry(candidates, keep) {
 			if _, e := tx.Exec(`UPDATE release_versions SET state = ? WHERE id = ?`,
 				catalog.StateExpired, rv.ID); e != nil {
 				return fmt.Errorf("store: expire %d: %w", rv.ID, e)
@@ -262,6 +248,65 @@ func (s *Store) ExpireOldVersions(component, channel string, keep int, at time.T
 		return nil, err
 	}
 	return expired, nil
+}
+
+// planExpiry is THE keep rule, and the only statement of it. ExpireOldVersions
+// applies it; PlanExpiry reports it without touching anything. A dry run that
+// re-implemented the rule would eventually disagree with the pass it claims to
+// preview, and the disagreement would only ever be discovered by an operator
+// who trusted the preview.
+//
+// candidates must be the channel's public and yanked rows, newest first.
+func planExpiry(candidates []ReleaseVersion, keep int) []ReleaseVersion {
+	var expire []ReleaseVersion
+	kept := 0
+	for _, rv := range candidates {
+		if rv.IsCurrent {
+			// Never expired, and never counted against the window either: the
+			// current row is not one of the N most recent releases, it is the
+			// one the channel serves.
+			continue
+		}
+		// A yanked row skips the window entirely and falls through to be
+		// expired: it holds no slot, because a withdrawn build outranking a
+		// serving one is exactly the bug that guard exists for.
+		if rv.State == catalog.StatePublic && kept < keep {
+			kept++
+			continue
+		}
+		expire = append(expire, rv)
+	}
+	return expire
+}
+
+// PlanExpiry reports which rows a retention pass WOULD expire, changing
+// nothing. It is what `retain --dry-run` prints.
+func (s *Store) PlanExpiry(component, channel string, keep int) (expire, retain []ReleaseVersion, err error) {
+	if !catalog.ValidComponent(component) || !catalog.ValidChannel(channel) {
+		return nil, nil, fmt.Errorf("%w: %s/%s", ErrBadValue, component, channel)
+	}
+	if keep < 1 {
+		return nil, nil, fmt.Errorf("store: retention keep must be >= 1, got %d", keep)
+	}
+	candidates, err := queryVersions(s.db, `
+		SELECT `+versionCols+` FROM release_versions
+		WHERE component = ? AND channel = ? AND state IN (?, ?)
+		ORDER BY created_at DESC, id DESC`,
+		component, channel, catalog.StatePublic, catalog.StateYanked)
+	if err != nil {
+		return nil, nil, err
+	}
+	expire = planExpiry(candidates, keep)
+	doomed := make(map[int64]bool, len(expire))
+	for _, rv := range expire {
+		doomed[rv.ID] = true
+	}
+	for _, rv := range candidates {
+		if !doomed[rv.ID] {
+			retain = append(retain, rv)
+		}
+	}
+	return expire, retain, nil
 }
 
 // CurrentPublic returns the one public, is_current row for (component,
