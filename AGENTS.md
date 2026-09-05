@@ -84,8 +84,25 @@ decided branch, never from wherever the tree happens to be.
 
 **Both the component source worktree and this repo answer to the rule.** They
 are inputs to one artifact; a stable kit cutting a beta component is the same
-mislabelling from the other side. This also means a cut cannot run from a
-project worktree, which is intentional.
+mislabelling from the other side.
+
+**This repo carries a permanent `beta` branch of its own** — it is one of the
+participating repos, and `beta` is never deleted at release
+(`~/.agents/guidelines/beta.md`). So a cut is a two-sided checkout:
+
+| Cutting | This repo on | Component source on |
+|---|---|---|
+| stable | `main` | `main` |
+| beta | `beta` (or a `beta-<slug>` experiment beside it) | its `beta` |
+
+A beta cut is therefore a real, reachable operation: check this repo out on
+`beta`, the component source on its `beta`, and cut. It is not a flag layered
+over a stable checkout.
+
+**A project worktree can never cut.** Its branch (`<date>-<slug>`) maps to no
+channel, so the release-repo guard refuses before anything is built — which is
+correct, and is why kit changes are developed here and cut from `main` or
+`beta`.
 
 Dry-runs are lenient about all of it, so they still run off a prep worktree.
 
