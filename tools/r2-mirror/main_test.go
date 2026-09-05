@@ -149,3 +149,38 @@ func TestNoManifestRequiresPrefix(t *testing.T) {
 		t.Fatalf("the public path must still accept an empty prefix: %v", err)
 	}
 }
+
+// TestCollectArtifactsMatchesTheCatalogSet pins that the upload set and the
+// catalog set are the same set. They were not: this tool took every top-level
+// *.zip while internal/register applied a strict name filter, so a stray zip
+// was uploaded and registration then failed with the bytes already up.
+func TestCollectArtifactsMatchesTheCatalogSet(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("clawee-clawee-darwin-arm64.zip")
+	write("clawee-claweed-darwin-arm64.zip") // another component's cut
+	write(sumsName)
+	write(minisigName)
+
+	artifacts, zips, err := collectArtifacts(dir, "clawee")
+	if err != nil {
+		t.Fatalf("collectArtifacts: %v", err)
+	}
+	if len(zips) != 1 || zips[0] != "clawee-clawee-darwin-arm64.zip" {
+		t.Fatalf("another component's zip leaked into this cut: %v", zips)
+	}
+	if len(artifacts) != 3 {
+		t.Fatalf("artifacts = %v, want the one zip plus sums and minisig", artifacts)
+	}
+
+	// A zip nothing can describe is refused BEFORE anything is uploaded.
+	write("stray.zip")
+	if _, _, err := collectArtifacts(dir, "clawee"); err == nil ||
+		!strings.Contains(err.Error(), "refusing to upload") {
+		t.Fatalf("a stray zip was accepted for upload: %v", err)
+	}
+}

@@ -36,6 +36,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -119,7 +120,7 @@ func execute(cfg config, out io.Writer) error {
 		return err
 	}
 
-	artifacts, zips, err := collectArtifacts(cfg.stageDir)
+	artifacts, zips, err := collectArtifacts(cfg.stageDir, cfg.comp)
 	if err != nil {
 		return err
 	}
@@ -232,10 +233,21 @@ func (c config) validate() error {
 	return nil
 }
 
+// zipName is the release kit's zip naming, templated on the component:
+// clawee-<comp>-<os>-<arch>.zip. The UPLOAD set and the CATALOG set must be the
+// same set — internal/register applies the identical rule when it builds the
+// row — because a file that is uploaded but not registered is a byte nobody can
+// promote, and a file registered but not uploaded is a 404 at install time.
+//
+// This used to take every top-level *.zip, which is a wider rule than the
+// catalog's: a stray zip was uploaded and then registration failed AFTER the
+// bytes were up. Refusing here means the failure lands before anything moves.
+var zipName = regexp.MustCompile(`^clawee-[a-z]+-[a-z0-9]+-[a-z0-9]+\.zip$`)
+
 // collectArtifacts returns the top-level files to upload (sorted) and the subset
 // that are zips (sorted) for the manifest. It requires at least one zip plus
 // SHA256SUMS.txt and SHA256SUMS.txt.minisig — a release without them is broken.
-func collectArtifacts(stageDir string) (artifacts, zips []string, err error) {
+func collectArtifacts(stageDir, comp string) (artifacts, zips []string, err error) {
 	entries, err := os.ReadDir(stageDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read stage-dir %q: %w", stageDir, err)
@@ -248,6 +260,14 @@ func collectArtifacts(stageDir string) (artifacts, zips []string, err error) {
 		name := e.Name()
 		switch {
 		case strings.HasSuffix(name, ".zip"):
+			if !zipName.MatchString(name) {
+				return nil, nil, fmt.Errorf("zip %q does not match clawee-<comp>-<os>-<arch>.zip — refusing to upload a file the catalog cannot describe", name)
+			}
+			// Another component's zips legitimately share a stage dir; they are
+			// that component's cut to upload, not this one's.
+			if !strings.HasPrefix(name, "clawee-"+comp+"-") {
+				continue
+			}
 			artifacts = append(artifacts, name)
 			zips = append(zips, name)
 		case name == sumsName:
@@ -259,7 +279,7 @@ func collectArtifacts(stageDir string) (artifacts, zips []string, err error) {
 		}
 	}
 	if len(zips) == 0 {
-		return nil, nil, fmt.Errorf("no *.zip artifacts in %q", stageDir)
+		return nil, nil, fmt.Errorf("no clawee-%s-*.zip artifacts in %q", comp, stageDir)
 	}
 	if !hasSums {
 		return nil, nil, fmt.Errorf("%s missing from %q", sumsName, stageDir)

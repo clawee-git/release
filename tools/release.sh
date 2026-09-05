@@ -531,9 +531,16 @@ register_staged() {
     echo "✗ registering ${comp} ${stamp} with ${MANAGE_URL} FAILED." >&2
     echo "  The artifacts ARE in the staging bucket under ${comp}/${channel}/${stamp}/," >&2
     echo "  but no catalog row names them, so nothing can list or promote them." >&2
-    echo "  Nothing public changed and no marker commit was made." >&2
-    echo "  Fix the service (or the URL) and re-run:" >&2
+    echo "  Nothing public changed." >&2
+    echo "" >&2
+    echo "  THE TREE IS LEFT DIRTY, on purpose: versions/${comp} carries the bumped" >&2
+    echo "  version and no [RELEASED] marker was committed, so the stamp is not" >&2
+    echo "  recorded as cut. Do not commit that by hand and do not re-run the full" >&2
+    echo "  cut — a full cut bumps AGAIN and builds a different stamp." >&2
+    echo "  Fix the service (or the URL), then finish THIS stamp:" >&2
     echo "    bash tools/release.sh --distribute-only ${comp} ${stamp} --channel ${channel}" >&2
+    echo "  It re-stages the existing dist/ dir (the upload is idempotent), registers," >&2
+    echo "  and writes the marker — which is what makes the tree clean again." >&2
     return 1
 }
 

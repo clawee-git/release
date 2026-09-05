@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -36,6 +37,31 @@ func NewClient(manageURL string) *Client {
 	}
 }
 
+// checkManageURL refuses a manage URL that is not https.
+//
+// What travels this connection is a signed catalog row and, on the way back, a
+// nonce: over http both are readable and rewritable in flight, and the row is
+// what an operator later promotes. A loopback host is the exception, because a
+// test server has no certificate and there is no network to be on the wire of.
+func checkManageURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("manage URL %q is not a URL: %w", raw, err)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		host := u.Hostname()
+		if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+			return nil
+		}
+		return fmt.Errorf("manage URL %q is http — a release row must not be registered over a connection anyone can read or rewrite; use https (http is allowed only for a loopback test server)", raw)
+	default:
+		return fmt.Errorf("manage URL %q has scheme %q; want https", raw, u.Scheme)
+	}
+}
+
 // Register performs the nonce → sign → register handshake and returns the
 // manage URL of the row the service recorded.
 //
@@ -45,6 +71,9 @@ func NewClient(manageURL string) *Client {
 func (c *Client) Register(ctx context.Context, p Payload, key SigningKey) (Payload, string, error) {
 	if c.ManageURL == "" {
 		return p, "", fmt.Errorf("manage URL is empty")
+	}
+	if err := checkManageURL(c.ManageURL); err != nil {
+		return p, "", err
 	}
 	nonce, err := c.nonce(ctx)
 	if err != nil {

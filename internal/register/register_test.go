@@ -370,3 +370,28 @@ func TestSigningBytesGolden(t *testing.T) {
 		t.Fatalf("the signed bytes changed — this is the WIRE CONTRACT, not an\nimplementation detail; every signature the service verifies depends on it.\n got: %s\nwant: %s", got, golden)
 	}
 }
+
+// TestManageURLMustBeHTTPS — the row is signed, but http lets anyone read and
+// rewrite it in flight, and it is the object an operator later promotes.
+// Loopback is exempt: a test server has no certificate and no wire.
+func TestManageURLMustBeHTTPS(t *testing.T) {
+	for _, ok := range []string{
+		"https://manage.example",
+		"http://127.0.0.1:8080",
+		"http://localhost:8080",
+		"http://[::1]:8080",
+	} {
+		if err := checkManageURL(ok); err != nil {
+			t.Errorf("%s should be accepted: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		"http://manage.example",
+		"http://10.0.0.5:8080",
+		"ftp://manage.example",
+	} {
+		if err := checkManageURL(bad); err == nil {
+			t.Errorf("%s should be refused", bad)
+		}
+	}
+}

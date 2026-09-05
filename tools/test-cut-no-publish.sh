@@ -15,8 +15,18 @@
 #   takes here, because these verbs are copied back in from the old code.
 #
 #   PART B — a RUN of the cut's stage half with a stubbed PATH that LOGS every
-#   invocation. It proves the executed chain, not the source text, and it is
-#   what catches a publish reached indirectly through a helper script.
+#   invocation, so a publish reached indirectly through a helper script is
+#   caught even though the grep cannot see it. BE PRECISE ABOUT ITS REACH: it
+#   runs `--distribute-only --dry-run`, so it covers the DRY-RUN chain only. The
+#   non-dry-run path is covered by PART A's grep plus PART D, which executes a
+#   real pre-flight; nothing here executes a full non-dry-run cut, because past
+#   the staging upload it would make a real marker commit in this repo.
+#
+#   The stub set is command-shaped, which is a second limit worth naming: the
+#   register POST is Go net/http inside cmd/clawee-release-register, NOT curl,
+#   so the curl stub does not cover it and never will. What keeps that call
+#   honest is internal/register's own tests against a fake service, plus PART
+#   A's assertion that the only URL this script can reach is the manage one.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
