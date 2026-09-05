@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -117,4 +118,34 @@ func runDryRun(t *testing.T, cfg config) string {
 		t.Fatalf("execute: %v", err)
 	}
 	return buf.String()
+}
+
+// TestNoManifestRequiresPrefix pins the one flag combination that quietly
+// misfiles a build: --no-manifest is the cut's posture, an empty prefix is the
+// public layout, and together they stage a private build into the key space
+// promote and retention own. Nobody asks for that on purpose — it happens when
+// a channel string arrives empty because something upstream failed silently.
+func TestNoManifestRequiresPrefix(t *testing.T) {
+	stage := stageDirWithArtifacts(t)
+	base := config{
+		comp: "clawee", version: "0.2.0", stamp: "v0.2.0.2026.09.04.deadbeef",
+		stageDir: stage, bucket: "staging", noManifest: true, dryRun: true,
+	}
+	for _, prefix := range []string{"", "   ", "/"} {
+		cfg := base
+		cfg.prefix = prefix
+		err := execute(cfg, io.Discard)
+		if err == nil {
+			t.Fatalf("prefix %q with --no-manifest was accepted", prefix)
+		}
+		if !strings.Contains(err.Error(), "flat public layout") {
+			t.Fatalf("prefix %q: refusal does not name the layout: %v", prefix, err)
+		}
+	}
+	// The same empty prefix is fine WITHOUT --no-manifest: that is promote.
+	cfg := base
+	cfg.noManifest = false
+	if err := execute(cfg, io.Discard); err != nil {
+		t.Fatalf("the public path must still accept an empty prefix: %v", err)
+	}
 }

@@ -202,6 +202,16 @@ func (c config) validate() error {
 	if c.comp != "clawee" && c.comp != "claweed" {
 		return fmt.Errorf("unknown component %q (want clawee | claweed)", c.comp)
 	}
+	// An empty prefix is the FLAT PUBLIC LAYOUT, and --no-manifest is the cut's
+	// posture — so the combination means "stage a private build into the public
+	// key space", which is how a staged build ends up where retention and the
+	// download page look for promoted ones. The caller cannot reach this state
+	// deliberately; it reaches it when a channel string arrives empty because
+	// something upstream failed without saying so. Refuse rather than quietly
+	// pick a layout.
+	if c.noManifest && strings.Trim(strings.TrimSpace(c.prefix), "/") == "" {
+		return fmt.Errorf("--no-manifest with no --prefix would stage into the flat public layout %s/<stamp>/ — pass the channel as --prefix", c.comp)
+	}
 	info, err := os.Stat(c.stageDir)
 	if err != nil {
 		return fmt.Errorf("stage-dir %q: %w", c.stageDir, err)
