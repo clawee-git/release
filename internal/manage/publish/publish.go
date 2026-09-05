@@ -306,7 +306,10 @@ func Yank(ctx context.Context, d Deps, rowID int64, w io.Writer) (err error) {
 	st.send(Event{Step: "yank", Status: "start",
 		Detail: fmt.Sprintf("%s %s on %s", row.Component, row.Stamp, row.Channel)})
 
-	successor, err := newestPublicExcept(d.Store, row.Component, row.Channel, rowID)
+	// Chosen ONCE. The manifest is written naming this row and the same id is
+	// handed to the store, so the catalog cannot end up marking a different
+	// build current from the one the channel is serving.
+	successor, err := d.Store.NewestPublicExcept(row.Component, row.Channel, rowID)
 	if err != nil {
 		return err
 	}
@@ -340,7 +343,11 @@ func Yank(ctx context.Context, d Deps, rowID int64, w io.Writer) (err error) {
 	st.send(Event{Step: "manifest", File: mkey, Status: "ok"})
 
 	st.send(Event{Step: "flip", Status: "start"})
-	if _, err := d.Store.Yank(rowID, d.Now()); err != nil {
+	var successorID int64
+	if successor != nil {
+		successorID = successor.ID
+	}
+	if err := d.Store.Yank(rowID, successorID, d.Now()); err != nil {
 		return fmt.Errorf("flip row %d: %w", rowID, err)
 	}
 	st.send(Event{Step: "flip", Status: "ok"})
@@ -370,19 +377,4 @@ func artifactNames(rv *store.ReleaseVersion) ([]string, error) {
 		names = append(names, path.Base(a.Key))
 	}
 	return names, nil
-}
-
-// newestPublicExcept finds the row a yanked channel should fall back to.
-func newestPublicExcept(s *store.Store, component, channel string, exclude int64) (*store.ReleaseVersion, error) {
-	rows, err := s.ListByComponent(component, channel)
-	if err != nil {
-		return nil, err
-	}
-	for i := range rows {
-		if rows[i].ID == exclude || rows[i].State != catalog.StatePublic {
-			continue
-		}
-		return &rows[i], nil
-	}
-	return nil, nil
 }

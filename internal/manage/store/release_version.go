@@ -106,48 +106,94 @@ func (s *Store) Promote(id int64, at time.Time) error {
 	})
 }
 
-// Yank marks id `yanked` and clears is_current. Re-pointing the channel
-// manifest at the newest remaining public row is the CALLER's step — this
-// method reports that row so the caller has it without a second query.
+// NewestPublicExcept returns the newest `public` row for (component, channel)
+// other than exclude, or nil when there is none.
 //
-// Only a public row can be yanked: yanking a staged row would be a no-op with
-// a state change, and yanking an already-yanked one hides a double-click.
-func (s *Store) Yank(id int64, at time.Time) (successor *ReleaseVersion, err error) {
-	err = s.tx(func(tx *sql.Tx) error {
+// It is the ONE selector for "what should this channel serve instead": yank
+// asks it, and passes the answer back into Yank. Deriving it twice — once to
+// write the manifest and once inside the flip — is how the manifest and the
+// catalog end up naming different builds.
+func (s *Store) NewestPublicExcept(component, channel string, exclude int64) (*ReleaseVersion, error) {
+	rows, err := queryVersions(s.db, `
+		SELECT `+versionCols+` FROM release_versions
+		WHERE component = ? AND channel = ? AND state = ? AND id != ?
+		ORDER BY created_at DESC, id DESC LIMIT 1`,
+		component, channel, catalog.StatePublic, exclude)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	return &rows[0], nil
+}
+
+// Yank marks id `yanked`, clears its is_current, and moves is_current onto
+// successorID — all in ONE transaction.
+//
+// Handing the successor over rather than picking it here is deliberate: the
+// caller has already written the channel manifest naming that exact row, and
+// the catalog must end up agreeing with the manifest rather than with a second
+// query that could answer differently. Passing 0 means "there is no successor"
+// — the caller removed the manifest entry.
+//
+// The successor MUST become current. Before this, yank cleared is_current and
+// set it on nothing, so the channel had a manifest naming a build the catalog
+// did not mark as current. Retention then read the catalog, saw no current row
+// to protect, and expired and pruned the very build the manifest was serving.
+// The partial unique index guarantees the swap lands on exactly one row.
+func (s *Store) Yank(id, successorID int64, at time.Time) error {
+	return s.tx(func(tx *sql.Tx) error {
 		var component, channel, state string
-		e := tx.QueryRow(`SELECT component, channel, state FROM release_versions WHERE id = ?`, id).
+		err := tx.QueryRow(`SELECT component, channel, state FROM release_versions WHERE id = ?`, id).
 			Scan(&component, &channel, &state)
-		if errors.Is(e, sql.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("%w: release row %d", ErrNotFound, id)
 		}
-		if e != nil {
-			return fmt.Errorf("store: yank %d: %w", id, e)
+		if err != nil {
+			return fmt.Errorf("store: yank %d: %w", id, err)
 		}
 		if state != catalog.StatePublic {
 			return fmt.Errorf("%w: row %d is %s, only a public row can be yanked", ErrBadState, id, state)
 		}
-		if _, e := tx.Exec(`
+		// Clear first: the partial unique index refuses two current rows, and
+		// the whole point of one transaction is that there is never a moment
+		// with two.
+		if _, err := tx.Exec(`
 			UPDATE release_versions SET state = ?, is_current = 0, yanked_at = ?
-			WHERE id = ?`, catalog.StateYanked, at.Unix(), id); e != nil {
-			return fmt.Errorf("store: yank %d: %w", id, e)
+			WHERE id = ?`, catalog.StateYanked, at.Unix(), id); err != nil {
+			return fmt.Errorf("store: yank %d: %w", id, err)
 		}
-		rows, e := queryVersions(tx, `
-			SELECT `+versionCols+` FROM release_versions
-			WHERE component = ? AND channel = ? AND state = ? AND id != ?
-			ORDER BY created_at DESC, id DESC LIMIT 1`,
-			component, channel, catalog.StatePublic, id)
-		if e != nil {
-			return e
+		if successorID == 0 {
+			return nil
 		}
-		if len(rows) == 1 {
-			successor = &rows[0]
+		if successorID == id {
+			return fmt.Errorf("%w: row %d cannot succeed itself", ErrBadValue, id)
+		}
+		var sComponent, sChannel, sState string
+		err = tx.QueryRow(`SELECT component, channel, state FROM release_versions WHERE id = ?`, successorID).
+			Scan(&sComponent, &sChannel, &sState)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: successor row %d", ErrNotFound, successorID)
+		}
+		if err != nil {
+			return fmt.Errorf("store: yank %d: read successor: %w", id, err)
+		}
+		// The successor has to be a row this channel could actually serve.
+		// Anything else would put is_current on a build the manifest does not
+		// name, which is the same disagreement from the other direction.
+		if sComponent != component || sChannel != channel {
+			return fmt.Errorf("%w: successor row %d is %s/%s, not %s/%s",
+				ErrBadValue, successorID, sComponent, sChannel, component, channel)
+		}
+		if sState != catalog.StatePublic {
+			return fmt.Errorf("%w: successor row %d is %s, not public", ErrBadState, successorID, sState)
+		}
+		if _, err := tx.Exec(`UPDATE release_versions SET is_current = 1 WHERE id = ?`, successorID); err != nil {
+			return fmt.Errorf("store: yank %d: promote successor %d: %w", id, successorID, err)
 		}
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	return successor, nil
 }
 
 // ExpireOldVersions runs retention for one (component, channel): it orders that
@@ -165,6 +211,12 @@ func (s *Store) Yank(id int64, at time.Time) (successor *ReleaseVersion, err err
 //   - `staged` rows are not counted and not expired. The guideline keeps every
 //     staged row: a staged row is the only thing an invite can point at, and
 //     it is the row an operator has not decided about yet.
+//   - `yanked` rows do not count toward the window AT ALL, and are always
+//     expired. A withdrawn build must never hold a retention slot ahead of one
+//     the channel is serving: with a keep of 1, a single yank used up the slot
+//     and pushed the successor — the build the manifest names — out of it.
+//     Nothing serves a yanked row, so keeping its bytes is the opposite of why
+//     it was yanked.
 func (s *Store) ExpireOldVersions(component, channel string, keep int, at time.Time) ([]ReleaseVersion, error) {
 	if !catalog.ValidComponent(component) || !catalog.ValidChannel(channel) {
 		return nil, fmt.Errorf("%w: %s/%s", ErrBadValue, component, channel)
@@ -190,7 +242,10 @@ func (s *Store) ExpireOldVersions(component, channel string, keep int, at time.T
 				// it is the one the channel serves.
 				continue
 			}
-			if kept < keep {
+			// A yanked row skips the window entirely and falls through to be
+			// expired: it holds no slot, because a withdrawn build outranking
+			// a serving one is exactly the bug this guard exists for.
+			if rv.State == catalog.StatePublic && kept < keep {
 				kept++
 				continue
 			}

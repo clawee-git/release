@@ -499,7 +499,7 @@ func TestVersionDetailIsTheWholeHistoryNewestFirst(t *testing.T) {
 	if err := f.st.Promote(old, f.now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.st.Yank(old, f.now.Add(2*time.Hour)); err != nil {
+	if err := f.st.Yank(old, 0, f.now.Add(2*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -868,7 +868,7 @@ func TestMintRefusesUnknownRowsAndUnmintableStates(t *testing.T) {
 	if err := f.st.Promote(id, f.now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.st.Yank(id, f.now); err != nil {
+	if err := f.st.Yank(id, 0, f.now); err != nil {
 		t.Fatal(err)
 	}
 	resp, body = f.postJSON(c, "/api/v1/manage/releases/stable/install-url",

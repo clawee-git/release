@@ -504,3 +504,98 @@ func keys(m map[string][]byte) []string {
 	}
 	return out
 }
+
+// TestYankLeavesTheServedBuildProtectedFromRetention is the end-to-end form of
+// the defect: yank cleared is_current and set it on nothing, so the channel had
+// a manifest naming a build the catalog did not mark current — and the next
+// retention pass expired and PRUNED exactly that build while the manifest was
+// still serving it.
+func TestYankLeavesTheServedBuildProtectedFromRetention(t *testing.T) {
+	f := newFixture(t)
+	f.deps.Retain = func(ctx context.Context, comp, ch string) []Event {
+		return Retain(ctx, f.deps, comp, ch)
+	}
+	older := f.stage(catalog.ComponentCLI, catalog.ChannelBeta, 1, base)
+	newer := f.stage(catalog.ComponentCLI, catalog.ChannelBeta, 2, base.Add(time.Hour))
+	if _, err := f.promote(older); err != nil {
+		t.Fatal(err)
+	}
+	f.now = base.Add(time.Hour)
+	if _, err := f.promote(newer); err != nil {
+		t.Fatal(err)
+	}
+	olderRow, _ := f.st.Get(older)
+
+	f.now = base.Add(2 * time.Hour)
+	var out bytes.Buffer
+	if err := Yank(context.Background(), f.deps, newer, &out); err != nil {
+		t.Fatalf("Yank: %v\n%s", err, out.String())
+	}
+
+	// The manifest and the catalog agree.
+	var m manifest.Latest
+	if err := json.Unmarshal(f.public.Objects["clawee/beta/latest.json"], &m); err != nil {
+		t.Fatal(err)
+	}
+	cur, err := f.st.CurrentPublic(catalog.ComponentCLI, catalog.ChannelBeta)
+	if err != nil {
+		t.Fatalf("no current row after yank: %v", err)
+	}
+	if cur.ID != older || m.Stamp != olderRow.Stamp {
+		t.Fatalf("manifest names %q, catalog marks row %d current", m.Stamp, cur.ID)
+	}
+
+	// Now the pass that used to destroy it. Beta keeps ONE, and before the fix
+	// the yanked row consumed that slot.
+	f.now = base.Add(3 * time.Hour)
+	Retain(context.Background(), f.deps, catalog.ComponentCLI, catalog.ChannelBeta)
+
+	row, _ := f.st.Get(older)
+	if row.State != catalog.StatePublic {
+		t.Fatalf("retention expired the build the manifest serves: %s", row.State)
+	}
+	prefix := manifest.PublicBase(olderRow.Component, olderRow.Channel, olderRow.Stamp) + "/"
+	found := 0
+	for k := range f.public.Objects {
+		if strings.HasPrefix(k, prefix) {
+			found++
+		}
+	}
+	if found == 0 {
+		t.Fatal("retention pruned the objects the manifest points at")
+	}
+	// …and the withdrawn build's bytes DO go: nothing serves them.
+	newerRow, _ := f.st.Get(newer)
+	if newerRow.State != catalog.StateExpired {
+		t.Fatalf("the yanked row is %s, want expired", newerRow.State)
+	}
+	yankedPrefix := manifest.PublicBase(newerRow.Component, newerRow.Channel, newerRow.Stamp) + "/"
+	for k := range f.public.Objects {
+		if strings.HasPrefix(k, yankedPrefix) {
+			t.Fatalf("a withdrawn build's object survived retention: %s", k)
+		}
+	}
+}
+
+// The manage surfaces show a current row again after a yank. Before the fix
+// both the card and the public index went blank while the channel was still
+// serving a build.
+func TestYankLeavesTheChannelWithACurrentRow(t *testing.T) {
+	f := newFixture(t)
+	older := f.stage(catalog.ComponentCLI, catalog.ChannelStable, 1, base)
+	newer := f.stage(catalog.ComponentCLI, catalog.ChannelStable, 2, base.Add(time.Hour))
+	if _, err := f.promote(older); err != nil {
+		t.Fatal(err)
+	}
+	f.now = base.Add(time.Hour)
+	if _, err := f.promote(newer); err != nil {
+		t.Fatal(err)
+	}
+	if err := Yank(context.Background(), f.deps, newer, nil); err != nil {
+		t.Fatal(err)
+	}
+	cur, err := f.st.CurrentPublic(catalog.ComponentCLI, catalog.ChannelStable)
+	if err != nil || cur.ID != older {
+		t.Fatalf("CurrentPublic = %v, %v; want row %d", cur, err, older)
+	}
+}

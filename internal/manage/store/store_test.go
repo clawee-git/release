@@ -191,7 +191,7 @@ func TestPromoteIsPerChannel(t *testing.T) {
 	}
 }
 
-func TestYankClearsCurrentAndNamesSuccessor(t *testing.T) {
+func TestYankMovesCurrentOntoTheSuccessor(t *testing.T) {
 	s := open(t)
 	old := stage(t, s, catalog.ComponentCLI, catalog.ChannelStable, 1, base)
 	newer := stage(t, s, catalog.ComponentCLI, catalog.ChannelStable, 2, base.Add(time.Hour))
@@ -202,32 +202,162 @@ func TestYankClearsCurrentAndNamesSuccessor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	successor, err := s.Yank(newer, base.Add(2*time.Hour))
-	if err != nil {
+	successor, err := s.NewestPublicExcept(catalog.ComponentCLI, catalog.ChannelStable, newer)
+	if err != nil || successor == nil || successor.ID != old {
+		t.Fatalf("NewestPublicExcept = %v, %v; want row %d", successor, err, old)
+	}
+	if err := s.Yank(newer, successor.ID, base.Add(2*time.Hour)); err != nil {
 		t.Fatalf("Yank: %v", err)
 	}
-	if successor == nil || successor.ID != old {
-		t.Fatalf("successor = %v, want row %d", successor, old)
-	}
+
 	row, _ := s.Get(newer)
 	if row.State != catalog.StateYanked || row.IsCurrent || row.YankedAt.IsZero() {
 		t.Fatalf("yanked row = %+v", row)
 	}
-	if _, err := s.CurrentPublic(catalog.ComponentCLI, catalog.ChannelStable); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("current after yank: err = %v, want ErrNotFound (the caller re-points, the store does not)", err)
+	// The whole point: the channel has a current row again, and it is the one
+	// the caller wrote into the manifest. Leaving is_current on nothing let
+	// retention expire and prune the build the manifest was serving.
+	cur, err := s.CurrentPublic(catalog.ComponentCLI, catalog.ChannelStable)
+	if err != nil || cur.ID != old {
+		t.Fatalf("CurrentPublic after yank = %v, %v; want row %d", cur, err, old)
 	}
+}
 
-	// Yanking the last remaining public row reports no successor, which is the
-	// caller's signal to REMOVE the manifest entry rather than re-point it.
-	successor, err = s.Yank(old, base.Add(3*time.Hour))
+func TestYankWithNoSuccessorLeavesTheChannelEmpty(t *testing.T) {
+	s := open(t)
+	id := stage(t, s, catalog.ComponentCLI, catalog.ChannelStable, 1, base)
+	if err := s.Promote(id, base); err != nil {
+		t.Fatal(err)
+	}
+	successor, err := s.NewestPublicExcept(catalog.ComponentCLI, catalog.ChannelStable, id)
 	if err != nil {
-		t.Fatalf("Yank(old): %v", err)
+		t.Fatal(err)
 	}
 	if successor != nil {
 		t.Fatalf("successor = %+v, want none", successor)
 	}
-	if _, err := s.Yank(old, base); !errors.Is(err, ErrBadState) {
+	// 0 means "there is none" — the caller removed the manifest entry.
+	if err := s.Yank(id, 0, base.Add(time.Hour)); err != nil {
+		t.Fatalf("Yank: %v", err)
+	}
+	if _, err := s.CurrentPublic(catalog.ComponentCLI, catalog.ChannelStable); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("current after the last yank: err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestYankRefusesABadSuccessor(t *testing.T) {
+	s := open(t)
+	stableID := stage(t, s, catalog.ComponentCLI, catalog.ChannelStable, 1, base)
+	betaID := stage(t, s, catalog.ComponentCLI, catalog.ChannelBeta, 1, base)
+	stagedID := stage(t, s, catalog.ComponentCLI, catalog.ChannelStable, 2, base.Add(time.Hour))
+	for _, id := range []int64{stableID, betaID} {
+		if err := s.Promote(id, base); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A successor on the other channel would put is_current on a build this
+	// channel's manifest does not name — the same disagreement, mirrored.
+	if err := s.Yank(stableID, betaID, base); !errors.Is(err, ErrBadValue) {
+		t.Fatalf("cross-channel successor: err = %v, want ErrBadValue", err)
+	}
+	if err := s.Yank(stableID, stagedID, base); !errors.Is(err, ErrBadState) {
+		t.Fatalf("staged successor: err = %v, want ErrBadState", err)
+	}
+	if err := s.Yank(stableID, stableID, base); !errors.Is(err, ErrBadValue) {
+		t.Fatalf("self-succession: err = %v, want ErrBadValue", err)
+	}
+	if err := s.Yank(stableID, 9999, base); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing successor: err = %v, want ErrNotFound", err)
+	}
+	// Every refusal rolled back: the row is untouched.
+	row, _ := s.Get(stableID)
+	if row.State != catalog.StatePublic || !row.IsCurrent {
+		t.Fatalf("a refused yank changed the row: %+v", row)
+	}
+}
+
+func TestDoubleYankIsRefused(t *testing.T) {
+	s := open(t)
+	id := stage(t, s, catalog.ComponentCLI, catalog.ChannelStable, 1, base)
+	if err := s.Promote(id, base); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Yank(id, 0, base); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Yank(id, 0, base); !errors.Is(err, ErrBadState) {
 		t.Fatalf("double yank: err = %v, want ErrBadState", err)
+	}
+}
+
+// A yanked row must not hold a retention slot ahead of a serving one. With a
+// keep of 1 it did: the yank consumed the slot and the SUCCESSOR — the build
+// the manifest names — was expired and pruned.
+func TestRetentionNeverExpiresTheSuccessorOfAYank(t *testing.T) {
+	s := open(t)
+	older := stage(t, s, catalog.ComponentCLI, catalog.ChannelBeta, 1, base)
+	newer := stage(t, s, catalog.ComponentCLI, catalog.ChannelBeta, 2, base.Add(time.Hour))
+	if err := s.Promote(older, base); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Promote(newer, base.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	successor, _ := s.NewestPublicExcept(catalog.ComponentCLI, catalog.ChannelBeta, newer)
+	if err := s.Yank(newer, successor.ID, base.Add(2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	expired, err := s.ExpireOldVersions(catalog.ComponentCLI, catalog.ChannelBeta, 1, base.Add(3*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The yanked row goes; the row the channel serves stays.
+	if len(expired) != 1 || expired[0].ID != newer {
+		t.Fatalf("expired = %v, want only the yanked row %d", expired, newer)
+	}
+	row, _ := s.Get(older)
+	if row.State != catalog.StatePublic || !row.IsCurrent {
+		t.Fatalf("retention touched the served build: %+v", row)
+	}
+}
+
+// Yanked rows are always expired and never counted: nothing serves them, so
+// keeping their bytes is the opposite of why they were yanked.
+func TestYankedRowsDoNotCountTowardTheKeepWindow(t *testing.T) {
+	s := open(t)
+	var ids []int64
+	for i := 1; i <= 4; i++ {
+		id := stage(t, s, catalog.ComponentCLI, catalog.ChannelStable, i, base.Add(time.Duration(i)*time.Hour))
+		if err := s.Promote(id, base.Add(time.Duration(i)*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	// Yank the newest; row 3 becomes current.
+	successor, _ := s.NewestPublicExcept(catalog.ComponentCLI, catalog.ChannelStable, ids[3])
+	if err := s.Yank(ids[3], successor.ID, base.Add(9*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	// keep=2: the current row is free, two public rows are kept, and the
+	// yanked one is expired REGARDLESS of being the newest by date.
+	expired, err := s.ExpireOldVersions(catalog.ComponentCLI, catalog.ChannelStable, 2, base.Add(10*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[int64]bool{}
+	for _, e := range expired {
+		got[e.ID] = true
+	}
+	if !got[ids[3]] {
+		t.Fatalf("the yanked row was not expired: %v", expired)
+	}
+	for _, keptID := range []int64{ids[1], ids[2]} {
+		if got[keptID] {
+			t.Fatalf("row %d was expired although it is inside the keep window", keptID)
+		}
 	}
 }
 
