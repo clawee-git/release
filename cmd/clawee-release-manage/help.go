@@ -81,6 +81,10 @@ var root = &node{
 			},
 		},
 		{
+			name:    "retain",
+			summary: "run retention over every component and channel — the nightly net",
+		},
+		{
 			name:    "version",
 			summary: "print the build stamp, and the applied migrations when a data dir is named",
 		},

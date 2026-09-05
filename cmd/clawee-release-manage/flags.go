@@ -29,6 +29,7 @@ func (o *commonOpts) registerDataDir(fs *flag.FlagSet) {
 
 type serveOpts struct {
 	commonOpts
+	storeOpts
 	listen    string
 	baseURL   string
 	secretKey string
@@ -36,6 +37,7 @@ type serveOpts struct {
 
 func (o *serveOpts) register(fs *flag.FlagSet) {
 	o.registerDataDir(fs)
+	o.storeOpts.register(fs)
 	fs.StringVar(&o.listen, "listen", defaultListen,
 		"`address` to bind; the default is loopback because this service sits behind the host's TLS proxy")
 	fs.StringVar(&o.baseURL, "base-url", "",
@@ -76,6 +78,7 @@ func (o *versionOpts) register(fs *flag.FlagSet) {
 // orphaned registrar behind.
 var registrars = map[string]func(*flag.FlagSet){
 	"serve":        func(fs *flag.FlagSet) { new(serveOpts).register(fs) },
+	"retain":       func(fs *flag.FlagSet) { new(retainOpts).register(fs) },
 	"admin add":    func(fs *flag.FlagSet) { new(adminAddOpts).register(fs) },
 	"admin list":   func(fs *flag.FlagSet) { new(adminListOpts).register(fs) },
 	"admin remove": func(fs *flag.FlagSet) { new(adminRemoveOpts).register(fs) },

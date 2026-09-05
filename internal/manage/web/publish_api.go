@@ -15,6 +15,7 @@ package web
 // emits one as well as returning an error.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,6 +31,7 @@ func (s *Server) publishDeps() publish.Deps {
 	return publish.Deps{
 		Store: s.Store, Staging: s.Backends.Staging, Public: s.Backends.Public,
 		GitHub: s.Backends.GitHub, Now: s.Now, Log: s.Log,
+		Retain: s.retain,
 	}
 }
 
@@ -181,3 +183,12 @@ func (l *lineWriter) flush() {
 	}
 }
 
+
+// retain is the retention pass promote runs at the end. A method rather than a
+// closure so the "no public store" case is answered in exactly one place.
+func (s *Server) retain(ctx context.Context, component, channel string) []publish.Event {
+	if s.Backends.Public == nil {
+		return nil
+	}
+	return publish.Retain(ctx, s.publishDeps(), component, channel)
+}

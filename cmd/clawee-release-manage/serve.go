@@ -93,7 +93,11 @@ func runServe(e *env, n *node, args []string) error {
 	if err != nil {
 		return err
 	}
-	srv, err := web.New(st, authSvc, in, web.Backends{}, log, nil)
+	backends, err := o.backends(n)
+	if err != nil {
+		return err
+	}
+	srv, err := web.New(st, authSvc, in, backends, log, nil)
 	if err != nil {
 		return err
 	}
@@ -118,8 +122,11 @@ func runServe(e *env, n *node, args []string) error {
 	defer stop()
 	go purgeLoop(ctx, st, log)
 
+	// The seam summary is logged at startup because "promote answers 503" is
+	// otherwise discovered by an operator at the moment they wanted to
+	// promote. Never the credentials, never the token.
 	log.Info("serving", "listen", ln.Addr().String(), "base_url", o.baseURL,
-		"data_dir", o.dataDir, "release_key", in.KeyID)
+		"data_dir", o.dataDir, "release_key", in.KeyID, "seams", o.describe(backends))
 	fmt.Fprintf(e.stdout, "%s listening on %s (base URL %s)\n", toolName, ln.Addr(), o.baseURL)
 
 	errCh := make(chan error, 1)

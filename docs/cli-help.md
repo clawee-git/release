@@ -17,30 +17,55 @@ Usage:
   clawee-release-manage <verb> [flags]
 
 Commands:
-  serve                            run the manage service: the catalog, the register endpoints and
-                                   /manage
-            [--base-url <url>]     the public url this service is reached at, e.g.
-                                   https://release.example.org (required)
-            [--data-dir <dir>]     the dir holding the catalog and the service secret key (required)
-            [--listen <address>]   address to bind; the default is loopback because this service
-                                   sits behind the host's TLS proxy
-            [--secret-key <path>]  path to the service secret key; defaults to secret.key inside
-                                   --data-dir
-  admin                            operator accounts for the manage surface
-    add                            provision an account; the second factor enrols at first login
-            <name>                 the account name, as it is typed at the login page
-            [--data-dir <dir>]     the dir holding the catalog and the service secret key (required)
-            [--password-stdin]     read the password from standard input instead of prompting
-    list                           print the accounts and whether each has enrolled a second factor
-            [--data-dir <dir>]     the dir holding the catalog and the service secret key (required)
-    remove                         delete an account and end its sessions
-            <name>                 the account to delete
-            [--data-dir <dir>]     the dir holding the catalog and the service secret key (required)
-  version                          print the build stamp, and the applied migrations when a data dir
-                                   is named
-            [--data-dir <dir>]     the dir holding the catalog; when given, the applied migrations
-                                   are printed too
-  docs                             print the whole command surface as markdown
+  serve                                   run the manage service: the catalog, the register
+                                          endpoints and /manage
+            [--base-url <url>]            the public url this service is reached at, e.g.
+                                          https://release.example.org (required)
+            [--data-dir <dir>]            the dir holding the catalog and the service secret key
+                                          (required)
+            [--github-repo <owner/repo>]  owner/repo to publish releases to
+            [--github-token-file <path>]  path to a file holding the GitHub token
+            [--listen <address>]          address to bind; the default is loopback because this
+                                          service sits behind the host's TLS proxy
+            [--public-bucket <bucket>]    the public bucket promote copies into
+            [--r2-account <account>]      the Cloudflare account id the buckets live in
+            [--r2-creds <path>]           path to the file holding access_key_id and
+                                          secret_access_key
+            [--secret-key <path>]         path to the service secret key; defaults to secret.key
+                                          inside --data-dir
+            [--staging-bucket <bucket>]   the PRIVATE staging bucket a cut uploads to
+  admin                                   operator accounts for the manage surface
+    add                                   provision an account; the second factor enrols at first
+                                          login
+            <name>                        the account name, as it is typed at the login page
+            [--data-dir <dir>]            the dir holding the catalog and the service secret key
+                                          (required)
+            [--password-stdin]            read the password from standard input instead of prompting
+    list                                  print the accounts and whether each has enrolled a second
+                                          factor
+            [--data-dir <dir>]            the dir holding the catalog and the service secret key
+                                          (required)
+    remove                                delete an account and end its sessions
+            <name>                        the account to delete
+            [--data-dir <dir>]            the dir holding the catalog and the service secret key
+                                          (required)
+  retain                                  run retention over every component and channel — the
+                                          nightly net
+            [--data-dir <dir>]            the dir holding the catalog and the service secret key
+                                          (required)
+            [--dry-run]                   print which rows WOULD be expired and prune nothing
+            [--github-repo <owner/repo>]  owner/repo to publish releases to
+            [--github-token-file <path>]  path to a file holding the GitHub token
+            [--public-bucket <bucket>]    the public bucket promote copies into
+            [--r2-account <account>]      the Cloudflare account id the buckets live in
+            [--r2-creds <path>]           path to the file holding access_key_id and
+                                          secret_access_key
+            [--staging-bucket <bucket>]   the PRIVATE staging bucket a cut uploads to
+  version                                 print the build stamp, and the applied migrations when a
+                                          data dir is named
+            [--data-dir <dir>]            the dir holding the catalog; when given, the applied
+                                          migrations are printed too
+  docs                                    print the whole command surface as markdown
 
 Run 'clawee-release-manage <verb> --help' for that command's help.
 ```
@@ -56,15 +81,22 @@ Usage:
   clawee-release-manage serve [flags]
 
 Commands:
-  serve                         run the manage service: the catalog, the register endpoints and
-                                /manage
-         [--base-url <url>]     the public url this service is reached at, e.g.
-                                https://release.example.org (required)
-         [--data-dir <dir>]     the dir holding the catalog and the service secret key (required)
-         [--listen <address>]   address to bind; the default is loopback because this service sits
-                                behind the host's TLS proxy
-         [--secret-key <path>]  path to the service secret key; defaults to secret.key inside
-                                --data-dir
+  serve                                run the manage service: the catalog, the register endpoints
+                                       and /manage
+         [--base-url <url>]            the public url this service is reached at, e.g.
+                                       https://release.example.org (required)
+         [--data-dir <dir>]            the dir holding the catalog and the service secret key
+                                       (required)
+         [--github-repo <owner/repo>]  owner/repo to publish releases to
+         [--github-token-file <path>]  path to a file holding the GitHub token
+         [--listen <address>]          address to bind; the default is loopback because this service
+                                       sits behind the host's TLS proxy
+         [--public-bucket <bucket>]    the public bucket promote copies into
+         [--r2-account <account>]      the Cloudflare account id the buckets live in
+         [--r2-creds <path>]           path to the file holding access_key_id and secret_access_key
+         [--secret-key <path>]         path to the service secret key; defaults to secret.key inside
+                                       --data-dir
+         [--staging-bucket <bucket>]   the PRIVATE staging bucket a cut uploads to
 ```
 
 ### `clawee-release-manage admin`
@@ -138,6 +170,30 @@ Commands:
   remove                      delete an account and end its sessions
           <name>              the account to delete
           [--data-dir <dir>]  the dir holding the catalog and the service secret key (required)
+```
+
+### `clawee-release-manage retain`
+
+run retention over every component and channel — the nightly net
+
+```
+clawee-release-manage retain — run retention over every component and channel — the nightly net
+
+Usage:
+  clawee-release-manage retain [flags]
+
+Commands:
+  retain                                run retention over every component and channel — the nightly
+                                        net
+          [--data-dir <dir>]            the dir holding the catalog and the service secret key
+                                        (required)
+          [--dry-run]                   print which rows WOULD be expired and prune nothing
+          [--github-repo <owner/repo>]  owner/repo to publish releases to
+          [--github-token-file <path>]  path to a file holding the GitHub token
+          [--public-bucket <bucket>]    the public bucket promote copies into
+          [--r2-account <account>]      the Cloudflare account id the buckets live in
+          [--r2-creds <path>]           path to the file holding access_key_id and secret_access_key
+          [--staging-bucket <bucket>]   the PRIVATE staging bucket a cut uploads to
 ```
 
 ### `clawee-release-manage version`

@@ -33,6 +33,7 @@ type handler func(e *env, n *node, args []string) error
 // a handler and every handler is in the tree" a fact rather than a habit.
 var dispatch = map[string]handler{
 	"serve":        runServe,
+	"retain":       runRetain,
 	"admin add":    runAdminAdd,
 	"admin list":   runAdminList,
 	"admin remove": runAdminRemove,
