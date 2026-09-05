@@ -28,15 +28,15 @@ func (f *fixture) promoteN(channel string, n int) []int64 {
 	return ids
 }
 
-func TestRetentionKeepsTenStableAndNeverTheCurrentRow(t *testing.T) {
+func TestRetentionKeepsThreeStableAndNeverTheCurrentRow(t *testing.T) {
 	f := newFixture(t)
 	f.deps.Retain = func(ctx context.Context, comp, ch string) []Event {
 		return Retain(ctx, f.deps, comp, ch)
 	}
-	ids := f.promoteN(catalog.ChannelStable, 12)
+	ids := f.promoteN(catalog.ChannelStable, 5)
 
-	// 12 promoted rows: the newest is current (never counted, never expired),
-	// ten are kept, one goes.
+	// 5 promoted rows: the newest is current (never counted, never expired),
+	// three are kept, one goes.
 	var expired []int64
 	for _, id := range ids {
 		row, _ := f.st.Get(id)
@@ -48,7 +48,7 @@ func TestRetentionKeepsTenStableAndNeverTheCurrentRow(t *testing.T) {
 		t.Fatalf("expired = %v, want exactly the oldest row %d", expired, ids[0])
 	}
 	current, err := f.st.CurrentPublic(catalog.ComponentCLI, catalog.ChannelStable)
-	if err != nil || current.ID != ids[11] {
+	if err != nil || current.ID != ids[4] {
 		t.Fatalf("current = %v, %v", current, err)
 	}
 
@@ -66,7 +66,7 @@ func TestRetentionKeepsTenStableAndNeverTheCurrentRow(t *testing.T) {
 	}
 
 	// The kept rows are untouched, current included.
-	keptRow, _ := f.st.Get(ids[5])
+	keptRow, _ := f.st.Get(ids[2])
 	keptPrefix := manifest.PublicBase(keptRow.Component, keptRow.Channel, keptRow.Stamp) + "/"
 	found := false
 	for k := range f.public.Objects {
@@ -201,7 +201,7 @@ func TestRetainAllCoversEveryComponentAndChannel(t *testing.T) {
 }
 
 func TestKeepCounts(t *testing.T) {
-	if KeepFor(catalog.ChannelStable) != 10 || KeepFor(catalog.ChannelBeta) != 1 {
+	if KeepFor(catalog.ChannelStable) != 3 || KeepFor(catalog.ChannelBeta) != 1 {
 		t.Fatalf("keep counts = %d stable, %d beta", KeepFor(catalog.ChannelStable), KeepFor(catalog.ChannelBeta))
 	}
 	// An unknown channel over-keeps rather than under-keeps: over-keeping

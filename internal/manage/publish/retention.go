@@ -1,6 +1,6 @@
 package publish
 
-// Retention: keep 10 stable and 1 beta promoted rows per component, on the
+// Retention: keep 3 stable and 1 beta promoted rows per component, on the
 // public surface AND on GitHub, and never the current one
 // (release-management.md §7).
 //
@@ -29,12 +29,11 @@ import (
 	"github.com/clawee-git/release/internal/manifest"
 )
 
-// The keep counts. Ten stable is roughly a quarter of releases at this
-// cadence — enough that a bisect over recent versions still has bytes to fetch.
-// One beta is the current cycle's build and nothing else: a beta is a thing
-// you are asked to test now, not an archive.
+// The keep counts. Three stable is enough that a host a couple of cuts
+// behind can still fetch; one beta is the current cycle's build and nothing
+// else: a beta is a thing you are asked to test now, not an archive.
 const (
-	KeepStable = 10
+	KeepStable = 3
 	KeepBeta   = 1
 )
 
