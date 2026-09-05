@@ -1,7 +1,14 @@
 #!/bin/sh
-# gen-bootstraps.sh — generate the self-contained outer bootstraps
-# (<comp>/install.sh, <comp>/upgrade.sh, for comp in clawee claweed) from one
-# template.
+# gen-bootstraps.sh — generate the self-contained outer bootstraps from one
+# template: for each of clawee and claweed, and for each channel,
+#
+#   <comp>/install.sh        <comp>/upgrade.sh          (stable)
+#   <comp>/beta.install.sh   <comp>/beta.upgrade.sh     (beta)
+#
+# BESIDE the stable name, never under a beta/ directory: <comp>/beta/ is where
+# the channel MANIFEST lives on the downloads mirror, and giving the same
+# segment two meanings on two hosts is how a fetch ends up one directory from
+# the file it wanted.
 #
 # install.sh and upgrade.sh are ONE template under a @MODE@ substitution, not
 # two files: the baked pubkey and the minisign gate are what make it the trust
@@ -13,8 +20,12 @@
 # ladder is instead a runtime refusal from the shipped bootstrap, naming the
 # component and the version it just installed.
 #
-# Each generated file is byte-identical to its sibling except for the @COMP@,
-# @MODE@ and @PUBKEY@ substitutions. The outer bootstrap is THE TRUST ANCHOR,
+# Each generated file is byte-identical to its siblings except for the @COMP@,
+# @MODE@, @CHANNEL@ and @PUBKEY@ substitutions. The beta twins are rendered
+# UNCONDITIONALLY, for the same reason both modes are: whether a beta exists is
+# what its manifest answers at install time on the host doing the installing,
+# and a render-time belief about it here would be a second answer nothing keeps
+# in step. A twin whose channel serves nothing refuses at runtime, naming it. The outer bootstrap is THE TRUST ANCHOR,
 # so the baked @PUBKEY@ must be the real release signing pubkey before
 # activation.
 #
@@ -99,11 +110,20 @@ fi
 # ---- generate -----------------------------------------------------------
 for comp in clawee claweed; do
     mkdir -p "$ROOT/$comp"
-    # @COMP@, @MODE@ and @PUBKEY@ — order doesn't matter, none of the three
-    # values contains another's placeholder. Use a tmp then move so a partial
+    # @COMP@, @MODE@, @CHANNEL@ and @PUBKEY@ — order doesn't matter, none of
+    # the four values contains another's placeholder. Use a tmp then move so a partial
     # write can't ship.
-    for mode in install upgrade; do
-        out="$ROOT/$comp/$mode.sh"
+    for spec in stable:install stable:upgrade beta:install beta:upgrade; do
+        channel="${spec%%:*}"
+        mode="${spec#*:}"
+        # stable keeps the bare name — it is the one in every README, every
+        # install line and every agent's memory, and renaming it would break
+        # every one of them for a directory tidy nobody asked for.
+        if [ "$channel" = stable ]; then
+            out="$ROOT/$comp/$mode.sh"
+        else
+            out="$ROOT/$comp/$channel.$mode.sh"
+        fi
         tmp="$out.tmp.$$"
         exp="$out.exp.$$"
         # expand_includes runs OFF the left of the pipeline (its own redirection,
@@ -115,13 +135,14 @@ for comp in clawee claweed; do
         # failure shape: a malformed include name the awk regex declines to
         # match and so passes through literally.
         expand_includes "$TEMPLATE" > "$exp"
-        sed -e "s|@COMP@|$comp|g" -e "s|@MODE@|$mode|g" -e "s|@PUBKEY@|$PUBKEY|g" \
+        sed -e "s|@COMP@|$comp|g" -e "s|@MODE@|$mode|g" -e "s|@CHANNEL@|$channel|g" \
+            -e "s|@PUBKEY@|$PUBKEY|g" \
             -e "s|@BRAND@|CLAWEE|g" -e "s|@brand@|clawee|g" \
             "$exp" > "$tmp"
         rm -f "$exp"
         grep -q '@INCLUDE:' "$tmp" && { rm -f "$tmp"; echo "✗ unexpanded @INCLUDE in $out" >&2; exit 1; }
         chmod +x "$tmp"
         mv -f "$tmp" "$out"
-        echo "✓ wrote $out  (mode $mode)"
+        echo "✓ wrote $out  (channel $channel, mode $mode)"
     done
 done

@@ -36,7 +36,7 @@
 # with no migrations/upgrade.sh is a RUNTIME refusal naming the component and
 # the version just installed — a message an operator can act on.
 #
-# TWO CHANNELS, THE SAME TEMPLATE. stable is substituted at render time and
+# TWO CHANNELS, THE SAME TEMPLATE. beta is substituted at render time and
 # decides which channel manifest this file resolves — nothing else about it
 # differs, because the trust gate must not have two implementations:
 #
@@ -110,12 +110,12 @@ COMP="claweed"
 # "install" or "upgrade" — see the two-modes note in the header. Baked, never
 # read from the environment: the mode is a property of the URL the operator
 # curl'd, and a runtime override would make one file behave as the other.
-MODE="upgrade"
+MODE="install"
 # "stable" or "beta". Baked for the same reason MODE is: the channel is a
 # property of the URL the operator curl'd, and a host that could be moved
 # between channels by an environment variable is a host whose channel nobody
 # can state (release-management.md §9 — a host never changes channel).
-CHANNEL="stable"
+CHANNEL="beta"
 PUBKEY="RWTuO+iTqEyo52tDnuRxx1IsrARInzZbBSfgbj4r5jZusvksN2VHuY3E"
 REPO="${CLAWEE_RELEASE_REPO:-clawee-git/release}"
 PREFIX="${PREFIX:-$HOME/.local}"

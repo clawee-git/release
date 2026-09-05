@@ -197,7 +197,9 @@ The two configuration keys it needs (`<staging bucket>`, `<manage URL>`) live
 in the sealed config; see `AGENTS.md`.
 
 ```
-clawee/    claweed/        ← per-component outer bootstrap (install.sh + upgrade.sh, generated)
+clawee/    claweed/        ← per-component outer bootstraps, generated: install.sh
+                              + upgrade.sh (stable) and their beta.* twins, plus
+                              version.js + beta.version.js (the site's badge JSONP)
 inner/clawee/install.sh     ← clawee's inner installer, repo-committed (ships
                               verbatim inside each verified clawee zip). claweed
                               has no committed copy: its inner installer is
