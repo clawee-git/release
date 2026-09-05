@@ -79,6 +79,11 @@ type GitHub interface {
 	// CreateRelease creates (or reuses) the release for tag. prerelease is
 	// true for the beta channel.
 	CreateRelease(ctx context.Context, tag, name, body string, prerelease bool) (Release, error)
+	// UploadAsset attaches one file, REPLACING any asset of the same name.
+	// Idempotence is part of the contract, not an implementation detail:
+	// GitHub answers 422 for a duplicate name, and promote's retry after a
+	// partial upload re-sends every asset. An implementation that appended
+	// would make that retry impossible.
 	UploadAsset(ctx context.Context, rel Release, name, contentType string, body []byte) error
 	// DeleteRelease removes the release AND its tag. Retention calls it
 	// best-effort: the catalog row is the source of truth and bytes are

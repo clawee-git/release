@@ -599,3 +599,63 @@ func TestYankLeavesTheChannelWithACurrentRow(t *testing.T) {
 		t.Fatalf("CurrentPublic = %v, %v; want row %d", cur, err, older)
 	}
 }
+
+// TestRetryAfterAPartialGitHubUploadCompletes is the pipeline's own promise,
+// tested against the API's real behaviour. GitHub 422s a duplicate asset name
+// rather than overwriting, so a promote interrupted between "release created"
+// and "all assets uploaded" left a release that a retry could never finish —
+// every attempt re-uploaded asset one and was refused.
+func TestRetryAfterAPartialGitHubUploadCompletes(t *testing.T) {
+	f := newFixture(t)
+	// The fake refuses duplicates exactly as GitHub does; without this the
+	// test would pass against a fake more forgiving than the real thing.
+	f.github.RejectDuplicates = true
+	id := f.stage(catalog.ComponentCLI, catalog.ChannelStable, 1, base)
+
+	// Fail on the fourth asset, so the first three are already uploaded.
+	f.github.FailUpload = "linux-amd64"
+	if _, err := f.promote(id); err == nil {
+		t.Fatal("the seeded failure did not fail the promote")
+	}
+	if len(f.github.Assets[tagOf(t, f, id)]) == 0 {
+		t.Fatal("the fixture did not leave a partial upload behind")
+	}
+	row, _ := f.st.Get(id)
+	if row.State != catalog.StateStaged {
+		t.Fatalf("row = %s, want staged", row.State)
+	}
+
+	// The retry the pipeline promises.
+	f.github.FailUpload = ""
+	out, err := f.promote(id)
+	if err != nil {
+		t.Fatalf("the retry could not finish: %v\n%s", err, out)
+	}
+	row, _ = f.st.Get(id)
+	if row.State != catalog.StatePublic {
+		t.Fatalf("row after the retry = %s", row.State)
+	}
+	// Six assets, each exactly once: replaced, not duplicated.
+	assets := f.github.Assets[tagOf(t, f, id)]
+	if len(assets) != 6 {
+		t.Fatalf("release carries %d assets, want 6: %v", len(assets), assets)
+	}
+	seen := map[string]int{}
+	for _, a := range assets {
+		seen[a]++
+	}
+	for name, n := range seen {
+		if n != 1 {
+			t.Errorf("asset %q appears %d times", name, n)
+		}
+	}
+}
+
+func tagOf(t *testing.T, f *fixture, id int64) string {
+	t.Helper()
+	row, err := f.st.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ReleaseTag(row.Component, row.Stamp)
+}

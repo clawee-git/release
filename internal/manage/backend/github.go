@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 )
 
 // GitHubClient publishes releases through the REST API.
@@ -76,8 +75,21 @@ func (c *GitHubClient) CreateRelease(ctx context.Context, tag, name, body string
 	return Release{ID: out.ID, Tag: tag}, nil
 }
 
-// UploadAsset attaches one file to a release.
+// UploadAsset attaches one file to a release, REPLACING an asset of the same
+// name if one is already there.
+//
+// Idempotent on purpose, and it is the other half of CreateRelease's reuse.
+// Promote's steps run in order and a retry after a failure between "release
+// created" and "all assets uploaded" has to be able to finish the job —
+// otherwise the retry the whole pipeline promises is impossible, because
+// GitHub answers 422 for a duplicate asset name and promote hard-fails on it
+// forever. Delete-then-upload rather than skip-if-present: a retry after a
+// PARTIAL upload leaves an asset of the right name and the wrong bytes, and
+// skipping would publish it.
 func (c *GitHubClient) UploadAsset(ctx context.Context, rel Release, name, contentType string, body []byte) error {
+	if err := c.deleteAssetByName(ctx, rel, name); err != nil {
+		return err
+	}
 	u := fmt.Sprintf("%s/repos/%s/%s/releases/%d/assets?name=%s",
 		c.UploadBase, c.Owner, c.Repo, rel.ID, url.QueryEscape(name))
 	resp, raw, err := c.do(ctx, http.MethodPost, u, contentType, body)
@@ -113,6 +125,44 @@ func (c *GitHubClient) DeleteRelease(ctx context.Context, tag string) error {
 	if resp.StatusCode/100 != 2 && resp.StatusCode != http.StatusNotFound &&
 		resp.StatusCode != http.StatusUnprocessableEntity {
 		return fmt.Errorf("github: delete tag %s: status %d: %s", tag, resp.StatusCode, raw)
+	}
+	return nil
+}
+
+// deleteAssetByName removes an existing asset with this name, if any. A
+// listing failure is reported rather than assumed-empty: proceeding would hit
+// the 422 this exists to avoid, with a more confusing message.
+func (c *GitHubClient) deleteAssetByName(ctx context.Context, rel Release, name string) error {
+	resp, raw, err := c.do(ctx, http.MethodGet,
+		fmt.Sprintf("%s/repos/%s/%s/releases/%d/assets?per_page=100", c.APIBase, c.Owner, c.Repo, rel.ID), "", nil)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil // the release has no assets yet
+	}
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("github: list assets of %s: status %d: %s", rel.Tag, resp.StatusCode, raw)
+	}
+	var assets []struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &assets); err != nil {
+		return fmt.Errorf("github: list assets of %s: unreadable response: %w", rel.Tag, err)
+	}
+	for _, a := range assets {
+		if a.Name != name {
+			continue
+		}
+		resp, raw, err := c.do(ctx, http.MethodDelete,
+			fmt.Sprintf("%s/repos/%s/%s/releases/assets/%d", c.APIBase, c.Owner, c.Repo, a.ID), "", nil)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode/100 != 2 && resp.StatusCode != http.StatusNotFound {
+			return fmt.Errorf("github: delete asset %s from %s: status %d: %s", name, rel.Tag, resp.StatusCode, raw)
+		}
 	}
 	return nil
 }
@@ -157,7 +207,11 @@ func (c *GitHubClient) do(ctx context.Context, method, rawURL, contentType strin
 	}
 	hc := c.HTTP
 	if hc == nil {
-		hc = &http.Client{Timeout: time.Minute}
+		// The guarded client, never a bare one with a blanket timeout: a
+		// zero-value GitHubClient must not quietly get weaker rules than a
+		// constructed one — including the no-whole-exchange-timeout rule that
+		// asset uploads depend on.
+		hc = (&Guard{}).Client()
 	}
 	resp, err := hc.Do(req)
 	if err != nil {

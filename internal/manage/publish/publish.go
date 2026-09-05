@@ -232,6 +232,9 @@ func Promote(ctx context.Context, d Deps, rowID int64, w io.Writer) (err error) 
 	for _, srcKey := range copyOrder {
 		name := path.Base(srcKey)
 		st.send(Event{Step: "github-asset", File: name, Status: "start"})
+		// UploadAsset is required to be idempotent (backend.GitHub): GitHub
+		// refuses a duplicate asset name, so a retry after a partial upload
+		// depends on the implementation replacing rather than adding.
 		if err := d.GitHub.UploadAsset(ctx, rel, name, backend.ContentType(name), bodies[srcKey]); err != nil {
 			return fmt.Errorf("github asset %s: %w", name, err)
 		}

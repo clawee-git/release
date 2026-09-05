@@ -210,6 +210,16 @@ type GitHub struct {
 	Assets     map[string][]string
 	Bodies     map[string]string
 	Prerelease map[string]bool
+	// AssetBodies records what was uploaded, keyed "<tag>/<name>", so a test
+	// can assert a retry REPLACED wrong bytes rather than merely not failing.
+	AssetBodies map[string][]byte
+	// RejectDuplicates makes a second upload of the same asset name fail the
+	// way GitHub's 422 does, so a test proves the retry path survives the real
+	// API's behaviour rather than a more forgiving fake's. The fake itself
+	// replaces (it stands in for an idempotent implementation); set
+	// replacing=false to see the refusal an appending one would meet.
+	RejectDuplicates bool
+	replacing        bool
 	// FailCreate / FailUpload / FailDelete fail for a tag or asset name
 	// containing the substring.
 	FailCreate, FailUpload, FailDelete string
@@ -218,8 +228,9 @@ type GitHub struct {
 
 // NewGitHub builds a fake publisher sharing rec.
 func NewGitHub(rec *Recorder) *GitHub {
-	return &GitHub{Recorder: rec, Releases: map[string]backend.Release{},
-		Assets: map[string][]string{}, Bodies: map[string]string{}, Prerelease: map[string]bool{}}
+	return &GitHub{Recorder: rec, replacing: true, Releases: map[string]backend.Release{},
+		Assets: map[string][]string{}, Bodies: map[string]string{},
+		Prerelease: map[string]bool{}, AssetBodies: map[string][]byte{}}
 }
 
 func (g *GitHub) CreateRelease(ctx context.Context, tag, name, body string, prerelease bool) (backend.Release, error) {
@@ -238,12 +249,49 @@ func (g *GitHub) CreateRelease(ctx context.Context, tag, name, body string, prer
 	return rel, nil
 }
 
+// UploadAsset models the real API's behaviour on a duplicate NAME: GitHub
+// answers 422, it does not overwrite. RejectDuplicates makes the fake do the
+// same, so a test can prove promote's retry path survives it rather than
+// passing against a fake that is more forgiving than the thing it stands in
+// for. Replacement (the client deletes first) is modelled by
+// DeleteAssetByName.
 func (g *GitHub) UploadAsset(ctx context.Context, rel backend.Release, name, contentType string, body []byte) error {
 	g.record("github.upload", name)
 	if g.FailUpload != "" && strings.Contains(name, g.FailUpload) {
 		return fmt.Errorf("fake github: upload %s refused", name)
 	}
+	// Replace, the way an idempotent implementation must: delete any asset of
+	// this name first. RejectDuplicates then models what the REAL API does to
+	// an implementation that skipped this step.
+	for i, existing := range g.Assets[rel.Tag] {
+		if existing != name {
+			continue
+		}
+		if g.RejectDuplicates && !g.replacing {
+			return fmt.Errorf("fake github: 422 asset %q already exists on %s", name, rel.Tag)
+		}
+		g.Assets[rel.Tag] = append(g.Assets[rel.Tag][:i], g.Assets[rel.Tag][i+1:]...)
+		break
+	}
 	g.Assets[rel.Tag] = append(g.Assets[rel.Tag], name)
+	if g.AssetBodies == nil {
+		g.AssetBodies = map[string][]byte{}
+	}
+	g.AssetBodies[rel.Tag+"/"+name] = append([]byte(nil), body...)
+	return nil
+}
+
+// DeleteAssetByName is what an idempotent uploader calls before re-uploading.
+func (g *GitHub) DeleteAssetByName(ctx context.Context, rel backend.Release, name string) error {
+	g.record("github.delete-asset", name)
+	kept := g.Assets[rel.Tag][:0]
+	for _, existing := range g.Assets[rel.Tag] {
+		if existing != name {
+			kept = append(kept, existing)
+		}
+	}
+	g.Assets[rel.Tag] = kept
+	delete(g.AssetBodies, rel.Tag+"/"+name)
 	return nil
 }
 
