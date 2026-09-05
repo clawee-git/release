@@ -1,0 +1,54 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · Clawee release</title>
+<style>
+:root { color-scheme: light dark; --line:#8883; --dim:#7a7a7a; }
+body { font: 15px/1.5 ui-sans-serif, system-ui, sans-serif; margin: 0; }
+main { max-width: 60rem; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+header { border-bottom: 1px solid var(--line); }
+header div { max-width: 60rem; margin: 0 auto; padding: .75rem 1rem; display: flex; gap: 1rem; align-items: baseline; }
+header a { text-decoration: none; }
+h1 { font-size: 1.25rem; margin: 0 1rem 0 0; }
+h2 { font-size: 1rem; margin: 2rem 0 .5rem; }
+nav.tabs { display: flex; gap: .5rem; margin: 1rem 0; }
+nav.tabs a { padding: .3rem .8rem; border: 1px solid var(--line); border-radius: .4rem; text-decoration: none; }
+nav.tabs a[aria-current="page"] { border-color: currentColor; font-weight: 600; }
+.cards { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr)); }
+.card { border: 1px solid var(--line); border-radius: .5rem; padding: 1rem; }
+.card h3 { margin: 0 0 .75rem; font-size: 1.05rem; }
+.row { border-top: 1px solid var(--line); padding-top: .6rem; margin-top: .6rem; }
+.stamp { font-family: ui-monospace, monospace; font-size: .85em; word-break: break-all; }
+.state { display: inline-block; font-size: .75rem; text-transform: uppercase; letter-spacing: .05em;
+         border: 1px solid var(--line); border-radius: .3rem; padding: 0 .35rem; }
+.state-expired, tr.state-expired td { color: var(--dim); }
+.dim { color: var(--dim); }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+form.inline { display: inline; }
+button { font: inherit; padding: .3rem .7rem; border: 1px solid var(--line); border-radius: .4rem; background: none; cursor: pointer; }
+label { display: block; margin: .75rem 0 .25rem; }
+input[type=text], input[type=password] { font: inherit; padding: .4rem; width: 100%; max-width: 22rem; box-sizing: border-box; }
+.error { border: 1px solid #c33; border-radius: .4rem; padding: .6rem .8rem; margin: 1rem 0; }
+.notice { border: 1px solid var(--line); border-radius: .4rem; padding: .6rem .8rem; margin: 1rem 0; }
+code { font-family: ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<header><div>
+  <h1><a href="/manage">Clawee release</a></h1>
+  {{if .Admin}}<span class="dim">{{.Admin}}</span>
+  <a href="/manage/invites">invites</a>
+  <form class="inline" method="post" action="/manage/logout">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <button type="submit">log out</button>
+  </form>{{end}}
+</div></header>
+<main>
+{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+{{template "content" .}}
+</main>
+</body>
+</html>{{end}}

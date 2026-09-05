@@ -131,16 +131,23 @@ type Enrolment struct {
 // StartLogin verifies the password and opens a half-authenticated session,
 // setting the session and CSRF cookies. It returns a non-nil Enrolment when
 // this login is the account's first — the caller must show the secret on the
-// TOTP page, because it is the only time it exists in the clear.
+// TOTP page, because it is the only time it exists in the clear — and the
+// session's CSRF token.
+//
+// The token is RETURNED rather than left to be read back from the request,
+// because the cookies were set on the RESPONSE: the request in hand does not
+// carry them yet. A caller that tried to look it up would render the code form
+// with an empty token, and the operator's first sign-in would fail the CSRF
+// check on a page that looked perfectly normal.
 //
 // The session exists BEFORE the second factor because the TOTP step needs
 // something to address, and it is useless until CompleteTOTP flips it: every
-// gate in RequireSession checks MFAOK.
-func (s *Service) StartLogin(w http.ResponseWriter, r *http.Request, name, password string) (*Enrolment, error) {
+// gate in Session checks MFAOK.
+func (s *Service) StartLogin(w http.ResponseWriter, r *http.Request, name, password string) (*Enrolment, string, error) {
 	now := s.Now()
 	key := ClientIP(r) + "\x00" + name
 	if !s.limiter.allow(key, now) {
-		return nil, ErrRateLimited
+		return nil, "", ErrRateLimited
 	}
 
 	admin, err := s.Store.Admin(name)
@@ -152,17 +159,17 @@ func (s *Service) StartLogin(w http.ResponseWriter, r *http.Request, name, passw
 			// the admin list.
 			_, _ = HashPassword("unknown-account-timing-equaliser")
 			s.limiter.fail(key, now)
-			return nil, ErrBadCredentials
+			return nil, "", ErrBadCredentials
 		}
-		return nil, err
+		return nil, "", err
 	}
 	ok, err := VerifyPassword(admin.PasswordHash, password)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if !ok {
 		s.limiter.fail(key, now)
-		return nil, ErrBadCredentials
+		return nil, "", ErrBadCredentials
 	}
 	s.limiter.succeed(key)
 
@@ -170,35 +177,35 @@ func (s *Service) StartLogin(w http.ResponseWriter, r *http.Request, name, passw
 	if !admin.Enrolled() {
 		secret, err := totp.GenerateSecret()
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		sealed, err := s.Sealer.Seal([]byte(secret))
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		// Enrol before the session is usable, and only if no secret is there
 		// already (the store enforces that). A second enrolment would be how
 		// someone holding just the password fits their own second factor.
 		if err := s.Store.EnrolTOTP(name, sealed, now); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		enrolment = &Enrolment{Secret: secret, OTPAuthURL: totp.OTPAuthURL(Issuer, name, secret)}
 	}
 
 	sid, err := randomToken()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	csrf, err := randomToken()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	expires := now.Add(SessionTTL)
 	if err := s.Store.CreateSession(sid, name, now, expires); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if err := s.Store.CreateCSRF(csrf, sid, expires); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	s.setCookie(w, SessionCookie, sid, expires, true)
 	// The CSRF cookie is deliberately NOT HttpOnly: the page's own script has
@@ -206,7 +213,7 @@ func (s *Service) StartLogin(w http.ResponseWriter, r *http.Request, name, passw
 	// and it is safe precisely because a cross-origin page can neither read
 	// this cookie nor set the header.
 	s.setCookie(w, CSRFCookie, csrf, expires, false)
-	return enrolment, nil
+	return enrolment, csrf, nil
 }
 
 // CompleteTOTP verifies the code for the half-authenticated session in r and

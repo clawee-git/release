@@ -47,7 +47,7 @@ func (f *fixture) login(t *testing.T, name, password string) (*httptest.Response
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/manage/login", nil)
 	r.RemoteAddr = "192.0.2.10:5555"
-	enrol, err := f.svc.StartLogin(w, r, name, password)
+	enrol, _, err := f.svc.StartLogin(w, r, name, password)
 	return w, enrol, err
 }
 
@@ -85,6 +85,23 @@ func TestFirstLoginEnrolsAndSecondFactorIsRequired(t *testing.T) {
 	}
 	if !strings.Contains(enrol.OTPAuthURL, "otpauth://totp/Clawee%20Release:ada") {
 		t.Fatalf("otpauth URL = %q", enrol.OTPAuthURL)
+	}
+
+	// The CSRF token is returned, not read back from the request: the cookies
+	// were set on the RESPONSE, so a caller looking it up would render the
+	// code form with an empty token and fail its own CSRF check.
+	w2 := httptest.NewRecorder()
+	r2 := httptest.NewRequest(http.MethodPost, "/manage/login", nil)
+	r2.RemoteAddr = "192.0.2.11:5555"
+	if err := f.svc.AddAdmin("bob", goodPassword); err != nil {
+		t.Fatal(err)
+	}
+	_, token, err := f.svc.StartLogin(w2, r2, "bob", goodPassword)
+	if err != nil {
+		t.Fatalf("StartLogin(bob): %v", err)
+	}
+	if token == "" || token != cookie(w2, CSRFCookie).Value {
+		t.Fatalf("returned CSRF token %q does not match the cookie", token)
 	}
 
 	sc := cookie(w, SessionCookie)

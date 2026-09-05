@@ -55,6 +55,10 @@ var root = &node{
 	summary: synopsis,
 	children: []*node{
 		{
+			name:    "serve",
+			summary: "run the manage service: the catalog, the register endpoints and /manage",
+		},
+		{
 			name:    "admin",
 			summary: "operator accounts for the manage surface",
 			children: []*node{

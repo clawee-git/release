@@ -27,6 +27,23 @@ func (o *commonOpts) registerDataDir(fs *flag.FlagSet) {
 	fs.StringVar(&o.dataDir, "data-dir", "", dataDirUsage)
 }
 
+type serveOpts struct {
+	commonOpts
+	listen    string
+	baseURL   string
+	secretKey string
+}
+
+func (o *serveOpts) register(fs *flag.FlagSet) {
+	o.registerDataDir(fs)
+	fs.StringVar(&o.listen, "listen", defaultListen,
+		"`address` to bind; the default is loopback because this service sits behind the host's TLS proxy")
+	fs.StringVar(&o.baseURL, "base-url", "",
+		"the public `url` this service is reached at, e.g. https://release.example.org (required)")
+	fs.StringVar(&o.secretKey, "secret-key", "",
+		"`path` to the service secret key; defaults to secret.key inside --data-dir")
+}
+
 type adminAddOpts struct {
 	commonOpts
 	passwordStdin bool
@@ -58,6 +75,7 @@ func (o *versionOpts) register(fs *flag.FlagSet) {
 // fails on a key that names no tree node, so a renamed verb cannot leave an
 // orphaned registrar behind.
 var registrars = map[string]func(*flag.FlagSet){
+	"serve":        func(fs *flag.FlagSet) { new(serveOpts).register(fs) },
 	"admin add":    func(fs *flag.FlagSet) { new(adminAddOpts).register(fs) },
 	"admin list":   func(fs *flag.FlagSet) { new(adminListOpts).register(fs) },
 	"admin remove": func(fs *flag.FlagSet) { new(adminRemoveOpts).register(fs) },

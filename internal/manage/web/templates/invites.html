@@ -1,0 +1,25 @@
+{{define "content"}}
+<h2>Invites</h2>
+<p class="dim">An invite is the only path from a staged cut to a host. Every
+mint is recorded here: who, which row, when it expires. There is no
+per-link revocation, so the time bound and this record are the whole control
+surface.</p>
+{{if .Invites}}
+<table>
+  <thead><tr><th>row</th><th>minted by</th><th>minted</th><th>expires</th><th></th></tr></thead>
+  <tbody>
+  {{range .Invites}}
+    <tr>
+      <td class="stamp">{{.Stamp}}</td>
+      <td>{{.MintedBy}}</td>
+      <td>{{.CreatedAt}}</td>
+      <td>{{.ExpiresAt}}</td>
+      <td>{{if .Live}}<code>curl -fsSL '{{.URL}}' | sh</code>{{else}}<span class="dim">expired</span>{{end}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="dim">No invites have been minted.</p>
+{{end}}
+{{end}}

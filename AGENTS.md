@@ -125,6 +125,73 @@ GitHub, or host.
 | `Client.HTTP` | `internal/register` | the manage service — the tests run the real handshake against a fake server |
 | `GO_BIN` | `release.sh` | the toolchain, for harness sessions whose PATH lacks `go` |
 
+## The manage service
+
+`cmd/clawee-release-manage` is the other half of the cut: the kit stages
+privately and registers a row, and this service is what an operator promotes it
+from (`~/.agents/guidelines/release-management.md`). It is a single Go binary
+with a SQLite catalog and server-rendered pages — no SPA build, no second
+runtime.
+
+```
+clawee-release-manage serve --data-dir <dir> --base-url https://<host> [--listen 127.0.0.1:8787]
+clawee-release-manage admin add|list|remove <name> --data-dir <dir>
+clawee-release-manage version [--data-dir <dir>]
+clawee-release-manage docs > docs/cli-help.md
+```
+
+`docs/cli-help.md` is generated, and a suite test byte-diffs it — regenerate it
+in the same change as any surface move (`~/.agents/guidelines/cli-help.md`).
+
+| Package | Owns |
+|---|---|
+| `internal/manage/catalog` | the closed vocabulary: components, channels, states, stamp shapes. The router derives its per-channel paths from `Channels` |
+| `internal/manage/store` | the SQLite catalog: rows, admins, sessions, CSRF, nonces, invites. Clock-free — every method takes `now` from the caller |
+| `internal/manage/totp` | RFC 6238, pinned to the official vectors. Ported from the console's `internal/console/totp` |
+| `internal/manage/auth` | password (argon2id), sealed TOTP secrets, sessions, CSRF, login rate limiting |
+| `internal/manage/intake` | the nonce and register endpoints; verifies against the baked `clawee-release.pub` |
+| `internal/manage/web` | routing split, read API, pages |
+
+**Ported from, not imported:** the surface follows
+`Burrowee/console/code/main/internal/console/` — `release/channel.go`,
+`release/download_guard.go`, `release/r2_mirror.go`, `release/github_publish.go`,
+`store/release_version.go`, `totp/`, `grant/`, and that repo's release-versions
+retention and promote/R2-sync design specs. Read those before extending this.
+
+### Roots and secrets
+
+`--data-dir` has **no default and is never read from the environment**: it holds
+the catalog and the service's root secret, and a guessed root is either a second
+empty catalog or a write into another deployment's
+(`~/.agents/guidelines/privilege.md`). The secret key (`secret.key`, mode 0600)
+is validated at its own writer — absolute, clean, `O_NOFOLLOW`, refused at any
+mode another user can read. It seals enrolled TOTP secrets, so a copy of the
+catalog file alone is inert.
+
+Cookies are marked `Secure` iff `--base-url` is https; `--listen` defaults to
+loopback because the service belongs behind the host's TLS proxy
+(`ops/nginx/`).
+
+### Seams batch B must implement, by name
+
+Promote, yank, mint and the invite listing are routed today and answer **501**,
+already session- and CSRF-gated, so the pages are final and batch B fills in
+bodies rather than adding surface:
+
+| Seam | Where the stub is | What batch B owns |
+|---|---|---|
+| object store interface | not yet declared | copy staged → public, presign, prune; every remote store behind a flag, as `tools/r2-mirror` already is |
+| GitHub publisher interface | not yet declared | create the release/pre-release and upload assets; promote **fails closed** without it |
+| `PATCH /api/v1/manage/releases/{id}` | `web.handleNotImplementedAPI` | promote and yank, in the guideline's order: verify → copy → GitHub → manifest → flip (`store.Promote`) → retention |
+| `POST /manage/releases/{id}/promote\|yank\|mint` | `web.handleNotImplementedPage` | the page-form twins of the above |
+| `POST /api/v1/manage/releases/{channel}/install-url` | `web.handleNotImplementedAPI` | the 48 h invite: presigned URLs, rendered `install.sh`, `store.CreateInvite` |
+| `GET /api/v1/manage/releases/{channel}/invites` | `web.handleNotImplementedAPI` | the JSON twin of the invites page |
+| retention | `store.ExpireOldVersions` (done) | calling it at the end of promote, 10 stable / 1 beta, plus the byte pruning on both surfaces |
+| download guard | not yet declared | https-only, no userinfo or IP literal, per-hop, dial the classified address — the service's only outbound fetch |
+
+`store.Yank` already returns the successor row, which is what the caller
+re-points the manifest at (or removes it when there is none).
+
 ## Sealed config
 
 Read through `CLAWEE_R2_CONFIG` (default `~/.clawee/release/config.toml`), which
