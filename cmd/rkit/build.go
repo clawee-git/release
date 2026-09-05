@@ -357,9 +357,10 @@ func orchestrate(ctx context.Context, o Options) (*Result, error) {
 		return nil, fmt.Errorf("verify-no-env: %w", err)
 	}
 
-	// 4. install.sh — rendered per-component (see renderInstall): clawee is a
-	//    verbatim copy of inner/clawee/install.sh; claweed sed-substitutes the
-	//    version stamp into the daemon source's install/install.sh.in.
+	// 4. install.sh — rendered per-component (see renderInstall): clawee fills
+	//    the stable channel names into inner/clawee/install.sh.in. claweed is
+	//    refused outright — its installer is rendered per TARGET, which this
+	//    once-per-component step cannot express.
 	installSh := filepath.Join(o.OutDir, stamp, "install.sh")
 	if err := renderInstall(o.Component, stamp, o.SrcDir, o.RepoDir, installSh); err != nil {
 		return nil, fmt.Errorf("install.sh: %w", err)

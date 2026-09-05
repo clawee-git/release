@@ -176,10 +176,21 @@ environment) and filters the GitHub tag fallback on the `.beta.` segment. Never
 add an env var or flag that selects a channel at runtime — a host never changes
 channel (`~/.agents/guidelines/release-management.md` §9).
 
-**`cmd/rkit` is the stable produce half only.** It has no `--channel`, renders
-the inner installer once per component (so it cannot express a per-OS `RUN_DIR`
-at all), and now fails loudly on any placeholder it cannot fill. Cut beta
-through `tools/release.sh`.
+**A cut commits only its own channel's bootstraps, and says so when the other
+channel's changed.** `gen-bootstraps.sh` regenerates all four unconditionally —
+it is one template, and rendering half of it would be a render-time belief about
+which channels exist. So a beta cut can rewrite the stable scripts, and those
+must not ride along in a beta marker commit: a stable-looking change filed under
+a beta stamp is a change nobody can date. The cut prints the leftovers by name;
+commit them on their own channel's branch. Until you do the repo is dirty and
+the next cut's cut-origin guard refuses — correctly, but for a reason that
+happened one cut ago.
+
+**`cmd/rkit` is the stable produce half only.** It has no `--channel` and renders
+the inner installer once per component, so it cannot express a per-OS `RUN_DIR`
+at all — which is why **`rkit build claweed` now refuses outright**, naming
+`tools/release.sh`. `rkit build clawee` is unaffected. Cut beta, and the daemon
+on either channel, through `tools/release.sh`.
 
 ## Seams
 

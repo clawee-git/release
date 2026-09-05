@@ -51,9 +51,6 @@ func TestOrchestrateBuildsMatrixIntoScratch(t *testing.T) {
 	// The zip ships the RENDERED installer, not the template: the fixture's
 	// @CLIENT@/@CLIENT_UPDATER@ come back as the stable names.
 	wantInstallSh := []byte("#!/bin/sh\nBINS=\"clawee clawee-updater\"\necho fixture-install\n")
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, zp := range res.Zips {
 		r, err := zip.OpenReader(zp)
 		if err != nil {

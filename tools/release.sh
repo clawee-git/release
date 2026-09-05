@@ -746,15 +746,14 @@ resolve_sign_key
 fi # DISTRIBUTE_ONLY != 1 (pre-flight)
 
 # ---- inner installer resolution ---------------------------------------------
-# clawee ships the repo-committed inner/clawee/install.sh. claweed ships the
-# daemon repo's canonical install/install.sh.in, rendered per-build with the
-# stamp — it is the ONLY source, so the served installer cannot drift. There is
-# deliberately no inner/claweed copy in this repo: one used to sit there
-# "kept current for shellcheck + reference", nothing could enforce that from a
-# repo that cannot see the private canonical file, and it drifted 600+ lines
-# while still documenting a retired setuid tier. A second copy of a file this
-# repo does not own is a lie waiting to happen — read the daemon repo instead.
-# render_inner <comp> <stamp> <dest> writes install.sh.
+# clawee ships the repo-committed TEMPLATE inner/clawee/install.sh.in. claweed
+# ships the daemon repo's canonical install/install.sh.in — it is the ONLY
+# source, so the served installer cannot drift. There is deliberately no
+# inner/claweed copy in this repo: one used to sit there "kept current for
+# shellcheck + reference", nothing could enforce that from a repo that cannot
+# see the private canonical file, and it drifted 600+ lines while still
+# documenting a retired setuid tier. A second copy of a file this repo does not
+# own is a lie waiting to happen — read the daemon repo instead.
 # stage_migrations_for <comp> <assemble-dir> — put claweed's migration ladder in
 # the zip, beside install.sh.
 #
@@ -1051,6 +1050,29 @@ do_release() {
     fi
     git commit -m "[RELEASED: ${comp}/${channel}] $(date -u +%Y-%m-%d) ${stamp} (staged)"
 
+    # THE OTHER CHANNEL'S BOOTSTRAPS. gen-bootstraps.sh regenerates all four
+    # unconditionally — it is one template, and rendering only half of it would
+    # be a belief about which channels exist that nothing keeps in step. So a
+    # beta cut can legitimately rewrite the STABLE scripts, and those must not
+    # ride along in a beta marker commit: a stable-looking change filed under a
+    # beta stamp is a change nobody can date.
+    #
+    # But leaving them uncommitted is not free either. The cut-origin guard
+    # refuses a dirty repo, so the next cut would stop on "the release repo is
+    # dirty" and name files this cut deliberately left behind — a refusal that
+    # reads like a mistake. Say so HERE, while the reason is still on screen.
+    leftover="$(git status --porcelain -- "${comp}/install.sh" "${comp}/upgrade.sh" \
+        "${comp}/beta.install.sh" "${comp}/beta.upgrade.sh" | awk '{print $NF}')"
+    if [ -n "${leftover}" ]; then
+        echo
+        echo "! the generator also rewrote the other channel's bootstraps, which this"
+        echo "  ${channel} marker commit deliberately does not carry:"
+        # shellcheck disable=SC2086  # ${leftover} is an intentional newline-list of our own path names; word-splitting is the point.
+        printf '      %s\n' ${leftover}
+        echo "  Commit them on their OWN channel's branch. Until you do, this repo is"
+        echo "  dirty and the next cut's cut-origin guard will refuse."
+    fi
+
     echo "✓ staged ${comp} ${stamp} on the ${channel} channel"
     echo "  Promote it from the manage service: ${MANAGE_URL}"
 }
@@ -1135,6 +1157,29 @@ distribute_only() {
         git add "${version_file}" "${comp}/install.sh" "${comp}/upgrade.sh"
     fi
     git commit -m "[RELEASED: ${comp}/${channel}] $(date -u +%Y-%m-%d) ${stamp} (staged)"
+
+    # THE OTHER CHANNEL'S BOOTSTRAPS. gen-bootstraps.sh regenerates all four
+    # unconditionally — it is one template, and rendering only half of it would
+    # be a belief about which channels exist that nothing keeps in step. So a
+    # beta cut can legitimately rewrite the STABLE scripts, and those must not
+    # ride along in a beta marker commit: a stable-looking change filed under a
+    # beta stamp is a change nobody can date.
+    #
+    # But leaving them uncommitted is not free either. The cut-origin guard
+    # refuses a dirty repo, so the next cut would stop on "the release repo is
+    # dirty" and name files this cut deliberately left behind — a refusal that
+    # reads like a mistake. Say so HERE, while the reason is still on screen.
+    leftover="$(git status --porcelain -- "${comp}/install.sh" "${comp}/upgrade.sh" \
+        "${comp}/beta.install.sh" "${comp}/beta.upgrade.sh" | awk '{print $NF}')"
+    if [ -n "${leftover}" ]; then
+        echo
+        echo "! the generator also rewrote the other channel's bootstraps, which this"
+        echo "  ${channel} marker commit deliberately does not carry:"
+        # shellcheck disable=SC2086  # ${leftover} is an intentional newline-list of our own path names; word-splitting is the point.
+        printf '      %s\n' ${leftover}
+        echo "  Commit them on their OWN channel's branch. Until you do, this repo is"
+        echo "  dirty and the next cut's cut-origin guard will refuse."
+    fi
 
     echo "✓ staged ${comp} ${stamp} on the ${channel} channel"
     echo "  Promote it from the manage service: ${MANAGE_URL}"
