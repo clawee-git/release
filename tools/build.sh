@@ -13,8 +13,21 @@
 #   TARGETARCH    GOARCH (arm64 | amd64)
 #   STAMP         version string baked via -X main.version=…
 #   OUT_DIR       output directory for the built binaries (created if absent)
+#   CHANNEL       stable | beta (default: stable)
 #
-# ldflags: always `-X main.version=$STAMP`.
+# ldflags: always `-X main.version=$STAMP -X main.channel=$CHANNEL`.
+#
+# THE CHANNEL IS A BUILD-TIME FACT, and both halves of it live here. It decides
+# what the binary DERIVES at runtime (core/channel.Parse of the -X value: config
+# file, data dir, system roots, launchd label, systemd unit) and what the file
+# is CALLED on disk (clawee/claweeb, claweed/claweedb, and their updaters). The
+# two must agree or a host ends up with a binary named claweeb that writes into
+# stable's tree; they agree because both come from ONE read of core/channel via
+# ./cmd/channel-names, never from a `case` table spelled here in shell.
+#
+# There is deliberately no default for the -X value inside the binaries: Parse
+# refuses an empty string, so a build that loses this flag fails to start rather
+# than silently running as stable.
 #
 # darwin signing (only when TARGETOS=darwin AND the build host is darwin):
 #   - default          → ad-hoc (`codesign --sign - --force`); macOS refuses to
@@ -36,6 +49,11 @@ set -euo pipefail
 : "${TARGETARCH:?TARGETARCH is required (arm64|amd64)}"
 : "${STAMP:?STAMP is required}"
 : "${OUT_DIR:?OUT_DIR is required}"
+CHANNEL="${CHANNEL:-stable}"
+case "${CHANNEL}" in
+    stable|beta) ;;
+    *) echo "✗ CHANNEL must be stable or beta (got '${CHANNEL}')" >&2; exit 2 ;;
+esac
 
 GO_BIN="${GO_BIN:-go}"
 command -v "${GO_BIN}" >/dev/null 2>&1 || GO_BIN=/opt/homebrew/bin/go
@@ -60,13 +78,30 @@ fi
 # ./cmd/clawee-spawn no longer exists — naming it here fails the build outright.
 # Keep this map and internal/relconfig's Bins() in step; both must only name
 # packages the component actually has.
+# The OUTPUT NAME comes from core/channel; the PACKAGE path never does. A twin
+# is the same source built twice — ./cmd/clawee builds both clawee and claweeb —
+# so renaming the package here would look for a directory that does not exist.
+#
+# REPO_ROOT is this kit, not SRC_DIR: cmd/channel-names is ours. The `go run`
+# happens BEFORE the cd into SRC_DIR for the same reason.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Captured to a variable FIRST, then eval'd. `eval "$(cmd)"` swallows cmd's
+# exit status — the substitution yields an empty string and eval succeeds on it
+# — which would leave every name unset and fall through to the emptiness check
+# below with no idea why. This way the failure names itself.
+CHANNEL_NAMES="$( cd "${REPO_ROOT}" && "${GO_BIN}" run ./cmd/channel-names "${CHANNEL}" "${TARGETOS}" )" \
+    || { echo "✗ could not read the ${CHANNEL} names out of core/channel" >&2; exit 1; }
+eval "${CHANNEL_NAMES}"
+[ -n "${CLIENT:-}" ] && [ -n "${CLIENT_UPDATER:-}" ] && [ -n "${DAEMON:-}" ] && [ -n "${DAEMON_UPDATER:-}" ] \
+    || { echo "✗ cmd/channel-names returned an incomplete name set for channel '${CHANNEL}'" >&2; exit 1; }
+
 case "${COMP}" in
-    clawee)   MAP="clawee:./cmd/clawee clawee-updater:./cmd/clawee-updater" ;;
-    claweed)  MAP="claweed:./cmd/claweed claweed-updater:./cmd/claweed-updater" ;;
+    clawee)   MAP="${CLIENT}:./cmd/clawee ${CLIENT_UPDATER}:./cmd/clawee-updater" ;;
+    claweed)  MAP="${DAEMON}:./cmd/claweed ${DAEMON_UPDATER}:./cmd/claweed-updater" ;;
     *)        echo "✗ unknown COMP: ${COMP}" >&2; exit 2 ;;
 esac
 
-LDFLAGS="-X main.version=${STAMP}"
+LDFLAGS="-X main.version=${STAMP} -X main.channel=${CHANNEL}"
 
 mkdir -p "${OUT_DIR}"
 HOST_OS="$(uname -s)"
@@ -77,7 +112,7 @@ for pair in ${MAP}; do
     bin="${pair%%:*}"
     pkg="${pair#*:}"
     out="${OUT_DIR}/${bin}"
-    echo "→ ${COMP}: ${bin}  (GOOS=${TARGETOS} GOARCH=${TARGETARCH}, version=${STAMP})"
+    echo "→ ${COMP}: ${bin}  (GOOS=${TARGETOS} GOARCH=${TARGETARCH}, channel=${CHANNEL}, version=${STAMP})"
     CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
         "${GO_BIN}" build -trimpath -ldflags "${LDFLAGS}" -o "${out}" "${pkg}"
     if [ "${TARGETOS}" = "darwin" ] && [ "${HOST_OS}" = "Darwin" ]; then

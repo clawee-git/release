@@ -15,6 +15,8 @@ import (
 	"github.com/burrowee-git/release-kit/sign"
 	"github.com/burrowee-git/release-kit/vulncheck"
 
+	"github.com/clawee-git/core/channel"
+
 	"github.com/clawee-git/release/internal/relconfig"
 )
 
@@ -290,7 +292,11 @@ func orchestrate(ctx context.Context, o Options) (*Result, error) {
 		return nil, err
 	}
 	// 3. Build component matrix.
-	bins, err := relconfig.Bins(o.Component, stamp)
+	// rkit has no --channel flag: it is the STABLE produce half. A beta cut
+	// goes through tools/release.sh --channel beta, which reads the same table.
+	// Spelling the channel here rather than defaulting it inside relconfig keeps
+	// the omission visible if rkit ever grows the flag.
+	bins, err := relconfig.Bins(o.Component, stamp, channel.Stable)
 	if err != nil {
 		return nil, err
 	}
