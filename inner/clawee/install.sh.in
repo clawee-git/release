@@ -1,17 +1,25 @@
 #!/bin/sh
-# Clawee inner installer — clawee (POSIX sh).
+# Clawee inner installer — the terminal client (POSIX sh).
+#
+# THIS IS A TEMPLATE, not a runnable script: @CLIENT@ and @CLIENT_UPDATER@ are
+# filled in at cut time from core/channel (release.sh's render_inner, via
+# ./cmd/channel-names), so the stable kit installs clawee/clawee-updater and the
+# beta kit installs claweeb/claweeb-updater from the same source. They are
+# placeholders and not a `case "$CHANNEL"` branch for the reason the daemon's
+# installer gives: a branch is a second copy of the name table written in shell,
+# and the drift announces itself as a beta kit overwriting a stable binary.
 #
 # Ships at the ROOT of the verified release zip as `install.sh`. The outer
 # bootstrap verifies the zip (minisign + sha256) and ONLY THEN execs this with
-# cwd = the unzipped dir, so the `clawee` binary sits alongside this script.
-# It installs clawee into PREFIX/bin (default $HOME/.local/bin), then ensures
+# cwd = the unzipped dir, so the `@CLIENT@` binary sits alongside this script.
+# It installs @CLIENT@ into PREFIX/bin (default $HOME/.local/bin), then ensures
 # the burrowee-cli transport dependency is present. Set CLAWEE_UNINSTALL to
-# remove clawee instead (the burrowee-cli dependency is left in place — it is
+# remove @CLIENT@ instead (the burrowee-cli dependency is left in place — it is
 # managed by burrowee's own channel).
 set -eu
 
 BIN_DIR="${PREFIX:-$HOME/.local}/bin"
-BINS="clawee clawee-updater"
+BINS="@CLIENT@ @CLIENT_UPDATER@"
 
 # version_of <cmd> [args…] — the first version-shaped token from that command's
 # `--version` output, or "" if it prints none / isn't installed.
@@ -36,13 +44,13 @@ version_of() {
         grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+[^[:space:]]*' | head -n1
 }
 
-# Update mode (set by `clawee update` via CLAWEE_UPDATE_MODE; the contract is
+# Update mode (set by `@CLIENT@ update` via CLAWEE_UPDATE_MODE; the contract is
 # cli/cmd/clawee-updater):
-#   dry   — print what would change (the clawee binary version), then STOP.
+#   dry   — print what would change (the @CLIENT@ binary version), then STOP.
 #   apply — print the plan, then PROMPT before installing (the updater default).
 #   auto  — install, unattended.
 #   force — reinstall even when the version already matches.
-# Empty = a fresh / direct install (no plan, no prompt). clawee is a client —
+# Empty = a fresh / direct install (no plan, no prompt). @CLIENT@ is a client —
 # no service to restart, so the plan is just the binary.
 UPDATE_MODE="${CLAWEE_UPDATE_MODE:-}"
 
@@ -55,8 +63,8 @@ fi
 # PLAN — what would change. Printed for any update mode. dry STOPS here; apply
 # PROMPTS before installing; auto/force proceed unattended.
 if [ -n "$UPDATE_MODE" ]; then
-    staged_ver="$(version_of ./clawee)"
-    installed_ver="$(version_of "$BIN_DIR/clawee")"
+    staged_ver="$(version_of ./@CLIENT@)"
+    installed_ver="$(version_of "$BIN_DIR/@CLIENT@")"
     [ -n "$installed_ver" ] || installed_ver="(none)"
     if [ "$UPDATE_MODE" = force ] || [ "$installed_ver" != "$staged_ver" ]; then
         bin_line="$installed_ver -> $staged_ver   REPLACE"
@@ -64,7 +72,7 @@ if [ -n "$UPDATE_MODE" ]; then
         bin_line="$staged_ver   unchanged"
     fi
     printf '\n  update plan (%s):\n' "$staged_ver"
-    printf '    clawee binary    %s\n' "$bin_line"
+    printf '    @CLIENT@ binary    %s\n' "$bin_line"
     printf '    restart          not required (cli)\n\n'
     if [ "$UPDATE_MODE" = dry ]; then
         echo "  → plan only (--dry) — nothing changed. apply with --auto."
@@ -90,10 +98,10 @@ for b in $BINS; do
         xattr -d com.apple.quarantine "$BIN_DIR/$b" 2>/dev/null || true
     fi
 done
-installed_version="$(version_of "$BIN_DIR/clawee")"
+installed_version="$(version_of "$BIN_DIR/@CLIENT@")"
 
 # =========================================================================
-# DEPENDENCY: burrowee-cli (the client transport clawee dials through)
+# DEPENDENCY: burrowee-cli (the client transport @CLIENT@ dials through)
 #   No sudo here — burrowee's own installer escalates as it needs to. Install
 #   when missing or older than the latest published; never downgrades. This is
 #   the ONE public cross-channel step.
@@ -104,11 +112,11 @@ installed_version="$(version_of "$BIN_DIR/clawee")"
 #   NOT minisign-verify the fetched bootstrap here: the burrowee bootstrap is its
 #   OWN minisign trust-anchor — it verifies the burrowee-cli payload it then
 #   downloads against burrowee's release key. Re-verifying here would only couple
-#   clawee to burrowee's signing keys. We fetch to a var and pipe so a
+#   @CLIENT@ to burrowee's signing keys. We fetch to a var and pipe so a
 #   truncated/failed fetch never partially executes.
 # =========================================================================
 # Sets DEP_LINE (the summary's burrowee-cli value). Never fails the install —
-# clawee is usable the moment it is on disk; a missing transport is reported,
+# @CLIENT@ is usable the moment it is on disk; a missing transport is reported,
 # not fatal.
 dep_burrowee_cli() {
     # Check FIRST, fetch only if needed. The bootstrap used to be downloaded
@@ -159,16 +167,16 @@ dep_burrowee_cli
 # glance, with the version first because that is the thing anyone is asked to
 # quote in a bug report.
 # =========================================================================
-printf '\n  clawee %s\n\n' "${installed_version:-(unknown — the installed binary did not run)}"
+printf '\n  @CLIENT@ %s\n\n' "${installed_version:-(unknown — the installed binary did not run)}"
 printf '  %-14s %s\n' "installed" "$BIN_DIR"
 printf '  %-14s %s\n' "binaries" "$(echo "$BINS" | sed 's/ /, /g')"
 printf '  %-14s %s\n' "burrowee-cli" "$DEP_LINE"
 
-# PATH is a genuine blocker (the operator's shell cannot find clawee), so it
+# PATH is a genuine blocker (the operator's shell cannot find @CLIENT@), so it
 # reads as an action inside the block rather than a note above it.
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
     *) printf '  %-14s %s\n' "PATH" "$BIN_DIR is NOT on PATH — add: export PATH=\"$BIN_DIR:\$PATH\"" ;;
 esac
 
-printf '\n  next: clawee status   (then: clawee)\n\n'
+printf '\n  next: @CLIENT@ status   (then: @CLIENT@)\n\n'

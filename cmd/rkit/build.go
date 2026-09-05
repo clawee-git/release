@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/burrowee-git/release-kit/build"
@@ -247,20 +248,40 @@ func notarizerFor(apple bool) (sign.Notarizer, bool) {
 	return sign.Notarizer{}, false
 }
 
-// renderInstall writes the component's install.sh into the stamp dir exactly as
-// release.sh's render_inner does: clawee copies inner/clawee/install.sh verbatim;
-// claweed sed-substitutes __CLAWEED_VERSION__ in the daemon's install.sh.in.
+// placeholderRe matches any @NAME@ or __NAME__ left in a rendered installer.
+var placeholderRe = regexp.MustCompile(`@[A-Z_]+@|__[A-Z_]+__`)
+
+// renderInstall writes the component's install.sh into the stamp dir, filling in
+// the channel names from core/channel the way release.sh's render_inner does.
+// rkit is the STABLE produce half, so channel.Stable is the whole story here.
+//
+// It then REFUSES a rendering that still carries a placeholder. Both templates
+// live outside this file's control — clawee's is half-owned here and claweed's
+// belongs to the daemon repo — so the set of names to fill can grow without
+// this code hearing about it, and the failure mode is silent: an installer that
+// ships "@SYSTEMD_UNIT@" writes a unit file called that. The claweed branch is
+// where this bites today, and the guard says so rather than shipping it: the
+// daemon's install.sh.in now carries six channel placeholders and a
+// __GATEWAY_FLOOR__ that this path does not fill (and RUN_DIR is per-target,
+// which a once-per-component render cannot express at all). Cut the daemon
+// through tools/release.sh, which renders inside the per-target loop.
 func renderInstall(comp, stamp, srcDir, repoDir, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
+	n := channel.For(channel.Stable)
 	switch comp {
 	case "clawee":
-		data, err := os.ReadFile(filepath.Join(repoDir, "inner", "clawee", "install.sh"))
+		data, err := os.ReadFile(filepath.Join(repoDir, "inner", "clawee", "install.sh.in"))
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(dst, data, 0o755)
+		out := strings.ReplaceAll(string(data), "@CLIENT@", n.Client)
+		out = strings.ReplaceAll(out, "@CLIENT_UPDATER@", n.ClientUpdater)
+		if m := placeholderRe.FindString(out); m != "" {
+			return fmt.Errorf("the rendered clawee installer still carries %s", m)
+		}
+		return os.WriteFile(dst, []byte(out), 0o755)
 	case "claweed":
 		in := filepath.Join(srcDir, "install", "install.sh.in")
 		data, err := os.ReadFile(in)
@@ -268,6 +289,12 @@ func renderInstall(comp, stamp, srcDir, repoDir, dst string) error {
 			return fmt.Errorf("claweed installer template %s: %w", in, err)
 		}
 		out := strings.ReplaceAll(string(data), "__CLAWEED_VERSION__", stamp)
+		if m := placeholderRe.FindString(out); m != "" {
+			return fmt.Errorf("the rendered claweed installer still carries %s — "+
+				"this path fills only the version stamp; cut claweed through "+
+				"tools/release.sh, which renders the channel names and the gateway "+
+				"floor per target", m)
+		}
 		return os.WriteFile(dst, []byte(out), 0o755)
 	}
 	return fmt.Errorf("renderInstall: unknown component %q", comp)

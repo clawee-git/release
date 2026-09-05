@@ -48,7 +48,9 @@ func TestOrchestrateBuildsMatrixIntoScratch(t *testing.T) {
 	}
 	wantEntries := []string{"clawee", "clawee-updater", "install.sh"}
 	sort.Strings(wantEntries)
-	wantInstallSh, err := os.ReadFile(filepath.Join(repo, "inner", "clawee", "install.sh"))
+	// The zip ships the RENDERED installer, not the template: the fixture's
+	// @CLIENT@/@CLIENT_UPDATER@ come back as the stable names.
+	wantInstallSh := []byte("#!/bin/sh\nBINS=\"clawee clawee-updater\"\necho fixture-install\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +73,7 @@ func TestOrchestrateBuildsMatrixIntoScratch(t *testing.T) {
 					t.Fatalf("read install.sh in %s: %v", zp, err)
 				}
 				if string(data) != string(wantInstallSh) {
-					t.Errorf("%s install.sh not byte-identical to inner/clawee/install.sh", zp)
+					t.Errorf("%s install.sh = %q, want the rendered %q", zp, data, wantInstallSh)
 				}
 			}
 		}
@@ -113,7 +115,7 @@ func writeFixtureModule(t *testing.T, repo string) {
 	write("cmd/clawee/main.go", mainSrc)
 	write("cmd/clawee-updater/main.go", mainSrc)
 	write("versions/clawee", "0.1.0\n")
-	write("inner/clawee/install.sh", "#!/bin/sh\necho fixture-install\n")
+	write("inner/clawee/install.sh.in", "#!/bin/sh\nBINS=\"@CLIENT@ @CLIENT_UPDATER@\"\necho fixture-install\n")
 
 	// tools/verify-no-env.sh and tools/version.sh both resolve REPO_ROOT from
 	// their own script location (dirname $0), so a verbatim copy works inside
@@ -452,14 +454,15 @@ func TestSrcDirFor(t *testing.T) {
 }
 
 // TestRenderInstall covers both components' install.sh rendering directly
-// (no compile): clawee is a byte-verbatim copy of inner/clawee/install.sh;
+// (no compile): clawee fills the channel names into inner/clawee/install.sh.in;
 // claweed sed-substitutes __CLAWEED_VERSION__ in the daemon source's
 // install/install.sh.in — `strings.ReplaceAll` on a fixed literal token
 // produces byte-identical output to `sed s/…/…/g`.
 func TestRenderInstall(t *testing.T) {
-	t.Run("clawee verbatim copy", func(t *testing.T) {
+	t.Run("clawee fills the stable names", func(t *testing.T) {
 		repoDir := t.TempDir()
-		mustWriteFile(t, filepath.Join(repoDir, "inner", "clawee", "install.sh"), "#!/bin/sh\necho hi\n")
+		mustWriteFile(t, filepath.Join(repoDir, "inner", "clawee", "install.sh.in"),
+			"#!/bin/sh\nBINS=\"@CLIENT@ @CLIENT_UPDATER@\"\n")
 		dst := filepath.Join(t.TempDir(), "out", "install.sh")
 		if err := renderInstall("clawee", "v0.1.0.x", "/unused/src", repoDir, dst); err != nil {
 			t.Fatal(err)
@@ -468,12 +471,10 @@ func TestRenderInstall(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want, err := os.ReadFile(filepath.Join(repoDir, "inner", "clawee", "install.sh"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(got) != string(want) {
-			t.Fatalf("clawee install.sh = %q, want verbatim %q", got, want)
+		// rkit is the stable produce half — it has no --channel flag, and the
+		// beta twin is cut through tools/release.sh.
+		if want := "#!/bin/sh\nBINS=\"clawee clawee-updater\"\n"; string(got) != want {
+			t.Fatalf("clawee install.sh = %q, want %q", got, want)
 		}
 		fi, err := os.Stat(dst)
 		if err != nil {
@@ -481,6 +482,26 @@ func TestRenderInstall(t *testing.T) {
 		}
 		if fi.Mode().Perm() != 0o755 {
 			t.Fatalf("mode = %v, want 0755", fi.Mode().Perm())
+		}
+	})
+
+	// A template that grew a name this path does not fill must FAIL the build,
+	// not ship. An installer carrying "@SYSTEMD_UNIT@" writes a unit called
+	// that; one carrying "@CLIENT@" installs a binary nobody can run.
+	t.Run("an unfilled placeholder is fatal", func(t *testing.T) {
+		repoDir := t.TempDir()
+		mustWriteFile(t, filepath.Join(repoDir, "inner", "clawee", "install.sh.in"),
+			"#!/bin/sh\nBINS=\"@CLIENT@\"\nROOT=\"@SYSTEM_BIN@\"\n")
+		dst := filepath.Join(t.TempDir(), "out", "install.sh")
+		err := renderInstall("clawee", "v0.1.0.x", "/unused/src", repoDir, dst)
+		if err == nil {
+			t.Fatal("renderInstall accepted a template it could not fully render")
+		}
+		if !strings.Contains(err.Error(), "@SYSTEM_BIN@") {
+			t.Fatalf("error = %v, want it to name the unfilled placeholder", err)
+		}
+		if _, statErr := os.Stat(dst); statErr == nil {
+			t.Fatal("a refused rendering still wrote install.sh")
 		}
 	})
 

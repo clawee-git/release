@@ -169,6 +169,27 @@ run_cut() {
         bash "${RELEASE_SH}" --distribute-only clawee "${STAMP}" "$@" --dry-run 2>&1 )
 }
 
+# A beta cut needs an OPEN CYCLE. The permanent `beta` branch says nothing
+# about whether one is open; versions/<comp>.beta.stamp is what does (beta.md
+# §3), so a beta cut without it must refuse rather than invent a line.
+BETA_STAMP_FILE="${REPO_ROOT}/versions/clawee.beta.stamp"
+[ -e "${BETA_STAMP_FILE}" ] && die "refusing to overwrite an existing ${BETA_STAMP_FILE}"
+set +e
+out="$(run_cut)"; rc=$?
+set -e
+[ "${rc}" -ne 0 ] || die "a beta cut with no open cycle succeeded:
+${out}"
+echo "${out}" | grep -q -- '--seed-beta' \
+    || die "the closed-cycle refusal does not name the operator's way in:
+${out}"
+printf '  ✓ a beta cut with no open cycle is refused
+'
+
+# Open one for the rest of PART C, and take it away again afterwards — this
+# writes into the real checkout, so the trap has to reclaim it even on a die.
+printf '0.3.0\n' > "${BETA_STAMP_FILE}"
+trap 'rm -rf "${WORK}" "${STAGE}"; rm -f "${BETA_STAMP_FILE}"' EXIT
+
 out="$(run_cut)" || die "a beta-branch dry-run failed: ${out}"
 echo "${out}" | grep -q "clawee/beta/${STAMP}/" \
     || die "a cut from a beta branch did not default to the beta channel:\n${out}"
@@ -189,6 +210,13 @@ set -e
 echo "${out}" | grep -q '"channel": "beta"' \
     || die "explicit --channel beta did not reach the payload:\n${out}"
 printf '  ✓ explicit --channel beta is honoured\n'
+
+# The beta cut reads the BETA line, not the stable one. Reading versions/clawee
+# for a beta re-stage would file the row under the beta channel carrying the
+# stable line's semver — a row nobody could match to a build.
+echo "${out}" | grep -q '"version": "0.3.0"' \
+    || die "the beta payload does not carry the beta line's semver (0.3.0):\n${out}"
+printf '  ✓ the beta cut reads versions/clawee.beta.stamp\n'
 
 set +e
 out="$(run_cut --channel nonsense)"; rc=$?
