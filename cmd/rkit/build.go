@@ -101,7 +101,7 @@ func runBuild(args []string) error {
 		o.Bump = "major"
 	}
 	if o.SrcDir == "" {
-		o.SrcDir = srcDirFor(o.Component)
+		o.SrcDir = srcDirFor(o.RepoDir, o.Component)
 	}
 	if o.Apple {
 		// Fatal, not advisory: an unresolved account means the Developer-ID path
@@ -116,20 +116,25 @@ func runBuild(args []string) error {
 
 // srcDirFor resolves a component's source worktree exactly like
 // tools/release.sh: SRC_CLAWEE=${CLAWEE_SRC_CLAWEE:-<default>},
-// SRC_CLAWEED=${CLAWEE_SRC_CLAWEED:-<default>}. Shared with the harness
-// (Task 6) so both build a real component with the same resolution rule.
-func srcDirFor(comp string) string {
+// SRC_CLAWEED=${CLAWEE_SRC_CLAWEED:-<default>}, where the default is the
+// component's main worktree under the brand root — the release repo's own
+// location, <brand>/release/code/<worktree>, walked up three levels, or
+// CLAWEE_BRAND_ROOT. Never an absolute literal: the volume one machine mounts
+// its coding root on is not another's. Shared with the harness (Task 6) so
+// both build a real component with the same resolution rule.
+func srcDirFor(repoDir, comp string) string {
 	env := func(key, def string) string {
 		if v := os.Getenv(key); v != "" {
 			return v
 		}
 		return def
 	}
+	brand := env("CLAWEE_BRAND_ROOT", filepath.Join(repoDir, "..", "..", ".."))
 	switch comp {
 	case "clawee":
-		return env("CLAWEE_SRC_CLAWEE", "/Volumes/MacintoshED/Workstation/Coding/Clawee/cli/code/main")
+		return env("CLAWEE_SRC_CLAWEE", filepath.Join(brand, "cli", "code", "main"))
 	case "claweed":
-		return env("CLAWEE_SRC_CLAWEED", "/Volumes/MacintoshED/Workstation/Coding/Clawee/daemon/code/main")
+		return env("CLAWEE_SRC_CLAWEED", filepath.Join(brand, "daemon", "code", "main"))
 	}
 	return ""
 }

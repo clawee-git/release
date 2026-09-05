@@ -286,7 +286,12 @@ toml_get() {
 
 # component source worktrees (default: each component's MAIN worktree).
 # clawee builds from the cli repo (cmd/clawee); claweed from the daemon repo.
-CC="/Volumes/MacintoshED/Workstation/Coding/Clawee"
+# The brand root is derived from where THIS repo sits — <brand>/release/code/
+# <worktree> — the same way DP_DIR finds release.dp, never spelled absolute:
+# the volume path one machine mounts its coding root on is not another's
+# (a cut from a second workstation failed on the old literal). Override with
+# CLAWEE_BRAND_ROOT when the release repo is checked out elsewhere.
+CC="${CLAWEE_BRAND_ROOT:-$(cd "${REPO_ROOT}/../../.." && pwd)}"
 SRC_CLAWEE="${CLAWEE_SRC_CLAWEE:-${CC}/cli/code/main}"
 SRC_CLAWEED="${CLAWEE_SRC_CLAWEED:-${CC}/daemon/code/main}"
 
