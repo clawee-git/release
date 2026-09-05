@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"os"
 	"os/user"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/clawee-git/release/internal/manage/auth"
 	"github.com/clawee-git/release/internal/manage/store"
+	_ "modernc.org/sqlite" // the fixture below edits the ledger directly
 )
 
 // dataDirWithKey is a host that has been provisioned but has no stores wired
@@ -163,5 +165,58 @@ func TestDoctorNamesTheAccountItComparedAgainst(t *testing.T) {
 	stdout, _, _ = exec(t, "doctor", "--data-dir", dir, "--user", "no-such-account-here")
 	if !strings.Contains(stdout, "NOT the service account") {
 		t.Errorf("an unresolvable --user is not disclosed:\n%s", stdout)
+	}
+}
+
+// The behind-the-ledger case, over the REAL read-only opener rather than a
+// fake, because that is the case the migrating opener made unobservable: Open
+// applied the missing rung on its way past, so the check could only ever see a
+// current ledger and its "behind" branch was dead code through real wiring.
+//
+// A rung is removed from the LEDGER rather than the schema, which is the
+// honest shape: what the check reads is the ledger, and a host that ran an
+// older binary has exactly this — fewer recorded rungs than the binary carries.
+func TestDoctorReportsALedgerBehindTheBinaryAndDoesNotMigrateIt(t *testing.T) {
+	dir := dataDirWithKey(t)
+	path := filepath.Join(dir, store.DBFile)
+
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM migrations WHERE version = (SELECT MAX(version) FROM migrations)`); err != nil {
+		t.Fatal(err)
+	}
+	var before int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM migrations`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if before != store.LatestMigration()-1 {
+		t.Fatalf("the fixture has %d rungs, want %d — it is not one behind", before, store.LatestMigration()-1)
+	}
+
+	stdout, _, code := exec(t, "doctor", "--data-dir", dir, "--user", currentUserName(t))
+	if code != 1 {
+		t.Fatalf("doctor exited %d for a catalog one rung behind, want 1:\n%s", code, stdout)
+	}
+	if !strings.Contains(stdout, "has not run") {
+		t.Errorf("the report does not say the catalog is behind the binary:\n%s", stdout)
+	}
+
+	// And it REPORTED the state rather than repairing it: a doctor that
+	// migrates what it inspects turns a read into a deployment change, and the
+	// operator never learns the host was behind.
+	ro, err := store.OpenReadOnly(dir)
+	if err != nil {
+		t.Fatalf("re-open read-only: %v", err)
+	}
+	defer ro.Close()
+	after, err := ro.AppliedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != before {
+		t.Errorf("doctor changed the ledger: %d rungs before, %d after", before, len(after))
 	}
 }
