@@ -1,0 +1,370 @@
+package store
+
+import (
+	"errors"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/clawee-git/release/internal/manage/catalog"
+)
+
+// base is the fixed instant every test counts from. The store is clock-free,
+// so nothing here sleeps or reads the wall clock.
+var base = time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+
+func open(t *testing.T) *Store {
+	t.Helper()
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
+// stamp renders a stamp of the right shape for a channel. Tests that vary the
+// stamp still have to satisfy StampMatchesChannel, which is the point.
+func stamp(channel string, n int) string {
+	sha := fmt.Sprintf("%08x", n)
+	if channel == catalog.ChannelBeta {
+		return fmt.Sprintf("v0.3.%d.beta.2026.09.04.%s", n, sha)
+	}
+	return fmt.Sprintf("v0.2.%d.2026.09.04.%s", n, sha)
+}
+
+func stage(t *testing.T, s *Store, comp, channel string, n int, at time.Time) int64 {
+	t.Helper()
+	id, err := s.Stage(ReleaseVersion{
+		Component:     comp,
+		Channel:       channel,
+		Version:       fmt.Sprintf("0.2.%d", n),
+		Stamp:         stamp(channel, n),
+		ArtifactsJSON: `[{"platform":"darwin/arm64","key":"k","sha256":"s","size":1}]`,
+		SumsKey:       "k/SHA256SUMS.txt",
+		MinisigKey:    "k/SHA256SUMS.txt.minisig",
+		CreatedAt:     at,
+	})
+	if err != nil {
+		t.Fatalf("Stage(%s %s #%d): %v", comp, channel, n, err)
+	}
+	return id
+}
+
+func TestOpenIsIdempotentAndLedgersMigrations(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	applied, err := s.AppliedMigrations()
+	if err != nil {
+		t.Fatalf("AppliedMigrations: %v", err)
+	}
+	if len(applied) != len(migrations) {
+		t.Fatalf("ledger has %d rungs, want %d", len(applied), len(migrations))
+	}
+	s.Close()
+
+	// Re-opening must not re-run a rung: the CREATE TABLEs are not IF NOT
+	// EXISTS, so a re-run would fail loudly rather than silently double-apply.
+	s2, err := Open(dir)
+	if err != nil {
+		t.Fatalf("re-Open: %v", err)
+	}
+	defer s2.Close()
+	applied2, _ := s2.AppliedMigrations()
+	if len(applied2) != len(applied) {
+		t.Fatalf("re-open changed the ledger: %v -> %v", applied, applied2)
+	}
+}
+
+func TestStageRejectsVocabularyAndMismatchedStamp(t *testing.T) {
+	s := open(t)
+	good := ReleaseVersion{
+		Component: catalog.ComponentCLI, Channel: catalog.ChannelStable,
+		Version: "0.2.1", Stamp: stamp(catalog.ChannelStable, 1),
+		ArtifactsJSON: "[]", CreatedAt: base,
+	}
+
+	bad := good
+	bad.Component = "clawee-cli"
+	if _, err := s.Stage(bad); !errors.Is(err, ErrBadValue) {
+		t.Fatalf("unknown component: err = %v, want ErrBadValue", err)
+	}
+	bad = good
+	bad.Channel = "nightly"
+	if _, err := s.Stage(bad); !errors.Is(err, ErrBadValue) {
+		t.Fatalf("unknown channel: err = %v, want ErrBadValue", err)
+	}
+	// A beta stamp claiming the stable channel is the dangerous one: retention
+	// and every installer read the channel, so it would be a beta build served
+	// to every stable host.
+	bad = good
+	bad.Stamp = stamp(catalog.ChannelBeta, 1)
+	if _, err := s.Stage(bad); !errors.Is(err, ErrBadValue) {
+		t.Fatalf("beta stamp on stable: err = %v, want ErrBadValue", err)
+	}
+	if _, err := s.Stage(good); err != nil {
+		t.Fatalf("Stage(good): %v", err)
+	}
+}
+
+func TestStageRefusesDuplicateStamp(t *testing.T) {
+	s := open(t)
+	stage(t, s, catalog.ComponentCLI, catalog.ChannelStable, 1, base)
+	_, err := s.Stage(ReleaseVersion{
+		Component: catalog.ComponentCLI, Channel: catalog.ChannelStable,
+		Version: "0.2.1", Stamp: stamp(catalog.ChannelStable, 1),
+		ArtifactsJSON: "[]", CreatedAt: base.Add(time.Hour),
+	})
+	if !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("duplicate stamp: err = %v, want ErrAlreadyExists", err)
+	}
+	// The same stamp on the OTHER channel is a different row: the uniqueness
+	// is per (component, channel, stamp), and a stamp shape belongs to exactly
+	// one channel anyway.
+	if _, err := s.Stage(ReleaseVersion{
+		Component: catalog.ComponentDaemon, Channel: catalog.ChannelStable,
+		Version: "0.2.1", Stamp: stamp(catalog.ChannelStable, 1),
+		ArtifactsJSON: "[]", CreatedAt: base,
+	}); err != nil {
+		t.Fatalf("same stamp, other component: %v", err)
+	}
+}
+
+func TestPromoteMovesCurrentAndRefusesNonStaged(t *testing.T) {
+	s := open(t)
+	first := stage(t, s, catalog.ComponentCLI, catalog.ChannelStable, 1, base)
+	second := stage(t, s, catalog.ComponentCLI, catalog.ChannelStable, 2, base.Add(time.Hour))
+
+	if err := s.Promote(first, base.Add(time.Minute)); err != nil {
+		t.Fatalf("Promote(first): %v", err)
+	}
+	cur, err := s.CurrentPublic(catalog.ComponentCLI, catalog.ChannelStable)
+	if err != nil || cur.ID != first {
+		t.Fatalf("CurrentPublic after first promote = %v, %v", cur, err)
+	}
+	if cur.PromotedAt.IsZero() {
+		t.Fatal("promoted_at not set")
+	}
+
+	if err := s.Promote(second, base.Add(2*time.Hour)); err != nil {
+		t.Fatalf("Promote(second): %v", err)
+	}
+	cur, err = s.CurrentPublic(catalog.ComponentCLI, catalog.ChannelStable)
+	if err != nil || cur.ID != second {
+		t.Fatalf("CurrentPublic after second promote = %v, %v", cur, err)
+	}
+	prev, _ := s.Get(first)
+	if prev.State != catalog.StatePublic || prev.IsCurrent {
+		t.Fatalf("previous current row = state %q is_current %v, want public/false", prev.State, prev.IsCurrent)
+	}
+
+	// A second promote of a row that is already public is a caller that lost
+	// track of the state, not a re-point.
+	if err := s.Promote(second, base); !errors.Is(err, ErrBadState) {
+		t.Fatalf("re-promote: err = %v, want ErrBadState", err)
+	}
+	if err := s.Promote(9999, base); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("promote missing row: err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestPromoteIsPerChannel(t *testing.T) {
+	s := open(t)
+	st := stage(t, s, catalog.ComponentCLI, catalog.ChannelStable, 1, base)
+	be := stage(t, s, catalog.ComponentCLI, catalog.ChannelBeta, 1, base)
+	if err := s.Promote(st, base); err != nil {
+		t.Fatalf("promote stable: %v", err)
+	}
+	// Promoting on beta must not clear the stable current row — the partial
+	// unique index is per (component, channel), and so is the manifest.
+	if err := s.Promote(be, base); err != nil {
+		t.Fatalf("promote beta: %v", err)
+	}
+	if cur, err := s.CurrentPublic(catalog.ComponentCLI, catalog.ChannelStable); err != nil || cur.ID != st {
+		t.Fatalf("stable current lost when beta promoted: %v, %v", cur, err)
+	}
+	if cur, err := s.CurrentPublic(catalog.ComponentCLI, catalog.ChannelBeta); err != nil || cur.ID != be {
+		t.Fatalf("beta current = %v, %v", cur, err)
+	}
+}
+
+func TestYankClearsCurrentAndNamesSuccessor(t *testing.T) {
+	s := open(t)
+	old := stage(t, s, catalog.ComponentCLI, catalog.ChannelStable, 1, base)
+	newer := stage(t, s, catalog.ComponentCLI, catalog.ChannelStable, 2, base.Add(time.Hour))
+	if err := s.Promote(old, base); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Promote(newer, base.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	successor, err := s.Yank(newer, base.Add(2*time.Hour))
+	if err != nil {
+		t.Fatalf("Yank: %v", err)
+	}
+	if successor == nil || successor.ID != old {
+		t.Fatalf("successor = %v, want row %d", successor, old)
+	}
+	row, _ := s.Get(newer)
+	if row.State != catalog.StateYanked || row.IsCurrent || row.YankedAt.IsZero() {
+		t.Fatalf("yanked row = %+v", row)
+	}
+	if _, err := s.CurrentPublic(catalog.ComponentCLI, catalog.ChannelStable); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("current after yank: err = %v, want ErrNotFound (the caller re-points, the store does not)", err)
+	}
+
+	// Yanking the last remaining public row reports no successor, which is the
+	// caller's signal to REMOVE the manifest entry rather than re-point it.
+	successor, err = s.Yank(old, base.Add(3*time.Hour))
+	if err != nil {
+		t.Fatalf("Yank(old): %v", err)
+	}
+	if successor != nil {
+		t.Fatalf("successor = %+v, want none", successor)
+	}
+	if _, err := s.Yank(old, base); !errors.Is(err, ErrBadState) {
+		t.Fatalf("double yank: err = %v, want ErrBadState", err)
+	}
+}
+
+func TestExpireOldVersionsKeepsWindowCurrentAndStaged(t *testing.T) {
+	s := open(t)
+	// Twelve stable rows, promoted oldest first, so the NEWEST ends current.
+	var ids []int64
+	for i := 1; i <= 12; i++ {
+		id := stage(t, s, catalog.ComponentCLI, catalog.ChannelStable, i, base.Add(time.Duration(i)*time.Hour))
+		ids = append(ids, id)
+	}
+	for i, id := range ids {
+		if err := s.Promote(id, base.Add(time.Duration(i+1)*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Everything is public and row 12 is current.
+	expired, err := s.ExpireOldVersions(catalog.ComponentCLI, catalog.ChannelStable, 10, base.Add(99*time.Hour))
+	if err != nil {
+		t.Fatalf("ExpireOldVersions: %v", err)
+	}
+	// 12 rows: one is current (not counted, never expired), 10 kept, 1 expired.
+	if len(expired) != 1 || expired[0].ID != ids[0] {
+		t.Fatalf("expired = %v, want exactly the oldest row %d", expired, ids[0])
+	}
+	if row, _ := s.Get(ids[0]); row.State != catalog.StateExpired {
+		t.Fatalf("oldest row state = %q", row.State)
+	}
+	if row, _ := s.Get(ids[11]); row.State != catalog.StatePublic || !row.IsCurrent {
+		t.Fatalf("current row was touched: %+v", row)
+	}
+
+	// A staged row is never expired and never counts toward the window.
+	staged := stage(t, s, catalog.ComponentCLI, catalog.ChannelStable, 20, base.Add(200*time.Hour))
+	if _, err := s.ExpireOldVersions(catalog.ComponentCLI, catalog.ChannelStable, 10, base.Add(300*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if row, _ := s.Get(staged); row.State != catalog.StateStaged {
+		t.Fatalf("staged row expired: %+v", row)
+	}
+}
+
+func TestExpireOldVersionsIsPerChannel(t *testing.T) {
+	s := open(t)
+	// Three beta rows and three stable rows. Retention of beta at keep=1 must
+	// not look at, or be crowded by, the stable rows.
+	var beta []int64
+	for i := 1; i <= 3; i++ {
+		beta = append(beta, stage(t, s, catalog.ComponentCLI, catalog.ChannelBeta, i, base.Add(time.Duration(i)*time.Hour)))
+		id := stage(t, s, catalog.ComponentCLI, catalog.ChannelStable, i, base.Add(time.Duration(i)*time.Hour))
+		if err := s.Promote(id, base); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, id := range beta {
+		if err := s.Promote(id, base.Add(time.Duration(i)*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	expired, err := s.ExpireOldVersions(catalog.ComponentCLI, catalog.ChannelBeta, 1, base.Add(99*time.Hour))
+	if err != nil {
+		t.Fatalf("ExpireOldVersions(beta): %v", err)
+	}
+	// beta[2] is current (not counted), beta[1] is the one kept, beta[0] goes.
+	if len(expired) != 1 || expired[0].ID != beta[0] {
+		t.Fatalf("beta retention expired %v, want only %d", expired, beta[0])
+	}
+	for _, id := range []int64{beta[1], beta[2]} {
+		if row, _ := s.Get(id); row.State != catalog.StatePublic {
+			t.Fatalf("beta row %d = %q, want public", id, row.State)
+		}
+	}
+	// Not one stable row moved.
+	rows, _ := s.ListByComponent(catalog.ComponentCLI, catalog.ChannelStable)
+	for _, r := range rows {
+		if r.State == catalog.StateExpired {
+			t.Fatalf("beta retention expired a stable row: %+v", r)
+		}
+	}
+}
+
+func TestExpireOldVersionsRejectsBadInput(t *testing.T) {
+	s := open(t)
+	if _, err := s.ExpireOldVersions("nope", catalog.ChannelStable, 10, base); !errors.Is(err, ErrBadValue) {
+		t.Fatalf("err = %v, want ErrBadValue", err)
+	}
+	if _, err := s.ExpireOldVersions(catalog.ComponentCLI, catalog.ChannelStable, 0, base); err == nil {
+		t.Fatal("keep=0 accepted — it would expire every non-current row")
+	}
+}
+
+func TestUnpromotedIsTheNewestStagedRow(t *testing.T) {
+	s := open(t)
+	if _, err := s.Unpromoted(catalog.ComponentCLI, catalog.ChannelStable); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("empty catalog: err = %v, want ErrNotFound", err)
+	}
+	stage(t, s, catalog.ComponentCLI, catalog.ChannelStable, 1, base)
+	newest := stage(t, s, catalog.ComponentCLI, catalog.ChannelStable, 2, base.Add(time.Hour))
+	got, err := s.Unpromoted(catalog.ComponentCLI, catalog.ChannelStable)
+	if err != nil || got.ID != newest {
+		t.Fatalf("Unpromoted = %v, %v; want row %d", got, err, newest)
+	}
+	// Once promoted it is no longer unpromoted.
+	if err := s.Promote(newest, base.Add(2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.Unpromoted(catalog.ComponentCLI, catalog.ChannelStable)
+	if err != nil || got.ID == newest {
+		t.Fatalf("Unpromoted after promote = %v, %v", got, err)
+	}
+}
+
+func TestListByComponentIsNewestFirstAllStates(t *testing.T) {
+	s := open(t)
+	a := stage(t, s, catalog.ComponentCLI, catalog.ChannelStable, 1, base)
+	b := stage(t, s, catalog.ComponentCLI, catalog.ChannelStable, 2, base.Add(time.Hour))
+	stage(t, s, catalog.ComponentDaemon, catalog.ChannelStable, 3, base.Add(2*time.Hour))
+	stage(t, s, catalog.ComponentCLI, catalog.ChannelBeta, 4, base.Add(3*time.Hour))
+	if err := s.Promote(a, base); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := s.ListByComponent(catalog.ComponentCLI, catalog.ChannelStable)
+	if err != nil {
+		t.Fatalf("ListByComponent: %v", err)
+	}
+	if len(rows) != 2 || rows[0].ID != b || rows[1].ID != a {
+		t.Fatalf("rows = %v, want [%d %d] newest first", rows, b, a)
+	}
+	if rows[1].State != catalog.StatePublic {
+		t.Fatalf("history dropped state: %+v", rows[1])
+	}
+}
+
+func TestGetMissing(t *testing.T) {
+	s := open(t)
+	if _, err := s.Get(1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
