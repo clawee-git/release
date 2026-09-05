@@ -399,13 +399,44 @@ else
     # answers "what was published", the manifest answers "what should be
     # installed", and only the second is a decision anyone made.
     #
-    # GitHub is now the FALLBACK for exactly one situation — the manifest host
-    # is unreachable — and the third-party mirrors after it, unchanged.
-    if [ -n "$DOWNLOADS_BASE" ]; then
+    # GitHub is the FALLBACK for exactly one situation — the manifest host is
+    # unreachable — and the third-party mirrors after it, unchanged.
+    #
+    # MANIFEST_FALLBACK is what gates steps 2 and 3, and the distinction it
+    # draws is the whole correctness of this block: "the manifest host did not
+    # answer" is a reason to look elsewhere, "the manifest says this channel
+    # serves nothing" is an ANSWER. Discarding curl's status collapsed the two
+    # — a 404 fell through to the tag list exactly like a dead host — and the
+    # tag list records everything ever published, YANKED BUILDS INCLUDED. Yank
+    # removes the manifest entry when no public row remains, and deliberately
+    # leaves the GitHub release in place, so the collapsed case reinstalled the
+    # build that had just been withdrawn; a beta twin reinstalled the previous
+    # cycle's beta after the cycle closed.
+    MANIFEST_FALLBACK=""
+    if [ -z "$DOWNLOADS_BASE" ]; then
+        # No manifest is configured at all, so there is nothing that could have
+        # answered and the tag list is all there is.
+        MANIFEST_FALLBACK=1
+    else
         _mf="$DOWNLOADS_BASE/$(manifest_path)"
         info "reading the ${CHANNEL} manifest: $_mf"
+        _rc=0
         # shellcheck disable=SC2086  # intentional word-split of $CURL flags
-        lj="$($CURL "$_mf" 2>/dev/null)" || true
+        lj="$($CURL "$_mf" 2>/dev/null)" || _rc=$?
+        case "$_rc" in
+            0) ;;
+            # The connection-class exits, and ONLY these, mean "the host did
+            # not answer": 5/6 could not resolve, 7 could not connect, 28 timed
+            # out, 35 TLS handshake, 52 empty reply, 56 receive failure. Every
+            # other status — 22 above all, which under curl -f is any HTTP 4xx
+            # or 5xx — means the host DID answer, and what it answered is that
+            # this channel is serving nothing.
+            5|6|7|28|35|52|56)
+                info "the manifest host did not answer (curl $_rc) — falling back"
+                MANIFEST_FALLBACK=1 ;;
+            *)
+                info "the ${CHANNEL} manifest is not there (curl $_rc): this channel is serving nothing" ;;
+        esac
         st="$(printf '%s' "$lj" | latest_stamp)" || true
         # Require a real v… stamp, and require it to BELONG to this channel:
         # a stable stamp in the beta manifest (or the reverse) is a publisher
@@ -422,7 +453,8 @@ else
         esac
     fi
     # ---- 2. THE GITHUB TAG LIST, only when the manifest host did not answer --
-    if [ -z "$TAG" ] && { [ -z "$DL_BASE" ] || [ -n "${CLAWEE_GH_API_BASE:-}" ]; }; then
+    if [ -z "$TAG" ] && [ -n "$MANIFEST_FALLBACK" ] \
+        && { [ -z "$DL_BASE" ] || [ -n "${CLAWEE_GH_API_BASE:-}" ]; }; then
         info "manifest unavailable — falling back to the ${REPO} release list"
         api="${GH_API_BASE}/repos/${REPO}/releases?per_page=100"
         # shellcheck disable=SC2086  # $CURL is an intentional space-split command string (flags + binary); POSIX sh has no arrays.
@@ -433,7 +465,7 @@ else
     # These only decide the tag when the manifest AND GitHub are both
     # unreachable; the bytes they serve are minisign + sha256 verified either
     # way. Skipped under the DL_BASE test hook and when mirrors are disabled.
-    if [ -z "$TAG" ] && [ -z "$TEST_HOOKS" ] && [ -n "$GH_PROXIES" ]; then
+    if [ -z "$TAG" ] && [ -n "$MANIFEST_FALLBACK" ] && [ -z "$TEST_HOOKS" ] && [ -n "$GH_PROXIES" ]; then
         api="${GH_API_BASE}/repos/${REPO}/releases?per_page=100"
         for _proxy in $GH_PROXIES; do
             info "manifest + GitHub API unreachable — retrying via mirror $_proxy"
@@ -443,7 +475,10 @@ else
             if [ -n "$TAG" ]; then info "mirror resolved: $TAG"; break; fi
         done
     fi
-    [ -n "$TAG" ] || fail "nothing is published for ${COMP} on the ${CHANNEL} channel: the manifest (${DOWNLOADS_BASE:-disabled}/$(manifest_path)), the ${REPO} release list and the gh-proxy mirrors [${GH_PROXIES:-disabled}] all named no ${CHANNEL} release. A ${CHANNEL} channel with no current release is the expected state when no ${CHANNEL} cycle is open."
+    if [ -z "$TAG" ] && [ -n "$MANIFEST_FALLBACK" ]; then
+        fail "nothing is published for ${COMP} on the ${CHANNEL} channel: the manifest host did not answer (${DOWNLOADS_BASE:-disabled}), and neither the ${REPO} release list nor the gh-proxy mirrors [${GH_PROXIES:-disabled}] named a ${CHANNEL} release."
+    fi
+    [ -n "$TAG" ] || fail "nothing is published for ${COMP} on the ${CHANNEL} channel: ${DOWNLOADS_BASE}/$(manifest_path) names no release. That is the expected state when a ${CHANNEL} cycle is closed, or when the only build this channel had was YANKED. The ${REPO} release list is deliberately NOT consulted here: it records every tag ever published, withdrawn builds included, so falling back to it would reinstall exactly what was just taken down."
     info "latest: $TAG"
 fi
 

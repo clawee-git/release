@@ -55,7 +55,8 @@ cat > "${W}/srv/clawee/latest.json" <<JSON
   "version": "0.4.7"
 }
 JSON
-cat > "${W}/srv/clawee/beta/latest.json" <<JSON
+write_beta_manifest() {
+    cat > "${W}/srv/clawee/beta/latest.json" <<JSON
 {
   "component": "clawee",
   "path": "clawee/beta/${BETA_STAMP}",
@@ -63,6 +64,8 @@ cat > "${W}/srv/clawee/beta/latest.json" <<JSON
   "version": "0.5.0"
 }
 JSON
+}
+write_beta_manifest
 # The GitHub /releases stub. python3's http.server serves a directory, so the
 # API path is a FILE at that path; the bootstrap appends a query string, which
 # the server ignores.
@@ -137,7 +140,7 @@ printf '  OK: resolved %s from <comp>/beta/latest.json\n' "${BETA_STAMP}"
 # ---- (2) GitHub is the fallback, and only that ------------------------------
 say "STABLE: the manifest host unreachable falls back to the release list"
 out="$(run_resolve "${REPO_ROOT}/clawee/install.sh" "${DEAD}" "${BASE}")"
-has "manifest unavailable" "${out}" \
+has "the manifest host did not answer" "${out}" \
     || die "no fallback was announced when the manifest host was unreachable:
 ${out}"
 has "clawee/${GH_ONLY_STAMP}" "${out}" \
@@ -154,6 +157,55 @@ has "${GH_ONLY_STAMP}" "${out}" \
     && die "the beta twin's fallback resolved the newest STABLE tag — the tag list is not channel-aware, and this is the filter that makes it safe to use:
 ${out}"
 printf '  OK: fell back to the beta tag only\n'
+
+# ---- (2b) a manifest that ANSWERS "not found" is an answer ------------------
+say "manifest host UP but the path 404s: refuse, and never reach the tag list"
+# This is the yank case, and it is the reason the two failure shapes must not be
+# collapsed. Yank removes the manifest entry when no public row remains and
+# deliberately leaves the GitHub release standing, so a 404 that fell through to
+# the tag list would resolve — and install — the build just withdrawn. The
+# fixture reproduces it exactly: the server is up, claweed has no manifest at
+# all, and the tag list is serving tags.
+mkdir -p "${W}/srv/repos/clawee-git/release"
+cat > "${W}/srv/repos/clawee-git/release/releases" <<JSON
+[
+  {"tag_name": "claweed/${GH_ONLY_STAMP}"},
+  {"tag_name": "clawee/${GH_ONLY_STAMP}"}
+]
+JSON
+out="$(run_resolve "${REPO_ROOT}/claweed/install.sh" "${BASE}" "${BASE}")"
+has "this channel is serving nothing" "${out}" \
+    || die "a 404 from a reachable manifest host was not treated as an answer:
+${out}"
+has "${GH_ONLY_STAMP}" "${out}" \
+    && die "a manifest 404 fell through to the tag list and resolved a tag. The tag list records every release ever published INCLUDING YANKED ONES, and yank is precisely what removes a manifest entry while leaving the GitHub release — so this reinstalls the withdrawn build:
+${out}"
+has "would reinstall exactly what was just taken down" "${out}" \
+    || die "the refusal does not say why the tag list is not consulted:
+${out}"
+[ ! -e "${W}/prefix/bin/claweed" ] || die "the withdrawn build was INSTALLED"
+printf '  OK: refused without consulting the release list\n'
+# Restore the clawee-only tag list the later cases expect.
+cat > "${W}/srv/repos/clawee-git/release/releases" <<JSON
+[
+  {"tag_name": "clawee/${GH_ONLY_STAMP}"},
+  {"tag_name": "clawee/v0.9.0.beta.2026.09.08.dddddddd"}
+]
+JSON
+
+say "the beta twin refuses the same way once a cycle closes"
+# A closed cycle is the same shape: the beta manifest is gone, the previous
+# cycle's beta release is still on GitHub.
+rm -f "${W}/srv/clawee/beta/latest.json"
+out="$(run_resolve "${REPO_ROOT}/clawee/beta.install.sh" "${BASE}" "${BASE}")"
+has "this channel is serving nothing" "${out}" \
+    || die "a closed beta cycle did not read as an answer:
+${out}"
+has "v0.9.0.beta.2026.09.08.dddddddd" "${out}" \
+    && die "the beta twin reinstalled the previous cycle's beta from the tag list:
+${out}"
+printf '  OK: a closed cycle installs nothing rather than the last beta\n'
+write_beta_manifest
 
 # ---- (3) both unreachable is a REFUSAL, not a guess -------------------------
 say "BOTH unreachable: refuse, naming the channel"
