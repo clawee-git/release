@@ -28,6 +28,42 @@ stable one. The site offers that line **only while a beta is actually
 promoted**, because a beta command that outlives its cycle installs the last
 beta forever after it graduated.
 
+### Beta twin
+
+A beta build is a **twin**, not a replacement. It installs beside a stable
+install and shares nothing with it but your identity:
+
+|  | stable | beta |
+|---|---|---|
+| client | `clawee`, `clawee-updater` | `claweeb`, `claweeb-updater` |
+| daemon | `claweed`, `claweed-updater` | `claweedb`, `claweedb-updater` |
+| client config | `~/.clawee/config.json` | `~/.clawee/config.beta.json` |
+| client data | `~/.clawee/data` | `~/.clawee/beta/data` |
+| system root | `/usr/local/clawee` | `/usr/local/clawee/beta` |
+| launchd label | `org.clawee.claweed` | `org.clawee.beta.claweed` |
+| systemd unit | `claweed.service` | `claweed-beta.service` |
+
+What IS shared: your account and your devices. `~/.clawee` is one directory
+because it is one identity — the beta client talks to the same gateway as the
+same you.
+
+**A beta twin never overwrites stable.** Both installers place files under the
+names above and nowhere else, so a beta install on a gateway leaves the running
+stable daemon, its unit, its config root and its socket exactly as they were;
+`tools/test-e2e-twins.sh` installs one after the other into a sandbox and
+checksums every stable file across the second install.
+
+**Neither one changes channel.** The channel is burned into each binary at link
+time (`-X main.channel`, parsed by `core/channel`), never read from a flag or an
+environment variable, and `claweeb-updater` resolves only beta stamps — it reads
+`<comp>/beta/latest.json`, and its GitHub tag fallback filters on the `.beta.`
+segment, so it can neither move you onto stable nor be moved there. Graduating
+is not a flip: the stable line adopts the patch the cycle reached, and you
+uninstall the twin.
+
+Remove a twin the way you installed it — re-run the beta installer with
+`CLAWEE_UNINSTALL=1` set, which removes only the beta names.
+
 `https://release.clawee.org` is the manage service's public face, rendered from
 the promoted catalog: `/` (install), `/downloads` (per-platform zips, checksums
 and signatures per promoted release, both channels), `/verify`, `/platforms` and
@@ -200,12 +236,17 @@ in the sealed config; see `AGENTS.md`.
 clawee/    claweed/        ← per-component outer bootstraps, generated: install.sh
                               + upgrade.sh (stable) and their beta.* twins, plus
                               version.js + beta.version.js (the site's badge JSONP)
-inner/clawee/install.sh     ← clawee's inner installer, repo-committed (ships
-                              verbatim inside each verified clawee zip). claweed
-                              has no committed copy: its inner installer is
-                              rendered at build time from the daemon repo's
-                              install/install.sh.in
-versions/<comp>             ← per-component SemVer source of truth
+inner/clawee/install.sh.in  ← clawee's inner installer TEMPLATE, repo-committed;
+                              the cut fills its channel names in and ships the
+                              result as install.sh inside each verified clawee
+                              zip. claweed has no committed copy: its inner
+                              installer is rendered at build time from the daemon
+                              repo's install/install.sh.in
+versions/<comp>             ← per-component SemVer source of truth (stable)
+versions/<comp>.beta.stamp  ← the beta line, present only while a cycle is open
+cmd/channel-names/          ← prints core/channel's name table for one channel
+                              and target OS; the single source for every
+                              channel-bound spelling in the shell scripts
 internal/manage/web/templates/public/
                             ← release.clawee.org's pages, rendered from the
                               promoted catalog (there is no static index.html
@@ -213,7 +254,8 @@ internal/manage/web/templates/public/
 tools/                      ← version.sh, build.sh, gen-bootstraps.sh, release.sh,
                               prune-releases.sh, test-e2e.sh, verify-no-env.sh,
                               test-stage-fail-closed.sh, test-cut-no-publish.sh,
-                              test-upgrade-bootstrap.sh
+                              test-upgrade-bootstrap.sh, test-beta-cut.sh,
+                              test-e2e-twins.sh
 tools/r2-mirror/             ← uploads a dist/<stamp>/ to a bucket. --prefix puts
                               the channel in the key, --no-manifest withholds
                               latest.json: the cut uses both, promote uses

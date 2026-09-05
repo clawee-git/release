@@ -115,6 +115,72 @@ path unreachable: the channel could be derived and the flag accepted, but the
 only branch either could have come from was rejected. A cycle changes what feeds
 the cut, not whether there is one (`~/.agents/guidelines/beta.md` §2/§4).
 
+### The beta twin
+
+`--channel beta` does not just relabel a stable cut. Four things change, and
+all four read **one** table — `core/channel`, reached from shell through
+`go run ./cmd/channel-names <channel> [goos]`:
+
+| | stable | beta |
+|---|---|---|
+| version file | `versions/<comp>` | `versions/<comp>.beta.stamp` |
+| stamp | `vX.Y.Z.<date>.<hash8>` | `vX.Y.Z.beta.<date>.<hash8>` |
+| binaries | `clawee`/`claweed` + `-updater` | `claweeb`/`claweedb` + `-updater` |
+| staging prefix | `<comp>/stable/<stamp>/` | `<comp>/beta/<stamp>/` |
+| outer bootstrap | `<comp>/install.sh` | `<comp>/beta.install.sh` |
+
+Never spell any of those in shell. A `case "$CHANNEL"` table is a second copy of
+`core/channel` that drifts the first time either side adds a name, and it
+announces the drift as a beta kit writing into a stable path on a live host.
+
+**The channel is resolved first, before anything is stamped or built.** It used
+to be resolved after the last zip was signed, which is fine only while nothing
+upstream needs it — and now the version file, the binary names and the inner
+installer all do.
+
+**The version file's presence is the open-cycle marker.** The `beta` branch is
+permanent and says nothing about whether a cycle is open (`beta.md` §3); the
+seeded file is what says it, so a beta cut without one refuses. Opening a cycle
+is an **operator** step, and it is one-way:
+
+```sh
+tools/version.sh clawee  --seed-beta 0.3.0
+tools/version.sh claweed --seed-beta 0.3.0
+```
+
+It refuses to overwrite. Re-seeding would replace the line the cycle had already
+climbed to, and the next beta cut would re-mint a stamp that is already
+published. Closing a cycle is a deliberate `git rm versions/<comp>.beta.stamp`.
+The two lines then move independently: beta climbs its own patch through the
+cycle while stable stays put, and the stable cut at close adopts the patch the
+cycle reached (`beta.md` §5, §8).
+
+**Both inner installers are channel-rendered templates.** `inner/clawee/install.sh.in`
+takes `@CLIENT@`/`@CLIENT_UPDATER@`; the daemon's `install/install.sh.in` takes
+`@CHANNEL@ @DAEMON@ @LABEL@ @SYSTEMD_UNIT@ @SYSTEM_ETC@ @SYSTEM_BIN@ @RUN_DIR@`
+plus `__CLAWEED_VERSION__` and `__GATEWAY_FLOOR__` (the latter read through the
+daemon repo's own `install/gateway_floor.sh`, never re-implemented here).
+`render_inner` runs **inside the per-target loop** because `RUN_DIR` is
+per-platform, and it greps the rendered file for a surviving placeholder rather
+than trusting its own `sed` list — the templates live in another repo and can
+grow a name this script never hears about. An installer that ships
+`@SYSTEMD_UNIT@` writes a unit file called that.
+
+**Updaters resolve only their own channel, and the kit must never contradict
+that.** The channel is burned in at link time and read back by `core/channel`;
+`core/update.ChannelOf` derives the host's channel from the *installed stamp*, so
+the binary is the authority. The kit's job is to never hand it a conflicting
+answer: the beta zip carries `claweeb-updater` built `-X main.channel=beta`, and
+the beta bootstrap it re-enters bakes `CHANNEL="beta"` (not overridable by the
+environment) and filters the GitHub tag fallback on the `.beta.` segment. Never
+add an env var or flag that selects a channel at runtime — a host never changes
+channel (`~/.agents/guidelines/release-management.md` §9).
+
+**`cmd/rkit` is the stable produce half only.** It has no `--channel`, renders
+the inner installer once per component (so it cannot express a per-OS `RUN_DIR`
+at all), and now fails loudly on any placeholder it cannot fill. Cut beta
+through `tools/release.sh`.
+
 ## Seams
 
 Every remote store is behind a flag, so no test ever reaches a real bucket,
@@ -479,6 +545,11 @@ for t in tools/test-*.sh tools/*.test.sh; do bash "$t"; done
 | `tools/test-modules.sh` | the bootstrap trust chain: lock integrity, `# needs:` ordering, committed bootstraps match the generator |
 | `tools/test-checksum-verify.sh` | the shipped verify block against a stub pre-2016 `shasum` |
 | `tools/module_gate.test.sh` | the gate `release.sh` runs before the first build |
+| `tools/build.test.sh` | `CHANNEL` picks both the `-X main.channel` value and the output basenames, from one table |
+| `tools/version.test.sh` | the two channels keep two lines; `--seed-beta` opens a cycle once and refuses to re-open it |
+| `tools/gen-bootstraps.test.sh` | the beta twin is the stable script with one value changed, and bakes its own channel |
+| `tools/test-beta-cut.sh` | a full `--channel beta` dry-run cut: beta stamp shape, `<comp>/beta/<stamp>/` prefix, twin binaries, twin-rendered inner installer, stable line untouched |
+| `tools/test-e2e-twins.sh` | stable then beta into one sandbox prefix: both present, every stable file byte-identical |
 
 `test-e2e.sh` and `verify-no-env.test.sh` need the component source worktrees on
 disk; they fail with a "source worktree missing" message on a machine that has
