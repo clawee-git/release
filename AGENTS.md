@@ -30,8 +30,12 @@ itself, not for the cuts it records.
 | Signing | `minisign` (release key), `modernech-sign` + `rcodesign` (Apple) |
 | Secrets | age-sealed, in the sibling `release.dp` repo |
 
-Two Go modules, so `go vet ./... && go test ./...` runs **twice**: once at the
-repo root and once in `tools/r2-mirror/`.
+**One Go module.** `tools/r2-mirror` had its own until the manage service
+needed the same S3/SigV4 client and the same `latest.json` schema: two modules
+meant either a `replace` directive or a second copy of the signing code, and a
+second copy of a signer is a signer that drifts. The shared pieces are now
+`internal/r2` (client, presigning, creds) and `internal/manifest` (the channel
+manifest). `go vet ./... && go test ./...` at the repo root covers everything.
 
 ## The cut chain
 
@@ -181,25 +185,70 @@ Cookies are marked `Secure` iff `--base-url` is https; `--listen` defaults to
 loopback because the service belongs behind the host's TLS proxy
 (`ops/nginx/`).
 
-### Seams batch B must implement, by name
+### Operator commands
 
-Promote, yank, mint and the invite listing are routed today and answer **501**,
-already session- and CSRF-gated, so the pages are final and batch B fills in
-bodies rather than adding surface:
+```sh
+# provision an account; the second factor enrols itself at first login
+clawee-release-manage admin add <name> --data-dir <DATA_DIR>
+clawee-release-manage admin list --data-dir <DATA_DIR>
 
-| Seam | Where the stub is | What batch B owns |
-|---|---|---|
-| object store interface | not yet declared | copy staged → public, presign, prune; every remote store behind a flag, as `tools/r2-mirror` already is |
-| GitHub publisher interface | not yet declared | create the release/pre-release and upload assets; promote **fails closed** without it |
-| `PATCH /api/v1/manage/releases/{id}` | `web.handleNotImplementedAPI` | promote and yank, in the guideline's order: verify → copy → GitHub → manifest → flip (`store.Promote`) → retention |
-| `POST /manage/releases/{id}/promote\|yank\|mint` | `web.handleNotImplementedPage` | the page-form twins of the above |
-| `POST /api/v1/manage/releases/{channel}/install-url` | `web.handleNotImplementedAPI` | the 48 h invite: presigned URLs, rendered `install.sh`, `store.CreateInvite` |
-| `GET /api/v1/manage/releases/{channel}/invites` | `web.handleNotImplementedAPI` | the JSON twin of the invites page |
-| retention | `store.ExpireOldVersions` (done) | calling it at the end of promote, 10 stable / 1 beta, plus the byte pruning on both surfaces |
-| download guard | not yet declared | https-only, no userinfo or IP literal, per-hop, dial the classified address — the service's only outbound fetch |
+# run the service
+clawee-release-manage serve --data-dir <DATA_DIR> --base-url https://<MANAGE_HOST> \
+    --r2-account <R2_ACCOUNT> --r2-creds <R2_CREDS> \
+    --staging-bucket <STAGING_BUCKET> --public-bucket <PUBLIC_BUCKET> \
+    --github-repo <ORG>/<REPO> --github-token-file <GH_TOKEN_FILE>
 
-`store.Yank` already returns the successor row, which is what the caller
-re-points the manifest at (or removes it when there is none).
+# the nightly retention net (a timer runs this; --dry-run reports and changes nothing)
+clawee-release-manage retain --data-dir <DATA_DIR> <the same store flags>
+```
+
+Placeholders only, here and everywhere else in this repo's markdown: the real
+account, buckets, host and token path live in the sealed `release.dp` config
+(`~/.agents/guidelines/secrets.md`).
+
+| Flag | What it names |
+|---|---|
+| `--data-dir` | the catalog (`catalog.db`) and the service secret key (`secret.key`, 0600). **No default, never read from the environment** |
+| `--base-url` | the public URL; also decides whether cookies are marked `Secure` |
+| `--listen` | default `127.0.0.1:8787` — loopback, because the service belongs behind the host's TLS proxy (`ops/nginx/`) |
+| `--r2-account`, `--r2-creds` | the Cloudflare account and the file holding `access_key_id` / `secret_access_key` |
+| `--staging-bucket` | the PRIVATE bucket a cut uploads to. Read, presign, and one write (the invite script) |
+| `--public-bucket` | what installers read. Refused if it equals the staging bucket |
+| `--github-repo`, `--github-token-file` | the release listing; **promote fails closed without them** |
+
+**Every seam is optional and a missing one refuses with a 503 naming the gap**,
+so the service can be brought up in stages — catalog first, then invites, then
+promote. A *half*-configured store is an error, not a silently disabled one.
+The startup log prints which seams are live.
+
+### What promote does, in order
+
+    verify → copy every file → GitHub release → manifest LAST → flip → retention
+
+Every step before the flip is reversible by doing nothing: a failure leaves the
+row `staged`, the manifest untouched, and at most some orphaned public objects
+the next attempt overwrites. Writing the manifest last is what makes that true —
+the manifest is the go-live. Progress streams as NDJSON (`PATCH
+/api/v1/manage/releases/{id}`) and as plain text from the page buttons, both
+rendered from the same event stream.
+
+**Yank inverts the order** — manifest first, then the row flips — because a
+failure between the two must leave the withdrawn build *unserved* rather than
+still being handed to every installer.
+
+**Retention** keeps 10 stable / 1 beta per component on both surfaces, never the
+current row, and runs at the end of every promote plus from `retain`. Pruning is
+best effort: the catalog is the source of truth and bytes are reconciled to it.
+
+### Known gap
+
+`RecordLoginFailure` **warns and continues** when the catalog write fails, so a
+database that has become unwritable would stop counting login attempts while
+still authenticating them. Failing the login closed instead would turn a
+transient disk problem into a total lockout of a surface whose whole job is
+publishing. It is a deliberate trade, not an oversight; if the catalog is
+unwritable, promote and invites are already refusing and the operator has a
+bigger problem than the counter.
 
 ## Sealed config
 
@@ -242,7 +291,6 @@ password-protected key is a configuration error, named as such.
 ```sh
 # Go, both modules
 go vet ./...  && go test ./...
-( cd tools/r2-mirror && go vet ./... && go test ./... )
 
 # shell suites — run them all
 for t in tools/test-*.sh tools/*.test.sh; do bash "$t"; done
